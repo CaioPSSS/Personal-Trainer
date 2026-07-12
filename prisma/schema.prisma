@@ -1,0 +1,48 @@
+datasource db {
+      provider  = "postgresql"
+        url       = env("POSTGRES_PRISMA_URL") // URL padrão fornecida pelo Vercel Postgres
+          directUrl = env("POSTGRES_URL_NON_POOLING")
+}
+
+generator client {
+      provider = "prisma-client-js"
+}
+
+model UserSettings {
+      id                   String   @id @default("singleton")
+        age                  Int
+          height               Float    // em cm
+            gender               String   // "M" ou "F"
+              activityLevel        Float    // Fator multiplicador (ex: 1.375)
+                goal                 String   // "loss" (perder), "maintenance" (manter), "gain" (ganhar)
+                  weeklyRate           Float    // Kg por semana (ex: -0.5 para perder 500g)
+                    currentCalorieTarget Int
+                      createdAt            DateTime @default(now())
+                        updatedAt            DateTime @updatedAt
+}
+
+model DailyLog {
+      date             String   @id // Formato ISO "YYYY-MM-DD" (evita problemas de timezone)
+        weight           Float?   // Peso em kg (opcional)
+          caloriesConsumed Int?     // Calorias ingeridas (opcional)
+            caloriesBurned   Int?     // Calorias gastas com exercícios (opcional)
+              trainingType     String   // "Descanso", "Musculação", "Corrida", "Híbrido", "Livre"
+                sleepHours       Float?   // Horas de sono reportadas
+                  waterIntake      Int?     // Água ingerida em ml
+                    stressLevel      Int?     // Nível subjetivo de estresse 1-5
+                      mood             String?  // Humor diário
+                      proteinConsumed Int?     // Proteína consumida em gramas
+                      waistCircumference Float? // Circunferência da cintura em cm
+                        createdAt        DateTime @default(now())
+
+  @@index([date(sort: Desc)])
+}
+
+model AiReport {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  content   String   @db.Text
+  isRead    Boolean  @default(false)
+
+  @@index([createdAt(sort: Desc)])
+}
