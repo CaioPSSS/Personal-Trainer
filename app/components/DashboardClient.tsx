@@ -64,6 +64,8 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
   const [unreadReport, setUnreadReport] = useState<AiReportSummary | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [coachRunState, setCoachRunState] = useState<'idle' | 'running' | 'validated' | 'failed'>('idle');
+  const [coachRunMessage, setCoachRunMessage] = useState('');
 
   useEffect(() => {
     const loadUnreadReport = async () => {
@@ -194,6 +196,38 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
     }
   };
 
+  const handleForceGeneration = async () => {
+    if (coachRunState === 'running') {
+      return;
+    }
+
+    setCoachRunState('running');
+    setCoachRunMessage('Gerando novo mesociclo com validação de contrato...');
+
+    try {
+      const response = await fetch('/api/coach/master/generate', {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Falha ao gerar plano de treino.');
+      }
+
+      const data = await response.json();
+      setCoachRunState('validated');
+      setCoachRunMessage(`Novo bloco gerado com sucesso (tentativas: ${data.attempts ?? 1}).`);
+    } catch (error) {
+      console.error('Falha ao forçar geração do mesociclo.', error);
+      setCoachRunState('failed');
+      setCoachRunMessage('A IA falhou na geração. Use ajuste manual do treino e tente novamente.');
+    }
+  };
+
+  const handleManualAdjust = () => {
+    setCoachRunMessage('Modo manual ativado: ajuste os dados do treino diretamente no formulário abaixo.');
+    setClientMessage({ type: 'info', text: 'Override manual ativo. Faça os ajustes e salve normalmente.' });
+  };
+
   if (loading) {
     return <div className="flex items-center justify-center min-h-screen text-xl">Carregando dados metabólicos...</div>;
   }
@@ -214,6 +248,23 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
           <p className="text-slate-400 text-sm mt-1">Sincronização cross-device ativada na infraestrutura Vercel.</p>
         </div>
         <div className="flex items-center gap-3">
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={handleManualAdjust}
+              className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-300 transition hover:bg-amber-500/20"
+            >
+              Ajustar/Editar Treino
+            </button>
+            <button
+              type="button"
+              onClick={handleForceGeneration}
+              disabled={coachRunState === 'running'}
+              className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {coachRunState === 'running' ? 'Gerando...' : 'Forçar Nova Geração'}
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => unreadReport !== null && setShowModal(true)}
@@ -229,6 +280,20 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
           </div>
         </div>
       </div>
+
+      {coachRunMessage ? (
+        <section
+          className={`rounded-xl border p-3 text-sm ${
+            coachRunState === 'failed'
+              ? 'border-rose-500/40 bg-rose-500/10 text-rose-300'
+              : coachRunState === 'validated'
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                : 'border-slate-700 bg-slate-900/50 text-slate-300'
+          }`}
+        >
+          {coachRunMessage}
+        </section>
+      ) : null}
 
       {showModal && unreadReport !== null ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8">

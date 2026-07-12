@@ -1,39 +1,39 @@
 datasource db {
-      provider  = "postgresql"
-        url       = env("POSTGRES_PRISMA_URL") // URL padrão fornecida pelo Vercel Postgres
-          directUrl = env("POSTGRES_URL_NON_POOLING")
+  provider  = "postgresql"
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
 }
 
 generator client {
-      provider = "prisma-client-js"
+  provider = "prisma-client-js"
 }
 
 model UserSettings {
-      id                   String   @id @default("singleton")
-        age                  Int
-          height               Float    // em cm
-            gender               String   // "M" ou "F"
-              activityLevel        Float    // Fator multiplicador (ex: 1.375)
-                goal                 String   // "loss" (perder), "maintenance" (manter), "gain" (ganhar)
-                  weeklyRate           Float    // Kg por semana (ex: -0.5 para perder 500g)
-                    currentCalorieTarget Int
-                      createdAt            DateTime @default(now())
-                        updatedAt            DateTime @updatedAt
+  id                   String   @id @default("singleton")
+  age                  Int
+  height               Float
+  gender               String
+  activityLevel        Float
+  goal                 String
+  weeklyRate           Float
+  currentCalorieTarget Int
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 model DailyLog {
-      date             String   @id // Formato ISO "YYYY-MM-DD" (evita problemas de timezone)
-        weight           Float?   // Peso em kg (opcional)
-          caloriesConsumed Int?     // Calorias ingeridas (opcional)
-            caloriesBurned   Int?     // Calorias gastas com exercícios (opcional)
-              trainingType     String   // "Descanso", "Musculação", "Corrida", "Híbrido", "Livre"
-                sleepHours       Float?   // Horas de sono reportadas
-                  waterIntake      Int?     // Água ingerida em ml
-                    stressLevel      Int?     // Nível subjetivo de estresse 1-5
-                      mood             String?  // Humor diário
-                      proteinConsumed Int?     // Proteína consumida em gramas
-                      waistCircumference Float? // Circunferência da cintura em cm
-                        createdAt        DateTime @default(now())
+  date               String   @id
+  weight             Float?
+  caloriesConsumed   Int?
+  caloriesBurned     Int?
+  trainingType       String
+  sleepHours         Float?
+  waterIntake        Int?
+  stressLevel        Int?
+  mood               String?
+  proteinConsumed    Int?
+  waistCircumference Float?
+  createdAt          DateTime @default(now())
 
   @@index([date(sort: Desc)])
 }
@@ -45,4 +45,243 @@ model AiReport {
   isRead    Boolean  @default(false)
 
   @@index([createdAt(sort: Desc)])
+}
+
+model AthleteProfile {
+  id                  String   @id @default("singleton")
+  displayName         String?
+  trainingAgeYears    Float?
+  sessionDurationMin  Int      @default(60)
+  preferredSplit      String?
+  availableEquipment  Json?
+  movementRestrictions Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  mesocycles          MesocyclePlan[]
+  workoutExecutions   WorkoutExecution[]
+  wellnessLogs        WellnessDaily[]
+  assistantAlerts     AssistantAlert[]
+}
+
+model MesocyclePlan {
+  id                    String   @id @default(cuid())
+  athleteProfileId      String
+  title                 String
+  objective             String
+  split                 String
+  durationWeeks         Int
+  targetSessionMinutes  Int      @default(60)
+  status                String   @default("draft")
+  startDate             String?
+  endDate               String?
+  volumeLandmarks       Json?
+  progressionRules      Json?
+  rawPlan               Json?
+  createdByAiRunId      String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  athleteProfile        AthleteProfile      @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+  weeks                 MesocycleWeek[]
+  workoutDays           WorkoutDayTemplate[]
+  workoutExecutions     WorkoutExecution[]
+  coachBrainEntries     CoachBrainEntry[]
+
+  @@index([athleteProfileId, createdAt(sort: Desc)])
+  @@index([status])
+}
+
+model MesocycleWeek {
+  id               String   @id @default(cuid())
+  mesocyclePlanId  String
+  weekNumber       Int
+  targetVolume     Json?
+  intensityRules   Json?
+  isDeload         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  mesocyclePlan    MesocyclePlan @relation(fields: [mesocyclePlanId], references: [id], onDelete: Cascade)
+
+  @@unique([mesocyclePlanId, weekNumber])
+}
+
+model WorkoutDayTemplate {
+  id                    String   @id @default(cuid())
+  mesocyclePlanId       String
+  dayOrder              Int
+  label                 String
+  focusMuscles          Json?
+  estimatedDurationMin  Int      @default(60)
+  createdAt             DateTime @default(now())
+
+  mesocyclePlan         MesocyclePlan         @relation(fields: [mesocyclePlanId], references: [id], onDelete: Cascade)
+  prescriptions         ExercisePrescription[]
+
+  @@unique([mesocyclePlanId, dayOrder])
+}
+
+model ExercisePrescription {
+  id                    String   @id @default(cuid())
+  workoutDayTemplateId  String
+  exerciseKey           String
+  exerciseName          String
+  movementPattern       String
+  sortOrder             Int
+  targetSets            Int
+  targetRepMin          Int
+  targetRepMax          Int
+  targetRpeMin          Float?
+  targetRpeMax          Float?
+  restSeconds           Int?
+  advancedTechnique     String?
+  substitutionHints     Json?
+  createdAt             DateTime @default(now())
+
+  workoutDayTemplate    WorkoutDayTemplate @relation(fields: [workoutDayTemplateId], references: [id], onDelete: Cascade)
+  exerciseExecutions    ExerciseExecution[]
+
+  @@unique([workoutDayTemplateId, sortOrder])
+  @@index([exerciseKey])
+}
+
+model WorkoutExecution {
+  id                 String   @id @default(cuid())
+  athleteProfileId   String
+  mesocyclePlanId    String?
+  date               String
+  status             String   @default("completed")
+  sessionRpe         Float?
+  durationMinutes    Int?
+  notes              String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  athleteProfile     AthleteProfile      @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+  mesocyclePlan      MesocyclePlan?      @relation(fields: [mesocyclePlanId], references: [id], onDelete: SetNull)
+  exerciseExecutions ExerciseExecution[]
+  swapSuggestions    ExerciseSwapSuggestion[]
+
+  @@index([athleteProfileId, date(sort: Desc)])
+  @@index([mesocyclePlanId, date(sort: Desc)])
+}
+
+model ExerciseExecution {
+  id                     String   @id @default(cuid())
+  workoutExecutionId     String
+  exercisePrescriptionId String?
+  exerciseName           String
+  movementPattern        String?
+  substitutedFrom        String?
+  sortOrder              Int
+  notes                  String?  @db.Text
+  createdAt              DateTime @default(now())
+
+  workoutExecution       WorkoutExecution      @relation(fields: [workoutExecutionId], references: [id], onDelete: Cascade)
+  exercisePrescription   ExercisePrescription? @relation(fields: [exercisePrescriptionId], references: [id], onDelete: SetNull)
+  setExecutions          SetExecution[]
+  swapSuggestions        ExerciseSwapSuggestion[]
+
+  @@unique([workoutExecutionId, sortOrder])
+}
+
+model SetExecution {
+  id                   String   @id @default(cuid())
+  exerciseExecutionId  String
+  setNumber            Int
+  loadKg               Float?
+  reps                 Int
+  rpe                  Float?
+  isFailure            Boolean  @default(false)
+  restSeconds          Int?
+  createdAt            DateTime @default(now())
+
+  exerciseExecution    ExerciseExecution @relation(fields: [exerciseExecutionId], references: [id], onDelete: Cascade)
+
+  @@unique([exerciseExecutionId, setNumber])
+}
+
+model WellnessDaily {
+  date               String   @id
+  athleteProfileId   String
+  sleepHours         Float?
+  fatigueLevel       Int?
+  mood               String?
+  sorenessLevel      Int?
+  energyLevel        Int?
+  stressLevel        Int?
+  bodyWeightKg       Float?
+  notes              String?  @db.Text
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  athleteProfile     AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([athleteProfileId, date(sort: Desc)])
+}
+
+model AssistantAlert {
+  id                String   @id @default(cuid())
+  athleteProfileId  String
+  date              String
+  alertType         String
+  severity          String
+  message           String   @db.Text
+  isResolved        Boolean  @default(false)
+  metadata          Json?
+  createdAt         DateTime @default(now())
+
+  athleteProfile    AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([athleteProfileId, date(sort: Desc)])
+  @@index([isResolved, createdAt(sort: Desc)])
+}
+
+model ExerciseSwapSuggestion {
+  id                   String   @id @default(cuid())
+  workoutExecutionId   String?
+  exerciseExecutionId  String?
+  requestedExercise    String
+  requestedPattern     String?
+  suggestions          Json
+  selectedIndex        Int?
+  createdAt            DateTime @default(now())
+
+  workoutExecution     WorkoutExecution?  @relation(fields: [workoutExecutionId], references: [id], onDelete: SetNull)
+  exerciseExecution    ExerciseExecution? @relation(fields: [exerciseExecutionId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+}
+
+model AiRunLog {
+  id                String   @id @default(cuid())
+  runType           String
+  mode              String?
+  status            String
+  primaryModel      String
+  fallbackModel     String?
+  attemptCount      Int      @default(1)
+  latencyMs         Int?
+  validationErrors  Json?
+  requestPayload    Json?
+  responsePayload   Json?
+  errorMessage      String?  @db.Text
+  createdAt         DateTime @default(now())
+
+  @@index([runType, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+}
+
+model CoachBrainEntry {
+  id                String   @id @default(cuid())
+  mesocyclePlanId   String
+  aiRunLogId        String?
+  version           Int      @default(1)
+  hypotheses        Json
+  retrospective     Json?
+  createdAt         DateTime @default(now())
+
+  mesocyclePlan     MesocyclePlan @relation(fields: [mesocyclePlanId], references: [id], onDelete: Cascade)
+
+  @@index([mesocyclePlanId, createdAt(sort: Desc)])
 }
