@@ -192,6 +192,7 @@ export async function POST(request: NextRequest) {
       analystAttempts: analystAttempts,
     });
   } catch (error) {
+    console.error('[Master Coach] Error during generation:', error);
     const message = error instanceof Error ? error.message : String(error);
 
     await prisma.aiRunLog.create({

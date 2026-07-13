@@ -124,6 +124,7 @@ export async function POST(request: NextRequest) {
       attempts: result.attempts,
     });
   } catch (error) {
+    console.error('[Data Analyst] Error during analysis:', error);
     const message = error instanceof Error ? error.message : String(error);
 
     await db.aiRunLog.create({
