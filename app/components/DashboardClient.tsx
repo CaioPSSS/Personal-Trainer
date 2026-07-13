@@ -236,6 +236,10 @@ export default function DashboardClient({ initialSettings, initialAthleteProfile
     try {
       const response = await fetch('/api/coach/master/generate', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
+        },
       });
 
       if (!response.ok) {

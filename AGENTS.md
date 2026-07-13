@@ -21,7 +21,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Refactored `OnboardingForm.tsx` to collect life context and objective details in a `<textarea>` instead of a rigid training split selection dropdown.
 - Updated `/api/setup` to parse and upsert `athleteContext` in `AthleteProfile`.
 - Updated the Master Coach prompt in `lib/ai/prompts.ts` to analyze `athleteContext` and dynamically determine the split/volume configurations.
-- Fixed all typescript-eslint (`any[]` casts, catch block parameters, unescaped quote symbols) compiler and linter issues.
+- Patched Vercel 401 Unauthorized errors by verifying client-side requests using `NEXT_PUBLIC_INTERNAL_SECRET` header validation in `isAuthorized` and passing it from the dashboard.
+- Patched Vercel 500 mount errors by wrapping initial database fetches and calculations in `try/catch` fallback blocks in `app/page.tsx`.
+- Fixed all typescript-eslint (`any[]` casts, catch block parameters, unescaped quote symbols, unused imports) compiler and linter issues.
 
 ### Architectural Decisions Confirmed
 - Multi-LLM strategy is active by responsibility:
