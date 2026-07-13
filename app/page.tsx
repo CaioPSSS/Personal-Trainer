@@ -12,19 +12,18 @@ export default async function Home() {
   ]);
   
   const fullLogs = logs.map((log) => {
-    const asAny = log as any;
     return {
-      date: asAny.date,
-      weight: asAny.weight ?? null,
-      caloriesConsumed: asAny.caloriesConsumed ?? null,
-      caloriesBurned: asAny.caloriesBurned ?? null,
-      trainingType: asAny.trainingType ?? 'Descanso',
-      sleepHours: asAny.sleepHours ?? null,
-      waterIntake: asAny.waterIntake ?? null,
-      stressLevel: asAny.stressLevel ?? null,
-      mood: asAny.mood ?? null,
-      proteinConsumed: asAny.proteinConsumed ?? null,
-      waistCircumference: asAny.waistCircumference ?? null,
+      date: log.date,
+      weight: log.weight ?? null,
+      caloriesConsumed: log.caloriesConsumed ?? null,
+      caloriesBurned: log.caloriesBurned ?? null,
+      trainingType: log.trainingType ?? 'Descanso',
+      sleepHours: log.sleepHours ?? null,
+      waterIntake: log.waterIntake ?? null,
+      stressLevel: log.stressLevel ?? null,
+      mood: log.mood ?? null,
+      proteinConsumed: log.proteinConsumed ?? null,
+      waistCircumference: log.waistCircumference ?? null,
     };
   });
 

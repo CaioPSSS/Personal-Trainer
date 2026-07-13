@@ -3,8 +3,6 @@ import { prisma } from '@/lib/prisma';
 
 export const maxDuration = 300;
 
-const aiPrisma = prisma as typeof prisma & { aiReport: any };
-
 const DEFAULT_SYSTEM_PROMPT = `Você é um fisiologista esportivo de elite e cientista de dados. Sua análise deve ser fria, realista e estritamente baseada em termodinâmica e fisiologia do exercício. Zero condescendência ou motivação vazia. Vá direto aos números e fatos.
 
 CONTEXTO: Indivíduo com foco em perda de gordura, mantendo massa magra, praticando treino híbrido (musculação + cardio) e monitorando métricas metabólicas diárias (peso, ingestão calórica, ingestão proteica, sono e estresse).

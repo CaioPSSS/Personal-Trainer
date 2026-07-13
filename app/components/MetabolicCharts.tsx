@@ -112,15 +112,16 @@ export default function MetabolicCharts({ logs, settings }: MetabolicChartsProps
   }
 
   let cumulativeDeficit = 0;
-  const deficitData = recentLogs.map((log) => {
+  const deficitData = [];
+  for (const log of recentLogs) {
     const deficit = log.caloriesConsumed !== null ? settings.currentCalorieTarget - log.caloriesConsumed : 0;
     cumulativeDeficit += deficit;
-    return {
+    deficitData.push({
       date: log.date.substring(5).replace('-', '/'),
       'Déficit Diário': deficit,
       'Acúmulo Termodinâmico': parseFloat(cumulativeDeficit.toFixed(0)),
-    };
-  });
+    });
+  }
 
   const recoveryWindow = orderedLogs.slice(-7);
   const sleepValues = recoveryWindow.map((log) => log.sleepHours).filter((value): value is number => value !== null);
