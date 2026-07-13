@@ -104,7 +104,10 @@ export async function generateStructuredOutput<T>(options: GenerateStructuredOpt
   for (const model of tryModels) {
     let messages: OpenRouterMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
+      { 
+        role: 'user', 
+        content: `${userPrompt}\n\n--- JSON SCHEMA CONTRACT ---\nYou MUST return ONLY a valid JSON object that strictly adheres to the following JSON Schema. Do NOT wrap it in markdown block quotes. Do NOT add any extra text:\n${JSON.stringify(schema, null, 2)}` 
+      },
     ];
 
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
