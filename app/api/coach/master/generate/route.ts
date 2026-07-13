@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+
+export const maxDuration = 300;
 import {
   DataAnalystReport,
   dataAnalystReportSchema,
@@ -35,7 +37,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/llama-3.1-nemotron-70b-instruct:free';
   const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL;
   const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
   const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL;
@@ -74,46 +76,73 @@ export async function POST(request: NextRequest) {
       }),
     ]);
 
-    const analystPrompts = buildDataAnalystPrompts({
-      athleteProfile,
-      recentWorkouts,
-      recentWellness,
-    });
+    let analystData: DataAnalystReport;
+    let analystRunLogId: string = 'bypass';
+    let analystModelUsed = 'bypass';
+    let analystAttempts = 0;
 
-    const analystResult = await generateStructuredOutput<DataAnalystReport>({
-      schemaId: `data-analyst-report-${DATA_ANALYST_REPORT_SCHEMA_VERSION}`,
-      schema: dataAnalystReportSchema,
-      systemPrompt: analystPrompts.systemPrompt,
-      userPrompt: analystPrompts.userPrompt,
-      primaryModel: analystPrimaryModel,
-      fallbackModel: analystFallbackModel,
-      maxRetries: 2,
-      temperature: 0.15,
-    });
+    if (recentWorkouts.length < 3) {
+      analystData = {
+        executiveSummary: "Baseline phase. No prior data available. Design an introductory hypertrophy block based solely on athlete profile.",
+        exercisePerformance: [],
+        progressionSignals: {
+          progressionCompliance: 'moderate',
+          keyBottlenecks: ['N/A - Baseline phase'],
+          recoveryConstraints: ['N/A - Baseline phase'],
+        },
+        recommendationsForMaster: [
+          'Establish baseline progressive overload',
+          'Focus on movement pattern mastery',
+          'Rely entirely on Athlete Profile for constraints',
+        ],
+      };
+    } else {
+      const analystPrompts = buildDataAnalystPrompts({
+        athleteProfile,
+        recentWorkouts,
+        recentWellness,
+      });
 
-    const analystRunLog = await prisma.aiRunLog.create({
-      data: {
-        runType: 'data_analyst_cycle_review',
-        mode: 'cycle_analysis',
-        status: 'success',
+      const analystResult = await generateStructuredOutput<DataAnalystReport>({
+        schemaId: `data-analyst-report-${DATA_ANALYST_REPORT_SCHEMA_VERSION}`,
+        schema: dataAnalystReportSchema,
+        systemPrompt: analystPrompts.systemPrompt,
+        userPrompt: analystPrompts.userPrompt,
         primaryModel: analystPrimaryModel,
         fallbackModel: analystFallbackModel,
-        attemptCount: analystResult.attempts,
-        latencyMs: analystResult.latencyMs,
-        requestPayload: {
-          schemaVersion: DATA_ANALYST_REPORT_SCHEMA_VERSION,
-          contextSizes: {
-            workouts: recentWorkouts.length,
-            wellness: recentWellness.length,
-          },
-        } as unknown as Prisma.InputJsonValue,
-        responsePayload: analystResult.data as unknown as Prisma.InputJsonValue,
-      },
-    });
+        maxRetries: 2,
+        temperature: 0.15,
+      });
+
+      const analystRunLog = await prisma.aiRunLog.create({
+        data: {
+          runType: 'data_analyst_cycle_review',
+          mode: 'cycle_analysis',
+          status: 'success',
+          primaryModel: analystPrimaryModel,
+          fallbackModel: analystFallbackModel,
+          attemptCount: analystResult.attempts,
+          latencyMs: analystResult.latencyMs,
+          requestPayload: {
+            schemaVersion: DATA_ANALYST_REPORT_SCHEMA_VERSION,
+            contextSizes: {
+              workouts: recentWorkouts.length,
+              wellness: recentWellness.length,
+            },
+          } as unknown as Prisma.InputJsonValue,
+          responsePayload: analystResult.data as unknown as Prisma.InputJsonValue,
+        },
+      });
+
+      analystData = analystResult.data;
+      analystRunLogId = String(analystRunLog.id);
+      analystModelUsed = analystResult.modelUsed;
+      analystAttempts = analystResult.attempts;
+    }
 
     const masterPrompts = buildMasterCoachPrompts({
       athleteProfile,
-      analystReport: analystResult.data,
+      analystReport: analystData,
       previousCoachBrain: previousBrain,
       recentWorkouts,
       recentWellness,
@@ -141,8 +170,8 @@ export async function POST(request: NextRequest) {
         latencyMs: result.latencyMs,
         requestPayload: {
           schemaVersion: MASTER_PLAN_SCHEMA_VERSION,
-          analystRunLogId: String(analystRunLog.id),
-          analystSummary: analystResult.data.executiveSummary,
+          analystRunLogId: analystRunLogId,
+          analystSummary: analystData.executiveSummary,
           contextSizes: {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
@@ -158,9 +187,9 @@ export async function POST(request: NextRequest) {
       success: true,
       mesocyclePlanId: String(createdPlan.id),
       modelUsed: result.modelUsed,
-      analystModelUsed: analystResult.modelUsed,
+      analystModelUsed: analystModelUsed,
       attempts: result.attempts,
-      analystAttempts: analystResult.attempts,
+      analystAttempts: analystAttempts,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

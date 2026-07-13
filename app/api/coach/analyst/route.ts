@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+
+export const maxDuration = 300;
 import {
   DataAnalystReport,
   dataAnalystReportSchema,
@@ -24,13 +26,19 @@ const db = prisma as unknown as {
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedToken = process.env.CRON_SECRET;
-  if (!expectedToken) {
+  const publicSecret = process.env.NEXT_PUBLIC_INTERNAL_SECRET;
+
+  if (!expectedToken && !publicSecret) {
     return true;
   }
 
   const authHeader = request.headers.get('authorization');
   const internalHeader = request.headers.get('x-internal-token');
-  return authHeader === `Bearer ${expectedToken}` || internalHeader === expectedToken;
+
+  const isCronAuthorized = expectedToken && (authHeader === `Bearer ${expectedToken}` || internalHeader === expectedToken);
+  const isPublicAuthorized = publicSecret && internalHeader === publicSecret;
+
+  return !!(isCronAuthorized || isPublicAuthorized);
 }
 
 export async function POST(request: NextRequest) {

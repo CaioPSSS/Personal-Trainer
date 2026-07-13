@@ -23,6 +23,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Updated the Master Coach prompt in `lib/ai/prompts.ts` to analyze `athleteContext` and dynamically determine the split/volume configurations.
 - Patched Vercel 401 Unauthorized errors by verifying client-side requests using `NEXT_PUBLIC_INTERNAL_SECRET` header validation in `isAuthorized` and passing it from the dashboard.
 - Patched Vercel 500 mount errors by wrapping initial database fetches and calculations in `try/catch` fallback blocks in `app/page.tsx`.
+- Patched Vercel 500 Timeout errors by extending `maxDuration` to 300 seconds on the AI API routes.
+- Implemented a Cold Start Bypass logic in the Master Coach route to skip the Data Analyst and provide a hardcoded Baseline Report when the user has less than 3 recorded workouts, preventing AI hallucinations and empty-state timeouts.
+- Adjusted Master Coach prompt to explicitly handle 'Baseline phase' states and rely strictly on the Athlete Profile for virgin mesocycles.
 - Fixed all typescript-eslint (`any[]` casts, catch block parameters, unescaped quote symbols, unused imports) compiler and linter issues.
 
 ### Architectural Decisions Confirmed

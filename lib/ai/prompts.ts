@@ -41,7 +41,8 @@ Analytical framework:
 
 Output quality bar:
 - Every exercise analysis must mention a concrete signal (trend, compliance, or inconsistency).
-- Recommendations must be directly actionable by a planning agent.`;
+- Recommendations must be directly actionable by a planning agent.
+- If you detect that the athlete is consistently missing targets, skipping exercises, or logging RPEs that indicate lack of effort, explicitly call this out in your 'progressionSignals' as low compliance. Do not soften the feedback.`;
 
   const userPrompt = [
     'Analyze the last cycle and return a JSON report following the contract.',
@@ -73,6 +74,8 @@ Non-negotiable constraints:
 - Do not prescribe movements that violate constraints.
 - Avoid fictional equipment or unsupported exercise variants.
 - Analyze the user's "athleteContext" deeply (this contains routine, sleep, shifts, specific hypertrophy focuses, or stress levels). You have total freedom to select the split type (e.g., Push/Pull/Legs, Upper/Lower, ABCDE, Fullbody) and distribute weekly volumes to optimize fatigue management and consistency.
+- If the Analyst Report states 'Baseline phase' or indicates no prior data, treat this as the user's FIRST mesocycle. Rely entirely on the Athlete Profile (training age, available equipment, constraints) to establish a safe, baseline progressive overload protocol.
+- Be ruthlessly objective and clinical. Do not compromise scientific hypertrophy principles or downgrade intensity simply to make the plan 'easier'. If the athlete's context indicates poor recovery, manage volume mathematically, but maintain high RPE targets for the working sets. Your goal is maximum adaptation, not comfort.
 
 Retrospective duty:
 - Critically evaluate previous hypotheses and include a retrospective block.
