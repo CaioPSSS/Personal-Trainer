@@ -1,5 +1,28 @@
 export const MASTER_PLAN_SCHEMA_VERSION = '1.0.0';
 export const ASSISTANT_OUTPUT_SCHEMA_VERSION = '1.0.0';
+export const DATA_ANALYST_REPORT_SCHEMA_VERSION = '1.0.0';
+
+interface PerformanceDelta {
+  exerciseName: string;
+  movementPattern: string;
+  observedProgression: 'improved' | 'stagnant' | 'regressed' | 'insufficient_data';
+  loadTrendKgPerWeek: number | null;
+  repTrendPerWeek: number | null;
+  rpeAccuracyRate: number | null;
+  fatigueImpact: 'low' | 'moderate' | 'high' | 'unknown';
+  notes: string;
+}
+
+export interface DataAnalystReport {
+  executiveSummary: string;
+  exercisePerformance: PerformanceDelta[];
+  progressionSignals: {
+    progressionCompliance: 'high' | 'moderate' | 'low';
+    keyBottlenecks: string[];
+    recoveryConstraints: string[];
+  };
+  recommendationsForMaster: string[];
+}
 
 export interface MasterPlanOutput {
   mesocycle: {
@@ -35,6 +58,12 @@ export interface MasterPlanOutput {
     hypotheses: string[];
     rationale: string[];
     nextCycleWatchouts: string[];
+    retrospective: {
+      whatWorked: string[];
+      whatFailed: string[];
+      confidenceScore: number;
+      correctionActions: string[];
+    };
   };
 }
 
@@ -145,7 +174,7 @@ export const masterPlanOutputSchema = {
     coachBrain: {
       type: 'object',
       additionalProperties: false,
-      required: ['hypotheses', 'rationale', 'nextCycleWatchouts'],
+      required: ['hypotheses', 'rationale', 'nextCycleWatchouts', 'retrospective'],
       properties: {
         hypotheses: {
           type: 'array',
@@ -162,7 +191,95 @@ export const masterPlanOutputSchema = {
           minItems: 1,
           items: { type: 'string', minLength: 5 },
         },
+        retrospective: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['whatWorked', 'whatFailed', 'confidenceScore', 'correctionActions'],
+          properties: {
+            whatWorked: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'string', minLength: 5 },
+            },
+            whatFailed: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'string', minLength: 5 },
+            },
+            confidenceScore: { type: 'number', minimum: 0, maximum: 1 },
+            correctionActions: {
+              type: 'array',
+              minItems: 1,
+              items: { type: 'string', minLength: 5 },
+            },
+          },
+        },
       },
+    },
+  },
+} as const;
+
+export const dataAnalystReportSchema = {
+  $id: 'dataAnalystReport',
+  type: 'object',
+  additionalProperties: false,
+  required: ['executiveSummary', 'exercisePerformance', 'progressionSignals', 'recommendationsForMaster'],
+  properties: {
+    executiveSummary: { type: 'string', minLength: 20 },
+    exercisePerformance: {
+      type: 'array',
+      minItems: 3,
+      maxItems: 30,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'exerciseName',
+          'movementPattern',
+          'observedProgression',
+          'loadTrendKgPerWeek',
+          'repTrendPerWeek',
+          'rpeAccuracyRate',
+          'fatigueImpact',
+          'notes',
+        ],
+        properties: {
+          exerciseName: { type: 'string', minLength: 2 },
+          movementPattern: { type: 'string', minLength: 2 },
+          observedProgression: {
+            type: 'string',
+            enum: ['improved', 'stagnant', 'regressed', 'insufficient_data'],
+          },
+          loadTrendKgPerWeek: { type: ['number', 'null'] },
+          repTrendPerWeek: { type: ['number', 'null'] },
+          rpeAccuracyRate: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+          fatigueImpact: { type: 'string', enum: ['low', 'moderate', 'high', 'unknown'] },
+          notes: { type: 'string', minLength: 10 },
+        },
+      },
+    },
+    progressionSignals: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['progressionCompliance', 'keyBottlenecks', 'recoveryConstraints'],
+      properties: {
+        progressionCompliance: { type: 'string', enum: ['high', 'moderate', 'low'] },
+        keyBottlenecks: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 5 },
+        },
+        recoveryConstraints: {
+          type: 'array',
+          minItems: 1,
+          items: { type: 'string', minLength: 5 },
+        },
+      },
+    },
+    recommendationsForMaster: {
+      type: 'array',
+      minItems: 3,
+      items: { type: 'string', minLength: 8 },
     },
   },
 } as const;

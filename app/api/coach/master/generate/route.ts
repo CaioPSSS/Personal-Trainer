@@ -1,21 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
+  DataAnalystReport,
+  dataAnalystReportSchema,
+  DATA_ANALYST_REPORT_SCHEMA_VERSION,
   masterPlanOutputSchema,
   MASTER_PLAN_SCHEMA_VERSION,
   MasterPlanOutput,
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
+import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
 
 type GenericModel = {
   upsert: (args: unknown) => Promise<unknown>;
   findMany: (args: unknown) => Promise<unknown[]>;
   findFirst: (args: unknown) => Promise<unknown>;
+  findUnique: (args: unknown) => Promise<unknown>;
   create: (args: unknown) => Promise<Record<string, unknown>>;
 };
 
 const db = prisma as unknown as {
-  athleteProfile: Pick<GenericModel, 'upsert'>;
+  athleteProfile: Pick<GenericModel, 'upsert' | 'findUnique'>;
   workoutExecution: Pick<GenericModel, 'findMany'>;
   wellnessDaily: Pick<GenericModel, 'findMany'>;
   coachBrainEntry: Pick<GenericModel, 'findFirst' | 'create'>;
@@ -34,34 +39,15 @@ function isAuthorized(request: NextRequest): boolean {
   return authHeader === `Bearer ${expectedToken}` || internalHeader === expectedToken;
 }
 
-function buildMasterPrompts(context: {
-  recentWorkouts: unknown[];
-  recentWellness: unknown[];
-  previousBrain: unknown | null;
-}) {
-  const systemPrompt = [
-    'You are an elite hypertrophy coach focused on efficient 60-minute sessions.',
-    'Return strictly valid JSON only. No markdown, no prose outside JSON.',
-    'Design a mesocycle with evidence-based volume progression and fatigue management.',
-    'Use 4-6 weeks and include deload logic when needed.',
-  ].join(' ');
-
-  const userPrompt = [
-    'Generate the next mesocycle plan using the schema constraints.',
-    'Athlete context and previous block data are below as JSON.',
-    JSON.stringify(context),
-  ].join('\n\n');
-
-  return { systemPrompt, userPrompt };
-}
-
 export async function POST(request: NextRequest) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const primaryModel = process.env.MASTER_COACH_MODEL ?? 'openai/gpt-4.1-mini';
-  const fallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL ?? 'google/gemma-3-27b-it';
+  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL;
+  const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
+  const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL;
 
   try {
     await db.athleteProfile.upsert({
@@ -73,7 +59,8 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [recentWorkouts, recentWellness, previousBrain] = await Promise.all([
+    const [athleteProfile, recentWorkouts, recentWellness, previousBrain] = await Promise.all([
+      db.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       db.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
@@ -96,21 +83,60 @@ export async function POST(request: NextRequest) {
       }),
     ]);
 
-    const prompts = buildMasterPrompts({
+    const analystPrompts = buildDataAnalystPrompts({
+      athleteProfile,
       recentWorkouts,
       recentWellness,
-      previousBrain,
+    });
+
+    const analystResult = await generateStructuredOutput<DataAnalystReport>({
+      schemaId: `data-analyst-report-${DATA_ANALYST_REPORT_SCHEMA_VERSION}`,
+      schema: dataAnalystReportSchema,
+      systemPrompt: analystPrompts.systemPrompt,
+      userPrompt: analystPrompts.userPrompt,
+      primaryModel: analystPrimaryModel,
+      fallbackModel: analystFallbackModel,
+      maxRetries: 2,
+      temperature: 0.15,
+    });
+
+    const analystRunLog = await db.aiRunLog.create({
+      data: {
+        runType: 'data_analyst_cycle_review',
+        mode: 'cycle_analysis',
+        status: 'success',
+        primaryModel: analystPrimaryModel,
+        fallbackModel: analystFallbackModel,
+        attemptCount: analystResult.attempts,
+        latencyMs: analystResult.latencyMs,
+        requestPayload: {
+          schemaVersion: DATA_ANALYST_REPORT_SCHEMA_VERSION,
+          contextSizes: {
+            workouts: recentWorkouts.length,
+            wellness: recentWellness.length,
+          },
+        },
+        responsePayload: analystResult.data,
+      },
+    });
+
+    const masterPrompts = buildMasterCoachPrompts({
+      athleteProfile,
+      analystReport: analystResult.data,
+      previousCoachBrain: previousBrain,
+      recentWorkouts,
+      recentWellness,
     });
 
     const result = await generateStructuredOutput<MasterPlanOutput>({
       schemaId: `master-plan-${MASTER_PLAN_SCHEMA_VERSION}`,
       schema: masterPlanOutputSchema,
-      systemPrompt: prompts.systemPrompt,
-      userPrompt: prompts.userPrompt,
-      primaryModel,
-      fallbackModel,
+      systemPrompt: masterPrompts.systemPrompt,
+      userPrompt: masterPrompts.userPrompt,
+      primaryModel: masterPrimaryModel,
+      fallbackModel: masterFallbackModel,
       maxRetries: 2,
-      temperature: 0.2,
+      temperature: 0.1,
     });
 
     const createdPlan = await db.mesocyclePlan.create({
@@ -160,12 +186,14 @@ export async function POST(request: NextRequest) {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',
         status: 'success',
-        primaryModel,
-        fallbackModel,
+        primaryModel: masterPrimaryModel,
+        fallbackModel: masterFallbackModel,
         attemptCount: result.attempts,
         latencyMs: result.latencyMs,
         requestPayload: {
           schemaVersion: MASTER_PLAN_SCHEMA_VERSION,
+          analystRunLogId: String(analystRunLog.id),
+          analystSummary: analystResult.data.executiveSummary,
           contextSizes: {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
@@ -185,6 +213,7 @@ export async function POST(request: NextRequest) {
           rationale: result.data.coachBrain.rationale,
           nextCycleWatchouts: result.data.coachBrain.nextCycleWatchouts,
         },
+        retrospective: result.data.coachBrain.retrospective,
       },
     });
 
@@ -192,7 +221,9 @@ export async function POST(request: NextRequest) {
       success: true,
       mesocyclePlanId: String(createdPlan.id),
       modelUsed: result.modelUsed,
+      analystModelUsed: analystResult.modelUsed,
       attempts: result.attempts,
+      analystAttempts: analystResult.attempts,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -202,8 +233,8 @@ export async function POST(request: NextRequest) {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',
         status: 'failed',
-        primaryModel,
-        fallbackModel,
+        primaryModel: masterPrimaryModel,
+        fallbackModel: masterFallbackModel,
         errorMessage: message,
       },
     });

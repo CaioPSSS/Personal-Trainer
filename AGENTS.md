@@ -27,11 +27,27 @@ This version has breaking changes — APIs, conventions, and file structure may 
 	- "Ajustar/Editar Treino"
 	- "Forçar Nova Geração"
 - Added frontend run-state feedback for coach generation (`idle`, `running`, `validated`, `failed`).
+- Refactored coach APIs into a 3-agent structure:
+	- `POST /api/coach/analyst` (Data Analyst AI)
+	- `POST /api/coach/master/generate` (Master Coach AI with analyst pre-step)
+	- `POST /api/coach/assistant` (Assistant Coach AI)
+- Implemented end-of-cycle 3-phase pipeline in master generation:
+	1. Aggregation (`AthleteProfile` + 56 days of `WorkoutExecution`/`WellnessDaily`).
+	2. Data Analyst structured report generation.
+	3. Master Coach mesocycle generation using analyst report + prior coach brain + raw context.
+- Added dense prompt engineering module in `lib/ai/prompts.ts` with:
+	- Progressive overload and fatigue-aware rules.
+	- Strict equipment/restriction enforcement.
+	- Explicit retrospective behavior instructions.
+- Expanded AI contract schemas with:
+	- `DataAnalystReport` JSON schema.
+	- Master `coachBrain.retrospective` field (critical self-review block).
 
 ### Architectural Decisions Confirmed
 - Multi-LLM strategy is active by responsibility:
-	- Master Coach for block transition generation.
-	- Assistant Coach for day-to-day fast decisions.
+	- Master Coach: `NVIDIA Nemotron 3 Ultra` for block transition generation.
+	- Data Analyst: `gpt-oss-120b` for raw-cycle diagnostics.
+	- Assistant Coach: `gpt-oss-120b` for day-to-day fast tool-like decisions.
 - Contract-first output is mandatory for all model responses.
 - Invalid model output must trigger retry with explicit validation feedback before failing.
 - AI failures must be logged and should not block normal training logging in future UI integration.
@@ -46,17 +62,20 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Connect daily training execution forms to new workout entities.
 - Add mesocycle lifecycle controls (close block, generate next block, roll-over handling).
 - Add tests for schema contract validation and endpoint error paths.
+- Persist Data Analyst report snapshots in dedicated entity (optional) for longitudinal comparison.
+- Add stronger DTO typing to remove remaining `unknown` model casting strategy.
 
 ### Next Steps (Execution Order)
 1. Apply database changes and verify Prisma Client generation.
-2. Add typed DTO mappers for master plan -> relational inserts.
-3. Build frontend controls for manual override and forced generation.
+2. Add typed DTO mappers for analyst report + master plan -> relational inserts.
+3. Build frontend surfacing for analyst insights and retrospective transparency.
 4. Wire daily execution + wellness capture to new models.
-5. Add integration tests covering retry/fallback and malformed JSON from models.
+5. Add integration tests covering retry/fallback, malformed JSON, and 3-agent handoff integrity.
 
 ### Verification Notes (This Iteration)
 - Lint check passed for newly added TypeScript implementation files (`lib/ai/*` and `app/api/coach/*`).
 - Lint check passed for dashboard changes in `app/components/DashboardClient.tsx`.
+- Lint check passed after 3-agent pipeline refactor (`master`, `analyst`, `assistant`, contracts, prompts).
 - Prisma schema validation is currently blocked locally by missing env var:
 	- `POSTGRES_URL_NON_POOLING`
 - No rollback performed; implementation remains staged for environment-complete validation.

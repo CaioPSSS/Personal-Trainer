@@ -6,14 +6,16 @@ import {
   AssistantOutput,
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
+import { buildAssistantCoachPrompts } from '@/lib/ai/prompts';
 
 type GenericModel = {
   upsert: (args: unknown) => Promise<unknown>;
+  findUnique: (args: unknown) => Promise<unknown>;
   create: (args: unknown) => Promise<Record<string, unknown>>;
 };
 
 const db = prisma as unknown as {
-  athleteProfile: Pick<GenericModel, 'upsert'>;
+  athleteProfile: Pick<GenericModel, 'upsert' | 'findUnique'>;
   assistantAlert: Pick<GenericModel, 'create'>;
   exerciseSwapSuggestion: Pick<GenericModel, 'create'>;
   aiRunLog: Pick<GenericModel, 'create'>;
@@ -26,25 +28,9 @@ interface AssistantRequestBody {
   exerciseExecutionId?: string;
 }
 
-function buildAssistantPrompts(input: AssistantRequestBody) {
-  const systemPrompt = [
-    'You are a fast assistant coach for hypertrophy.',
-    'Return only strict JSON with no surrounding text.',
-    'Prioritize realistic, actionable recommendations.',
-  ].join(' ');
-
-  const userPrompt = [
-    `Mode: ${input.mode}`,
-    'Generate output that follows the provided schema.',
-    JSON.stringify(input.payload),
-  ].join('\n\n');
-
-  return { systemPrompt, userPrompt };
-}
-
 export async function POST(request: NextRequest) {
-  const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'openai/gpt-4.1-mini';
-  const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL ?? 'google/gemma-3-27b-it';
+  const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'openai/gpt-oss-120b';
+  const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL;
 
   try {
     const body = (await request.json()) as AssistantRequestBody;
@@ -62,7 +48,12 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const prompts = buildAssistantPrompts(body);
+    const athleteProfile = await db.athleteProfile.findUnique({ where: { id: 'singleton' } });
+    const prompts = buildAssistantCoachPrompts({
+      mode: body.mode,
+      payload: body.payload,
+      athleteProfile,
+    });
     const result = await generateStructuredOutput<AssistantOutput>({
       schemaId: `assistant-output-${ASSISTANT_OUTPUT_SCHEMA_VERSION}`,
       schema: assistantOutputSchema,
