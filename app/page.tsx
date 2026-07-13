@@ -6,9 +6,10 @@ import { generateInsights } from '@/lib/metabolicAlgo';
 export const dynamic = 'force-dynamic';
 
 export default async function Home() {
-  const [settings, logs] = await Promise.all([
+  const [settings, logs, athleteProfile] = await Promise.all([
     prisma.userSettings.findUnique({ where: { id: 'singleton' } }),
     prisma.dailyLog.findMany({ orderBy: { date: 'desc' }, take: 30 }),
+    prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
   ]);
   
   const fullLogs = logs.map((log) => {
@@ -29,5 +30,12 @@ export default async function Home() {
 
   const insights = generateInsights(logs, settings ? [settings] : []);
 
-  return <DashboardClient initialSettings={settings} initialLogs={fullLogs} initialInsights={insights} />;
+  return (
+    <DashboardClient
+      initialSettings={settings}
+      initialAthleteProfile={athleteProfile}
+      initialLogs={fullLogs}
+      initialInsights={insights}
+    />
+  );
 }

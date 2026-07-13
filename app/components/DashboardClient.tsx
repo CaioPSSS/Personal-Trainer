@@ -2,30 +2,31 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import { Bell, Dumbbell } from 'lucide-react';
-import OnboardingForm from './OnboardingForm';
+import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
 import DailyEntryForm from './DailyEntryForm';
 import MetabolicCharts from './MetabolicCharts';
 import RecentHistoryTable from './RecentHistoryTable';
 import CoachInsights from './CoachInsights';
 import HypertrophyDailyTracker from './HypertrophyDailyTracker';
-import { useMetabolicData, Log, Settings, LogFormState, SetupFormState } from '@/app/hooks/useMetabolicData';
+import { useMetabolicData, Log, Settings, LogFormState } from '@/app/hooks/useMetabolicData';
 import { getYesterdayLocalISODate } from '@/lib/dateUtils';
+
+interface AthleteProfile {
+  id: string;
+  displayName: string | null;
+  trainingAgeYears: number | null;
+  sessionDurationMin: number;
+  preferredSplit: string | null;
+  availableEquipment: unknown;
+  movementRestrictions: unknown;
+}
 
 interface DashboardClientProps {
   initialSettings: Settings | null;
+  initialAthleteProfile: AthleteProfile | null;
   initialLogs: Log[];
   initialInsights: string[];
 }
-
-const initialSetupForm: SetupFormState = {
-  age: '',
-  height: '',
-  weight: '',
-  gender: 'M',
-  activityLevel: '1.375',
-  goal: 'loss',
-  weeklyRate: '-0.5',
-};
 
 const initialLogForm: LogFormState = {
   date: getYesterdayLocalISODate(),
@@ -52,14 +53,23 @@ function average(values: number[]) {
   return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
 
-export default function DashboardClient({ initialSettings, initialLogs, initialInsights }: DashboardClientProps) {
+export default function DashboardClient({ initialSettings, initialAthleteProfile, initialLogs, initialInsights }: DashboardClientProps) {
   const { settings, logs, insights, loading, error, refresh, addLog } = useMetabolicData(
     initialSettings,
     initialLogs,
     initialInsights,
   );
 
-  const [setupForm, setSetupForm] = useState<SetupFormState>(initialSetupForm);
+  const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(initialAthleteProfile);
+  const [setupForm, setSetupForm] = useState<AthleteProfileFormState>({
+    trainingAgeYears: initialAthleteProfile?.trainingAgeYears?.toString() || '',
+    sessionDurationMin: initialAthleteProfile?.sessionDurationMin?.toString() || '60',
+    preferredSplit: initialAthleteProfile?.preferredSplit || 'ABCDE',
+    availableEquipment: Array.isArray(initialAthleteProfile?.availableEquipment) 
+      ? (initialAthleteProfile.availableEquipment as string[]) 
+      : ['barbell', 'dumbbells', 'cables'],
+    movementRestrictions: (initialAthleteProfile?.movementRestrictions as string) || '',
+  });
   const [logForm, setLogForm] = useState(initialLogForm);
   const [clientMessage, setClientMessage] = useState({ type: '', text: '' });
   const [isEditing, setIsEditing] = useState(false);
@@ -124,14 +134,29 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
   const handleSetupSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setClientMessage({ type: '', text: '' });
+    setIsSubmitting(true);
 
-    await fetch('/api/setup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(setupForm),
-    });
+    try {
+      const response = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(setupForm),
+      });
 
-    await refresh();
+      if (!response.ok) {
+        throw new Error('Falha ao configurar perfil.');
+      }
+
+      const newProfile = await response.json();
+      setAthleteProfile(newProfile);
+      setClientMessage({ type: 'success', text: 'Perfil configurado com sucesso!' });
+    } catch (err) {
+      console.error(err);
+      setClientMessage({ type: 'error', text: 'Não foi possível configurar seu perfil.' });
+    } finally {
+      setIsSubmitting(false);
+      await refresh();
+    }
   };
 
   const resetLogForm = () => {
@@ -238,16 +263,20 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
     return <div className="flex items-center justify-center min-h-screen text-xl text-rose-400">{error}</div>;
   }
 
-  if (!settings) {
-    return <OnboardingForm setupForm={setupForm} setSetupForm={setSetupForm} onSubmit={handleSetupSubmit} />;
+  if (!athleteProfile) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <OnboardingForm setupForm={setupForm} setSetupForm={setSetupForm} onSubmit={handleSetupSubmit} />
+      </div>
+    );
   }
 
   return (
     <main className="max-w-6xl mx-auto p-4 sm:p-8 space-y-8">
       <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-emerald-400">Metabolic Tracker</h1>
-          <p className="text-slate-400 text-sm mt-1">Sincronização cross-device ativada na infraestrutura Vercel.</p>
+          <h1 className="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 to-emerald-400">Hypertrophy Coach</h1>
+          <p className="text-slate-400 text-sm mt-1">Treinador inteligente de musculação com orquestração de IA.</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex flex-col gap-2">
@@ -278,7 +307,7 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
           </button>
           <div className="bg-slate-900/60 border border-slate-700/50 px-5 py-3 rounded-xl text-center">
             <span className="text-xs uppercase text-slate-400 block tracking-wider">Meta Calórica Atual</span>
-            <span className="text-2xl font-black text-emerald-400">{settings.currentCalorieTarget} kcal</span>
+            <span className="text-2xl font-black text-emerald-400">{settings?.currentCalorieTarget ?? 2500} kcal</span>
           </div>
         </div>
       </div>
@@ -388,7 +417,7 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
               alerts={alerts}
             />
 
-            <MetabolicCharts logs={logs} settings={settings} />
+            {settings && <MetabolicCharts logs={logs} settings={settings} />}
           </div>
 
           <RecentHistoryTable logs={logs} onEditLog={handleEditLog} />

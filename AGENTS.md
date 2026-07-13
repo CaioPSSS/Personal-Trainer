@@ -17,7 +17,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Added API route `GET/POST /api/workout/today` to predict next scheduled template, manage template selection, and submit completed sets (load, reps, RPE, failure flags) and wellness logs.
 - Created `CoachInsights.tsx` component exposing the clinical rationale and cycle retrospective from the AI agents.
 - Created `HypertrophyDailyTracker.tsx` to handle daily session entry logs and recovery inputs.
-- Integrated new components into `DashboardClient.tsx` as primary widgets and moved legacy metabolic components to a collapsible details box.
+- Refactored `OnboardingForm.tsx` to collect hypertrophy athlete profile settings (training age, session duration, preferred split, available equipment, movement restrictions) in a premium responsive layout.
+- Updated `/api/setup` to store the new `AthleteProfile` and initialize fallback `UserSettings` automatically behind the scenes, ensuring legacy metabolic features remain functional.
+- Integrated new components into `DashboardClient.tsx` as primary widgets, tracking the `AthleteProfile` onboarding state, and moved legacy metabolic components to a collapsible details box.
 - Rebuilt local Prisma client types (`npx prisma generate`) to support hypertrophy tables.
 - Fixed all typescript-eslint (`as any` casts, catching errors, unused imports, map mutations) compiler and linter issues.
 

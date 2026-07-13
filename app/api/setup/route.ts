@@ -1,57 +1,73 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { calculateInitialTarget } from '@/lib/metabolicAlgo';
-import { getLocalISODate } from '@/lib/dateUtils';
+import { Prisma } from '@prisma/client';
 
 export async function GET() {
-  const settings = await prisma.userSettings.findUnique({ where: { id: 'singleton' } });
-  return NextResponse.json(settings);
+  const profile = await prisma.athleteProfile.findUnique({ where: { id: 'singleton' } });
+  return NextResponse.json(profile);
 }
 
 export async function POST(request: Request) {
-  const body = await request.json();
-  const { age, height, weight, gender, activityLevel, goal, weeklyRate } = body;
+  try {
+    const body = await request.json();
+    const {
+      trainingAgeYears,
+      sessionDurationMin,
+      preferredSplit,
+      availableEquipment,
+      movementRestrictions,
+    } = body;
 
-  const initialTarget = calculateInitialTarget({
-    age: Number(age),
-    height: Number(height),
-    weight: Number(weight),
-    gender,
-    activityLevel: Number(activityLevel),
-    goal,
-    weeklyRate: Number(weeklyRate),
-  });
+    // 1. Upsert AthleteProfile for hypertrophy coaching
+    const athleteProfile = await prisma.athleteProfile.upsert({
+      where: { id: 'singleton' },
+      update: {
+        trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
+        sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
+        preferredSplit: preferredSplit || null,
+        availableEquipment: (availableEquipment || []) as unknown as Prisma.InputJsonValue,
+        movementRestrictions: movementRestrictions || null,
+      },
+      create: {
+        id: 'singleton',
+        trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
+        sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
+        preferredSplit: preferredSplit || null,
+        availableEquipment: (availableEquipment || []) as unknown as Prisma.InputJsonValue,
+        movementRestrictions: movementRestrictions || null,
+      },
+    });
 
-  const settings = await prisma.userSettings.upsert({
-    where: { id: 'singleton' },
-    update: {
-      age: Number(age),
-      height: Number(height),
-      gender,
-      activityLevel: Number(activityLevel),
-      goal,
-      weeklyRate: Number(weeklyRate),
-      currentCalorieTarget: initialTarget,
-    },
-    create: {
-      id: 'singleton',
-      age: Number(age),
-      height: Number(height),
-      gender,
-      activityLevel: Number(activityLevel),
-      goal,
-      weeklyRate: Number(weeklyRate),
-      currentCalorieTarget: initialTarget,
-    },
-  });
+    // 2. Initialize dummy UserSettings behind the scenes so legacy metabolic widgets do not crash
+    await prisma.userSettings.upsert({
+      where: { id: 'singleton' },
+      update: {
+        age: 30,
+        height: 175,
+        gender: 'M',
+        activityLevel: 1.375,
+        goal: 'gain',
+        weeklyRate: 0,
+        currentCalorieTarget: 2500,
+      },
+      create: {
+        id: 'singleton',
+        age: 30,
+        height: 175,
+        gender: 'M',
+        activityLevel: 1.375,
+        goal: 'gain',
+        weeklyRate: 0,
+        currentCalorieTarget: 2500,
+      },
+    });
 
-  const todayStr = getLocalISODate();
-  await prisma.dailyLog.upsert({
-    where: { date: todayStr },
-    update: { weight: Number(weight) },
-    create: { date: todayStr, weight: Number(weight), trainingType: 'Descanso' },
-  });
-
-  return NextResponse.json(settings);
+    return NextResponse.json(athleteProfile);
+  } catch (error) {
+    console.error('Falha ao configurar perfil do atleta.', error);
+    return NextResponse.json(
+      { error: 'Internal Server Error' },
+      { status: 500, statusText: 'Setup Error' }
+    );
+  }
 }
-                                                                              
