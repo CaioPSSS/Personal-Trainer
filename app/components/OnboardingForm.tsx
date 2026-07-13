@@ -1,12 +1,12 @@
 'use client';
 
 import { Dispatch, FormEvent, SetStateAction } from 'react';
-import { Dumbbell, Clock, Settings, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { Dumbbell, Clock, ShieldAlert, CheckCircle2, Brain } from 'lucide-react';
 
 export interface AthleteProfileFormState {
   trainingAgeYears: string;
   sessionDurationMin: string;
-  preferredSplit: string;
+  athleteContext: string;
   availableEquipment: string[];
   movementRestrictions: string;
 }
@@ -84,19 +84,16 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit }: On
 
         <div>
           <label className="block text-xs uppercase text-slate-400 font-bold mb-1.5 flex items-center gap-1.5">
-            <Settings className="h-3 w-3" />
-            <span>Divisão de Treino Preferida</span>
+            <Brain className="h-3.5 w-3.5 text-indigo-400" />
+            <span>Contexto de Vida e Objetivos (Opcional, mas recomendado)</span>
           </label>
-          <select
-            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none cursor-pointer"
-            value={setupForm.preferredSplit}
-            onChange={(e) => setSetupForm({ ...setupForm, preferredSplit: e.target.value })}
-          >
-            <option value="ABCDE">ABCDE (Foco isolado por grupo)</option>
-            <option value="PPL">PPL (Push / Pull / Legs)</option>
-            <option value="UL">UL (Superior / Inferior)</option>
-            <option value="FB">FB (Fullbody)</option>
-          </select>
+          <textarea
+            placeholder="Conte para a IA sobre sua rotina. Ex: Sou residente médico, tenho dias muito estressantes, durmo mal em plantões, gostaria de focar mais em hipertrofia de braços neste mês..."
+            rows={4}
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none resize-none"
+            value={setupForm.athleteContext}
+            onChange={(e) => setSetupForm({ ...setupForm, athleteContext: e.target.value })}
+          />
         </div>
 
         <div>

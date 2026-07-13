@@ -13,7 +13,7 @@ export async function POST(request: Request) {
     const {
       trainingAgeYears,
       sessionDurationMin,
-      preferredSplit,
+      athleteContext,
       availableEquipment,
       movementRestrictions,
     } = body;
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
       update: {
         trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
         sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
-        preferredSplit: preferredSplit || null,
+        athleteContext: athleteContext || null,
         availableEquipment: (availableEquipment || []) as unknown as Prisma.InputJsonValue,
         movementRestrictions: movementRestrictions || null,
       },
@@ -32,7 +32,7 @@ export async function POST(request: Request) {
         id: 'singleton',
         trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
         sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
-        preferredSplit: preferredSplit || null,
+        athleteContext: athleteContext || null,
         availableEquipment: (availableEquipment || []) as unknown as Prisma.InputJsonValue,
         movementRestrictions: movementRestrictions || null,
       },

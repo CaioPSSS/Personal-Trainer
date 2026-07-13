@@ -52,7 +52,7 @@ model AthleteProfile {
   displayName         String?
   trainingAgeYears    Float?
   sessionDurationMin  Int      @default(60)
-  preferredSplit      String?
+  athleteContext      String?  @db.Text
   availableEquipment  Json?
   movementRestrictions Json?
   createdAt           DateTime @default(now())

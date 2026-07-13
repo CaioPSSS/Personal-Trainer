@@ -16,7 +16,7 @@ interface AthleteProfile {
   displayName: string | null;
   trainingAgeYears: number | null;
   sessionDurationMin: number;
-  preferredSplit: string | null;
+  athleteContext: string | null;
   availableEquipment: unknown;
   movementRestrictions: unknown;
   mesocycles?: unknown[];
@@ -66,7 +66,7 @@ export default function DashboardClient({ initialSettings, initialAthleteProfile
   const [setupForm, setSetupForm] = useState<AthleteProfileFormState>({
     trainingAgeYears: initialAthleteProfile?.trainingAgeYears?.toString() || '',
     sessionDurationMin: initialAthleteProfile?.sessionDurationMin?.toString() || '60',
-    preferredSplit: initialAthleteProfile?.preferredSplit || 'ABCDE',
+    athleteContext: (initialAthleteProfile?.athleteContext as string) || '',
     availableEquipment: Array.isArray(initialAthleteProfile?.availableEquipment) 
       ? (initialAthleteProfile.availableEquipment as string[]) 
       : ['barbell', 'dumbbells', 'cables'],

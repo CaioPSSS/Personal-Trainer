@@ -17,6 +17,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Implemented `substitutedFrom` tracking to save the original exercise name to the database when logging swapped movements.
 - Updated the Assistant Coach's prompt rules in `lib/ai/prompts.ts` to respect strict 1-hour session duration constraints by favoring quick setups and biomechanical equivalents.
 - Integrated full-page refreshes on success to synchronize Server-Side Component states.
+- Refactored `prisma/schema.prisma` and database types to replace `preferredSplit` with a free-form `athleteContext` text field.
+- Refactored `OnboardingForm.tsx` to collect life context and objective details in a `<textarea>` instead of a rigid training split selection dropdown.
+- Updated `/api/setup` to parse and upsert `athleteContext` in `AthleteProfile`.
+- Updated the Master Coach prompt in `lib/ai/prompts.ts` to analyze `athleteContext` and dynamically determine the split/volume configurations.
 - Fixed all typescript-eslint (`any[]` casts, catch block parameters, unescaped quote symbols) compiler and linter issues.
 
 ### Architectural Decisions Confirmed
