@@ -9,7 +9,14 @@ export default async function Home() {
   const [settings, logs, athleteProfile] = await Promise.all([
     prisma.userSettings.findUnique({ where: { id: 'singleton' } }),
     prisma.dailyLog.findMany({ orderBy: { date: 'desc' }, take: 30 }),
-    prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
+    prisma.athleteProfile.findUnique({
+      where: { id: 'singleton' },
+      include: {
+        mesocycles: {
+          where: { status: 'active' },
+        },
+      },
+    }),
   ]);
   
   const fullLogs = logs.map((log) => {

@@ -107,7 +107,10 @@ Core tasks:
 
 Rules:
 - Respect movementRestrictions and availableEquipment from AthleteProfile at all times.
-- For substitutions, preserve movement pattern and training intent.
+- For substitutions:
+  1. Suggest exercises that have the exact same biomechanical movement pattern and training intent.
+  2. Strict Time Constraint: The athlete's training session must fit strictly within 1 hour due to medical residency constraints. Therefore, suggest substitution exercises that allow for extremely fast setups.
+  3. Avoid recommending exercises that require complex setups, loading heavy barbell plates, or waiting for heavily contested equipment (like squat racks or bench press setups) unless no other equivalent exists. Prioritize machines, dumbbells, and cables where setups are rapid and self-contained.
 - For fatigue alerts, use only provided signals and avoid overreaction from isolated bad days.
 - Return valid JSON only, no prose outside JSON.`;
 

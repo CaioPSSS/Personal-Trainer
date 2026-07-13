@@ -18,6 +18,7 @@ interface WorkoutExercisePayload {
   movementPattern?: string | null;
   sortOrder: number;
   notes?: string | null;
+  substitutedFrom?: string | null;
   sets: WorkoutSetPayload[];
 }
 
@@ -208,6 +209,7 @@ export async function POST(request: NextRequest) {
                 movementPattern: ex.movementPattern || null,
                 sortOrder: parseInt(String(ex.sortOrder)) || 1,
                 notes: ex.notes || null,
+                substitutedFrom: ex.substitutedFrom || null,
                 setExecutions: {
                   create: ex.sets.map((set: WorkoutSetPayload) => ({
                     setNumber: parseInt(String(set.setNumber)),

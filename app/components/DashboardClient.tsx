@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { Bell, Dumbbell } from 'lucide-react';
+import { Bell, Dumbbell, Sparkles } from 'lucide-react';
 import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
 import DailyEntryForm from './DailyEntryForm';
 import MetabolicCharts from './MetabolicCharts';
@@ -19,6 +19,7 @@ interface AthleteProfile {
   preferredSplit: string | null;
   availableEquipment: unknown;
   movementRestrictions: unknown;
+  mesocycles?: unknown[];
 }
 
 interface DashboardClientProps {
@@ -61,6 +62,7 @@ export default function DashboardClient({ initialSettings, initialAthleteProfile
   );
 
   const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(initialAthleteProfile);
+  const hasActiveMesocycle = (athleteProfile?.mesocycles?.length ?? 0) > 0;
   const [setupForm, setSetupForm] = useState<AthleteProfileFormState>({
     trainingAgeYears: initialAthleteProfile?.trainingAgeYears?.toString() || '',
     sessionDurationMin: initialAthleteProfile?.sessionDurationMin?.toString() || '60',
@@ -243,6 +245,9 @@ export default function DashboardClient({ initialSettings, initialAthleteProfile
       const data = await response.json();
       setCoachRunState('validated');
       setCoachRunMessage(`Novo bloco gerado com sucesso (tentativas: ${data.attempts ?? 1}).`);
+      setTimeout(() => {
+        window.location.reload();
+      }, 1550);
     } catch (error) {
       console.error('Falha ao forçar geração do mesociclo.', error);
       setCoachRunState('failed');
@@ -353,16 +358,48 @@ export default function DashboardClient({ initialSettings, initialAthleteProfile
       ) : null}
 
       {/* 🧠 Coach Insights Panel */}
-      <CoachInsights key={coachRunState} />
+      {hasActiveMesocycle && <CoachInsights key={coachRunState} />}
 
-      {/* 🏋️ Daily Hypertrophy Workout Tracker */}
-      <section className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-sm">
-        <h2 className="text-xl font-bold text-slate-100 mb-4 flex items-center gap-2">
-          <Dumbbell className="h-5 w-5 text-indigo-400" />
-          <span>Ficha de Treino & Registro Diário</span>
-        </h2>
-        <HypertrophyDailyTracker onSaved={refresh} />
-      </section>
+      {/* 🏋️ Daily Hypertrophy Workout Tracker or Active Block CTA */}
+      {hasActiveMesocycle ? (
+        <section className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-sm">
+          <h2 className="text-xl font-bold text-slate-100 mb-4 flex items-center gap-2">
+            <Dumbbell className="h-5 w-5 text-indigo-400" />
+            <span>Ficha de Treino & Registro Diário</span>
+          </h2>
+          <HypertrophyDailyTracker onSaved={refresh} />
+        </section>
+      ) : (
+        <section className="bg-slate-800 border border-slate-700 rounded-2xl p-8 text-center space-y-6 max-w-2xl mx-auto shadow-xl">
+          <div className="mx-auto w-16 h-16 bg-indigo-500/10 text-indigo-400 rounded-2xl border border-indigo-500/20 flex items-center justify-center">
+            <Sparkles className="h-8 w-8 text-indigo-400" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-2xl font-black text-slate-100">Criar Seu Novo Mesociclo de Hipertrofia</h2>
+            <p className="text-sm text-slate-400 leading-relaxed">
+              Você ainda não tem um bloco de treino ativo. O Master Coach IA (NVIDIA Nemotron 3 Ultra) e o Data Analyst IA (gpt-oss-120b) analisarão seu perfil de atleta e histórico para planejar uma periodização estratégica de 4 a 6 semanas.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleForceGeneration}
+            disabled={coachRunState === 'running'}
+            className="inline-flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-slate-100 font-bold px-8 py-4 rounded-xl transition duration-200 shadow-lg shadow-indigo-500/20 disabled:opacity-65 disabled:cursor-not-allowed cursor-pointer text-sm"
+          >
+            {coachRunState === 'running' ? (
+              <>
+                <span className="h-4 w-4 border-2 border-slate-200 border-t-transparent rounded-full animate-spin" />
+                <span>Analisando Histórico & Projetando Bloco...</span>
+              </>
+            ) : (
+              <>
+                <Dumbbell className="h-4 w-4" />
+                <span>Gerar Meu Novo Bloco de Treino</span>
+              </>
+            )}
+          </button>
+        </section>
+      )}
 
       {/* 📊 Legacy Metabolic Tracker (Collapsible Section) */}
       <details className="bg-slate-800/40 border border-slate-700/50 rounded-2xl p-6 group">
