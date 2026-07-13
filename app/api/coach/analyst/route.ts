@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
   }
 
   const primaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
-  const fallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL;
+  const fallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {
     await db.athleteProfile.upsert({

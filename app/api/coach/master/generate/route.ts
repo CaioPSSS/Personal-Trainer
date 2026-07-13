@@ -37,10 +37,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/llama-3.1-nemotron-70b-instruct:free';
-  const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL;
+  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
   const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
-  const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL;
+  const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {
     await prisma.athleteProfile.upsert({
