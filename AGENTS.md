@@ -4,44 +4,22 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-## Development State (2026-07-12)
+## Development State (2026-07-13)
 
 ### Current Milestone
-- Started implementation of the hypertrophy AI architecture foundations.
-- Legacy metabolic flow remains intact and operational.
+- Completed database integration mapping layer and primary hypertrophy daily logging and coaching transparency interfaces.
+- Legacy metabolic flow remains functional but consolidated in a secondary details pane.
 
 ### Implemented In This Iteration
-- Expanded Prisma schema with new hypertrophy entities while preserving legacy models (`UserSettings`, `DailyLog`, `AiReport`).
-- Added AI contract layer using strict JSON Schema definitions for:
-	- Master Coach mesocycle generation output.
-	- Assistant Coach daily output (exercise swap / fatigue alert).
-- Added reusable validation and OpenRouter orchestration modules with:
-	- Structured schema validation.
-	- Auto-retry on invalid JSON/schema mismatch.
-	- Optional fallback model.
-- Added new API endpoints:
-	- `POST /api/coach/master/generate`
-	- `POST /api/coach/assistant`
-- Added AI run auditing path (`AiRunLog`) and initial persistence flow for generated mesocycles and coach brain entries.
-- Added dashboard manual override controls:
-	- "Ajustar/Editar Treino"
-	- "Forçar Nova Geração"
-- Added frontend run-state feedback for coach generation (`idle`, `running`, `validated`, `failed`).
-- Refactored coach APIs into a 3-agent structure:
-	- `POST /api/coach/analyst` (Data Analyst AI)
-	- `POST /api/coach/master/generate` (Master Coach AI with analyst pre-step)
-	- `POST /api/coach/assistant` (Assistant Coach AI)
-- Implemented end-of-cycle 3-phase pipeline in master generation:
-	1. Aggregation (`AthleteProfile` + 56 days of `WorkoutExecution`/`WellnessDaily`).
-	2. Data Analyst structured report generation.
-	3. Master Coach mesocycle generation using analyst report + prior coach brain + raw context.
-- Added dense prompt engineering module in `lib/ai/prompts.ts` with:
-	- Progressive overload and fatigue-aware rules.
-	- Strict equipment/restriction enforcement.
-	- Explicit retrospective behavior instructions.
-- Expanded AI contract schemas with:
-	- `DataAnalystReport` JSON schema.
-	- Master `coachBrain.retrospective` field (critical self-review block).
+- Created strongly-typed database DTO mappers (`lib/db/hypertrophyMappers.ts`) to write active mesocycles, templates, exercises, and coach brain entries in atomic transactions.
+- Refactored `POST /api/coach/master/generate` to use `saveMasterPlanToDb` and utilize fully-typed Prisma client queries.
+- Added API route `GET /api/coach/insights` to fetch active mesocycle details, coach hypotheses, and the audited Data Analyst cycle report.
+- Added API route `GET/POST /api/workout/today` to predict next scheduled template, manage template selection, and submit completed sets (load, reps, RPE, failure flags) and wellness logs.
+- Created `CoachInsights.tsx` component exposing the clinical rationale and cycle retrospective from the AI agents.
+- Created `HypertrophyDailyTracker.tsx` to handle daily session entry logs and recovery inputs.
+- Integrated new components into `DashboardClient.tsx` as primary widgets and moved legacy metabolic components to a collapsible details box.
+- Rebuilt local Prisma client types (`npx prisma generate`) to support hypertrophy tables.
+- Fixed all typescript-eslint (`as any` casts, catching errors, unused imports, map mutations) compiler and linter issues.
 
 ### Architectural Decisions Confirmed
 - Multi-LLM strategy is active by responsibility:
@@ -49,33 +27,23 @@ This version has breaking changes — APIs, conventions, and file structure may 
 	- Data Analyst: `gpt-oss-120b` for raw-cycle diagnostics.
 	- Assistant Coach: `gpt-oss-120b` for day-to-day fast tool-like decisions.
 - Contract-first output is mandatory for all model responses.
-- Invalid model output must trigger retry with explicit validation feedback before failing.
-- AI failures must be logged and should not block normal training logging in future UI integration.
-- Keep legacy schema running during phased migration; no big-bang replacement.
+- All transactional mesocycle structures must be stored via relational cascades.
+- ESLint checks must pass cleanly prior to any production deploy to prevent build-time lockouts in Vercel.
 
 ### Pending Work
-- Create and run Prisma migration/db push for new schema in environment.
-- Add explicit `retrying` UI state and detailed retry counters in frontend.
-- Add visible manual override UX:
-	- "Adjust/Edit Workout"
-	- "Force Regeneration"
-- Connect daily training execution forms to new workout entities.
-- Add mesocycle lifecycle controls (close block, generate next block, roll-over handling).
-- Add tests for schema contract validation and endpoint error paths.
-- Persist Data Analyst report snapshots in dedicated entity (optional) for longitudinal comparison.
-- Add stronger DTO typing to remove remaining `unknown` model casting strategy.
+- Deploy PostgreSQL database changes in production (Neon/Vercel Storage).
+- Connect the "Substituir Exercício" (Swap Exercise) button in `HypertrophyDailyTracker` to the Assistant Coach API route to execute dynamic swaps.
+- Add mesocycle lifecycle controls (close block manually, deload visual alerts, rollover trigger).
+- Add integration tests covering AI response schema contracts, retry orchestration, and endpoints error paths.
 
 ### Next Steps (Execution Order)
-1. Apply database changes and verify Prisma Client generation.
-2. Add typed DTO mappers for analyst report + master plan -> relational inserts.
-3. Build frontend surfacing for analyst insights and retrospective transparency.
-4. Wire daily execution + wellness capture to new models.
-5. Add integration tests covering retry/fallback, malformed JSON, and 3-agent handoff integrity.
+1. Run Prisma db push (`npx prisma db push`) in the target Vercel database.
+2. Wire the Assistant Coach swap AI logic under `POST /api/coach/assistant` to return recommended substitutes.
+3. Build mesocycle block rollover buttons and status flags.
+4. Add integration tests.
 
 ### Verification Notes (This Iteration)
-- Lint check passed for newly added TypeScript implementation files (`lib/ai/*` and `app/api/coach/*`).
-- Lint check passed for dashboard changes in `app/components/DashboardClient.tsx`.
-- Lint check passed after 3-agent pipeline refactor (`master`, `analyst`, `assistant`, contracts, prompts).
-- Prisma schema validation is currently blocked locally by missing env var:
-	- `POSTGRES_URL_NON_POOLING`
-- No rollback performed; implementation remains staged for environment-complete validation.
+- Rebuilt Prisma Client types successfully (`npx prisma generate`).
+- Run typecheck: `npx tsc --noEmit` completed successfully with zero compiler errors.
+- Run linter: `npm run lint` completed successfully with zero warnings/errors.
+

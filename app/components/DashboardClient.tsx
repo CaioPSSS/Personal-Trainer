@@ -1,11 +1,13 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
-import { Bell } from 'lucide-react';
+import { Bell, Dumbbell } from 'lucide-react';
 import OnboardingForm from './OnboardingForm';
 import DailyEntryForm from './DailyEntryForm';
 import MetabolicCharts from './MetabolicCharts';
 import RecentHistoryTable from './RecentHistoryTable';
+import CoachInsights from './CoachInsights';
+import HypertrophyDailyTracker from './HypertrophyDailyTracker';
 import { useMetabolicData, Log, Settings, LogFormState, SetupFormState } from '@/app/hooks/useMetabolicData';
 import { getYesterdayLocalISODate } from '@/lib/dateUtils';
 
@@ -321,52 +323,77 @@ export default function DashboardClient({ initialSettings, initialLogs, initialI
         </div>
       ) : null}
 
+      {/* 🧠 Coach Insights Panel */}
+      <CoachInsights key={coachRunState} />
+
+      {/* 🏋️ Daily Hypertrophy Workout Tracker */}
       <section className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-sm">
-        <h2 className="text-lg font-bold text-slate-200 mb-4">💡 Insights Automáticos</h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-5">
-          <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
-            <p className="text-xs uppercase text-slate-400">Média de calorias</p>
-            <p className="text-xl font-semibold text-emerald-400">{recentCalories.length > 0 ? `${Math.round(average(recentCalories))} kcal` : '—'}</p>
-          </div>
-          <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
-            <p className="text-xs uppercase text-slate-400">Sono médio</p>
-            <p className="text-xl font-semibold text-sky-400">{recentSleep.length > 0 ? `${average(recentSleep).toFixed(1)}h` : '—'}</p>
-          </div>
-          <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
-            <p className="text-xs uppercase text-slate-400">Água média</p>
-            <p className="text-xl font-semibold text-cyan-400">{recentWater.length > 0 ? `${Math.round(average(recentWater))} ml` : '—'}</p>
-          </div>
-          <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
-            <p className="text-xs uppercase text-slate-400">Tendência de peso</p>
-            <p className="text-xl font-semibold text-amber-400">{recentWeights.length >= 2 ? `${(recentWeights[recentWeights.length - 1] - recentWeights[0]).toFixed(1)} kg` : '—'}</p>
-          </div>
-        </div>
-        <div className="space-y-3">
-          {insights.length > 0 ? (
-            insights.map((insight, index) => (
-              <p key={index} className="text-slate-300 text-sm leading-6">• {insight}</p>
-            ))
-          ) : (
-            <p className="text-slate-500 text-sm">Ainda não há insights suficientes. Registre mais dias para receber recomendações.</p>
-          )}
-        </div>
+        <h2 className="text-xl font-bold text-slate-100 mb-4 flex items-center gap-2">
+          <Dumbbell className="h-5 w-5 text-indigo-400" />
+          <span>Ficha de Treino & Registro Diário</span>
+        </h2>
+        <HypertrophyDailyTracker onSaved={refresh} />
       </section>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-8">
-        <DailyEntryForm
-          logForm={logForm}
-          setLogForm={setLogForm}
-          onSubmit={handleLogSubmit}
-          onReset={resetLogForm}
-          isEditing={isEditing}
-          clientMessage={clientMessage}
-          alerts={alerts}
-        />
+      {/* 📊 Legacy Metabolic Tracker (Collapsible Section) */}
+      <details className="bg-slate-800/40 border border-slate-700/50 rounded-2xl p-6 group">
+        <summary className="text-sm font-semibold text-slate-400 cursor-pointer flex items-center justify-between select-none list-none">
+          <div className="flex items-center gap-2">
+            <span>⚙️ Ferramentas Metabólicas Legadas (Peso/Calorias)</span>
+          </div>
+          <span className="text-xs group-open:hidden">Mostrar</span>
+          <span className="text-xs hidden group-open:inline">Ocultar</span>
+        </summary>
+        
+        <div className="mt-6 space-y-8">
+          <section className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-sm">
+            <h2 className="text-lg font-bold text-slate-200 mb-4">💡 Insights Automáticos</h2>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-5">
+              <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
+                <p className="text-xs uppercase text-slate-400">Média de calorias</p>
+                <p className="text-xl font-semibold text-emerald-400">{recentCalories.length > 0 ? `${Math.round(average(recentCalories))} kcal` : '—'}</p>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
+                <p className="text-xs uppercase text-slate-400">Sono médio</p>
+                <p className="text-xl font-semibold text-sky-400">{recentSleep.length > 0 ? `${average(recentSleep).toFixed(1)}h` : '—'}</p>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
+                <p className="text-xs uppercase text-slate-400">Água média</p>
+                <p className="text-xl font-semibold text-cyan-400">{recentWater.length > 0 ? `${Math.round(average(recentWater))} ml` : '—'}</p>
+              </div>
+              <div className="bg-slate-900/60 border border-slate-700 rounded-xl p-4">
+                <p className="text-xs uppercase text-slate-400">Tendência de peso</p>
+                <p className="text-xl font-semibold text-amber-400">{recentWeights.length >= 2 ? `${(recentWeights[recentWeights.length - 1] - recentWeights[0]).toFixed(1)} kg` : '—'}</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {insights.length > 0 ? (
+                insights.map((insight, index) => (
+                  <p key={index} className="text-slate-300 text-sm leading-6">• {insight}</p>
+                ))
+              ) : (
+                <p className="text-slate-500 text-sm">Ainda não há insights suficientes. Registre mais dias para receber recomendações.</p>
+              )}
+            </div>
+          </section>
 
-        <MetabolicCharts logs={logs} settings={settings} />
-      </div>
+          <div className="grid grid-cols-1 xl:grid-cols-[420px_1fr] gap-8">
+            <DailyEntryForm
+              logForm={logForm}
+              setLogForm={setLogForm}
+              onSubmit={handleLogSubmit}
+              onReset={resetLogForm}
+              isEditing={isEditing}
+              clientMessage={clientMessage}
+              alerts={alerts}
+            />
 
-      <RecentHistoryTable logs={logs} onEditLog={handleEditLog} />
+            <MetabolicCharts logs={logs} settings={settings} />
+          </div>
+
+          <RecentHistoryTable logs={logs} onEditLog={handleEditLog} />
+        </div>
+      </details>
     </main>
   );
 }

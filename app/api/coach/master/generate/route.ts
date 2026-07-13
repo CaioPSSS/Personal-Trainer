@@ -10,23 +10,8 @@ import {
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
-
-type GenericModel = {
-  upsert: (args: unknown) => Promise<unknown>;
-  findMany: (args: unknown) => Promise<unknown[]>;
-  findFirst: (args: unknown) => Promise<unknown>;
-  findUnique: (args: unknown) => Promise<unknown>;
-  create: (args: unknown) => Promise<Record<string, unknown>>;
-};
-
-const db = prisma as unknown as {
-  athleteProfile: Pick<GenericModel, 'upsert' | 'findUnique'>;
-  workoutExecution: Pick<GenericModel, 'findMany'>;
-  wellnessDaily: Pick<GenericModel, 'findMany'>;
-  coachBrainEntry: Pick<GenericModel, 'findFirst' | 'create'>;
-  aiRunLog: Pick<GenericModel, 'create'>;
-  mesocyclePlan: Pick<GenericModel, 'create'>;
-};
+import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
+import { Prisma } from '@prisma/client';
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedToken = process.env.CRON_SECRET;
@@ -50,7 +35,7 @@ export async function POST(request: NextRequest) {
   const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL;
 
   try {
-    await db.athleteProfile.upsert({
+    await prisma.athleteProfile.upsert({
       where: { id: 'singleton' },
       update: {},
       create: {
@@ -60,8 +45,8 @@ export async function POST(request: NextRequest) {
     });
 
     const [athleteProfile, recentWorkouts, recentWellness, previousBrain] = await Promise.all([
-      db.athleteProfile.findUnique({ where: { id: 'singleton' } }),
-      db.workoutExecution.findMany({
+      prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
+      prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
         take: 56,
@@ -73,12 +58,12 @@ export async function POST(request: NextRequest) {
           },
         },
       }),
-      db.wellnessDaily.findMany({
+      prisma.wellnessDaily.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
         take: 56,
       }),
-      db.coachBrainEntry.findFirst({
+      prisma.coachBrainEntry.findFirst({
         orderBy: { createdAt: 'desc' },
       }),
     ]);
@@ -100,7 +85,7 @@ export async function POST(request: NextRequest) {
       temperature: 0.15,
     });
 
-    const analystRunLog = await db.aiRunLog.create({
+    const analystRunLog = await prisma.aiRunLog.create({
       data: {
         runType: 'data_analyst_cycle_review',
         mode: 'cycle_analysis',
@@ -115,8 +100,8 @@ export async function POST(request: NextRequest) {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
           },
-        },
-        responsePayload: analystResult.data,
+        } as unknown as Prisma.InputJsonValue,
+        responsePayload: analystResult.data as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -139,49 +124,7 @@ export async function POST(request: NextRequest) {
       temperature: 0.1,
     });
 
-    const createdPlan = await db.mesocyclePlan.create({
-      data: {
-        athleteProfileId: 'singleton',
-        title: result.data.mesocycle.title,
-        objective: result.data.mesocycle.objective,
-        split: result.data.mesocycle.split,
-        durationWeeks: result.data.mesocycle.durationWeeks,
-        targetSessionMinutes: result.data.mesocycle.targetSessionMinutes,
-        status: 'active',
-        rawPlan: result.data,
-        weeks: {
-          create: result.data.mesocycle.weeks.map((week) => ({
-            weekNumber: week.weekNumber,
-            isDeload: week.isDeload,
-            targetVolume: { notes: week.targetVolumeNotes },
-          })),
-        },
-        workoutDays: {
-          create: result.data.mesocycle.days.map((day) => ({
-            dayOrder: day.dayOrder,
-            label: day.label,
-            estimatedDurationMin: day.estimatedDurationMin,
-            prescriptions: {
-              create: day.exercises.map((exercise, index) => ({
-                exerciseKey: exercise.exerciseKey,
-                exerciseName: exercise.exerciseName,
-                movementPattern: exercise.movementPattern,
-                sortOrder: index + 1,
-                targetSets: exercise.targetSets,
-                targetRepMin: exercise.targetRepMin,
-                targetRepMax: exercise.targetRepMax,
-                targetRpeMin: exercise.targetRpeMin,
-                targetRpeMax: exercise.targetRpeMax,
-                restSeconds: exercise.restSeconds,
-                advancedTechnique: exercise.advancedTechnique,
-              })),
-            },
-          })),
-        },
-      },
-    });
-
-    const runLog = await db.aiRunLog.create({
+    const runLog = await prisma.aiRunLog.create({
       data: {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',
@@ -198,24 +141,12 @@ export async function POST(request: NextRequest) {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
           },
-        },
-        responsePayload: result.data,
+        } as unknown as Prisma.InputJsonValue,
+        responsePayload: result.data as unknown as Prisma.InputJsonValue,
       },
     });
 
-    await db.coachBrainEntry.create({
-      data: {
-        mesocyclePlanId: String(createdPlan.id),
-        aiRunLogId: String(runLog.id),
-        version: 1,
-        hypotheses: {
-          hypotheses: result.data.coachBrain.hypotheses,
-          rationale: result.data.coachBrain.rationale,
-          nextCycleWatchouts: result.data.coachBrain.nextCycleWatchouts,
-        },
-        retrospective: result.data.coachBrain.retrospective,
-      },
-    });
+    const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id);
 
     return NextResponse.json({
       success: true,
@@ -228,7 +159,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    await db.aiRunLog.create({
+    await prisma.aiRunLog.create({
       data: {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',

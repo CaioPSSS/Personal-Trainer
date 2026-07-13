@@ -193,7 +193,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    await aiPrisma.aiReport.create({
+    await prisma.aiReport.create({
       data: {
         content: reportText,
         isRead: false,
