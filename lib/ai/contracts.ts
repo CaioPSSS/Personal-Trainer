@@ -162,7 +162,12 @@ export const masterPlanOutputSchema = {
                     targetRpeMin: { type: 'number', minimum: 5, maximum: 10 },
                     targetRpeMax: { type: 'number', minimum: 5, maximum: 10 },
                     restSeconds: { type: 'integer', minimum: 30, maximum: 360 },
-                    advancedTechnique: { type: ['string', 'null'], minLength: 2 },
+                    advancedTechnique: {
+                      oneOf: [
+                        { type: 'string', minLength: 2 },
+                        { type: 'null' }
+                      ]
+                    },
                   },
                 },
               },
@@ -228,7 +233,7 @@ export const dataAnalystReportSchema = {
     executiveSummary: { type: 'string', minLength: 20 },
     exercisePerformance: {
       type: 'array',
-      minItems: 3,
+      minItems: 1,
       maxItems: 30,
       items: {
         type: 'object',

@@ -4,6 +4,7 @@ import { Dispatch, FormEvent, SetStateAction } from 'react';
 import { Dumbbell, Clock, ShieldAlert, CheckCircle2, Brain } from 'lucide-react';
 
 export interface AthleteProfileFormState {
+  displayName: string;
   trainingAgeYears: string;
   sessionDurationMin: string;
   athleteContext: string;
@@ -15,6 +16,7 @@ interface OnboardingFormProps {
   setupForm: AthleteProfileFormState;
   setSetupForm: Dispatch<SetStateAction<AthleteProfileFormState>>;
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
+  isSubmitting?: boolean;
 }
 
 const EQUIPMENT_OPTIONS = [
@@ -25,7 +27,7 @@ const EQUIPMENT_OPTIONS = [
   { id: 'bodyweight', label: 'Peso Corporal' },
 ];
 
-export default function OnboardingForm({ setupForm, setSetupForm, onSubmit }: OnboardingFormProps) {
+export default function OnboardingForm({ setupForm, setSetupForm, onSubmit, isSubmitting }: OnboardingFormProps) {
   const handleEquipmentToggle = (id: string) => {
     const current = setupForm.availableEquipment;
     const updated = current.includes(id)
@@ -47,6 +49,20 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit }: On
       </div>
 
       <form onSubmit={onSubmit} className="space-y-5">
+        <div>
+          <label className="block text-xs uppercase text-slate-400 font-bold mb-1.5">
+            <span>Nome do Atleta</span>
+          </label>
+          <input
+            required
+            type="text"
+            placeholder="Ex: Caio"
+            className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none"
+            value={setupForm.displayName}
+            onChange={(e) => setSetupForm({ ...setupForm, displayName: e.target.value })}
+          />
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs uppercase text-slate-400 font-bold mb-1.5 flex items-center gap-1.5">
@@ -136,9 +152,10 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit }: On
 
         <button
           type="submit"
-          className="w-full bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-slate-100 font-bold p-4 rounded-xl transition duration-200 shadow-md shadow-indigo-500/10 cursor-pointer"
+          disabled={isSubmitting}
+          className="w-full bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-slate-100 font-bold p-4 rounded-xl transition duration-200 shadow-md shadow-indigo-500/10 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          Salvar Perfil e Acessar Ficha
+          {isSubmitting ? 'Salvando...' : 'Salvar Perfil e Acessar Ficha'}
         </button>
       </form>
     </div>

@@ -102,11 +102,7 @@ export async function GET(request: NextRequest) {
         const lastTemplate = dayTemplates.find((t) => t.id === templateId);
         if (lastTemplate) {
           predictedDayOrder = (lastTemplate.dayOrder % dayTemplates.length) + 1;
-        } else {
-          predictedDayOrder = (completedWorkouts.length % dayTemplates.length) + 1;
         }
-      } else {
-        predictedDayOrder = (completedWorkouts.length % dayTemplates.length) + 1;
       }
     }
 

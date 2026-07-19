@@ -23,6 +23,10 @@ export async function saveMasterPlanToDb(
       },
     });
 
+    const today = new Date();
+    const startDate = today.toISOString().split('T')[0];
+    const endDate = new Date(today.getTime() + plan.mesocycle.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
     // 2. Create the new MesocyclePlan and all dependent entities
     const createdPlan = await tx.mesocyclePlan.create({
       data: {
@@ -32,6 +36,8 @@ export async function saveMasterPlanToDb(
         split: plan.mesocycle.split,
         durationWeeks: plan.mesocycle.durationWeeks,
         targetSessionMinutes: plan.mesocycle.targetSessionMinutes,
+        startDate,
+        endDate,
         status: 'active',
         rawPlan: plan as unknown as Prisma.InputJsonValue, // Raw JSON payload representation
         createdByAiRunId: aiRunLogId,

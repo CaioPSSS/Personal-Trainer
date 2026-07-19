@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized } from '@/lib/auth';
+import { Prisma } from '@prisma/client';
 import {
   assistantOutputSchema,
   ASSISTANT_OUTPUT_SCHEMA_VERSION,
@@ -7,19 +9,6 @@ import {
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildAssistantCoachPrompts } from '@/lib/ai/prompts';
-
-type GenericModel = {
-  upsert: (args: unknown) => Promise<unknown>;
-  findUnique: (args: unknown) => Promise<unknown>;
-  create: (args: unknown) => Promise<Record<string, unknown>>;
-};
-
-const db = prisma as unknown as {
-  athleteProfile: Pick<GenericModel, 'upsert' | 'findUnique'>;
-  assistantAlert: Pick<GenericModel, 'create'>;
-  exerciseSwapSuggestion: Pick<GenericModel, 'create'>;
-  aiRunLog: Pick<GenericModel, 'create'>;
-};
 
 interface AssistantRequestBody {
   mode: 'exercise_swap' | 'fatigue_alert';
@@ -29,6 +18,10 @@ interface AssistantRequestBody {
 }
 
 export async function POST(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'openai/gpt-oss-120b';
   const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL;
 
@@ -39,7 +32,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'mode and payload are required.' }, { status: 400 });
     }
 
-    await db.athleteProfile.upsert({
+    await prisma.athleteProfile.upsert({
       where: { id: 'singleton' },
       update: {},
       create: {
@@ -48,7 +41,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const athleteProfile = await db.athleteProfile.findUnique({ where: { id: 'singleton' } });
+    const athleteProfile = await prisma.athleteProfile.findUnique({ where: { id: 'singleton' } });
     const prompts = buildAssistantCoachPrompts({
       mode: body.mode,
       payload: body.payload,
@@ -67,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     if (result.data.mode === 'fatigue_alert' && result.data.alert) {
       const fatigueDate = typeof body.payload.date === 'string' ? body.payload.date : new Date().toISOString().slice(0, 10);
-      await db.assistantAlert.create({
+      await prisma.assistantAlert.create({
         data: {
           athleteProfileId: 'singleton',
           date: fatigueDate,
@@ -77,24 +70,24 @@ export async function POST(request: NextRequest) {
           metadata: {
             action: result.data.alert.action,
             recommendations: result.data.recommendations,
-          },
+          } as unknown as Prisma.InputJsonValue,
         },
       });
     }
 
     if (result.data.mode === 'exercise_swap') {
-      await db.exerciseSwapSuggestion.create({
+      await prisma.exerciseSwapSuggestion.create({
         data: {
           workoutExecutionId: body.workoutExecutionId ?? null,
           exerciseExecutionId: body.exerciseExecutionId ?? null,
           requestedExercise: String(body.payload.exerciseName ?? 'unknown'),
           requestedPattern: typeof body.payload.movementPattern === 'string' ? body.payload.movementPattern : null,
-          suggestions: result.data.recommendations,
+          suggestions: result.data.recommendations as unknown as Prisma.InputJsonValue,
         },
       });
     }
 
-    await db.aiRunLog.create({
+    await prisma.aiRunLog.create({
       data: {
         runType: 'assistant_coach',
         mode: body.mode,
@@ -107,8 +100,8 @@ export async function POST(request: NextRequest) {
           schemaVersion: ASSISTANT_OUTPUT_SCHEMA_VERSION,
           mode: body.mode,
           payload: body.payload,
-        },
-        responsePayload: result.data,
+        } as unknown as Prisma.InputJsonValue,
+        responsePayload: result.data as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -121,7 +114,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 
-    await db.aiRunLog.create({
+    await prisma.aiRunLog.create({
       data: {
         runType: 'assistant_coach',
         mode: 'runtime',

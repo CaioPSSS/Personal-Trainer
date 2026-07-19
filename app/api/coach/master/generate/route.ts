@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized } from '@/lib/auth';
 
 export const maxDuration = 300;
 import {
@@ -15,22 +16,6 @@ import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/promp
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
 import { Prisma } from '@prisma/client';
 
-function isAuthorized(request: NextRequest): boolean {
-  const expectedToken = process.env.CRON_SECRET;
-  const publicSecret = process.env.NEXT_PUBLIC_INTERNAL_SECRET;
-
-  if (!expectedToken && !publicSecret) {
-    return true;
-  }
-
-  const authHeader = request.headers.get('authorization');
-  const internalHeader = request.headers.get('x-internal-token');
-
-  const isCronAuthorized = expectedToken && (authHeader === `Bearer ${expectedToken}` || internalHeader === expectedToken);
-  const isPublicAuthorized = publicSecret && internalHeader === publicSecret;
-
-  return !!(isCronAuthorized || isPublicAuthorized);
-}
 
 export async function POST(request: NextRequest) {
   if (!isAuthorized(request)) {
@@ -52,7 +37,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness, previousBrain] = await Promise.all([
+    const [athleteProfile, recentWorkouts, recentWellness, previousBrain, activeMesocycle] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -73,6 +58,19 @@ export async function POST(request: NextRequest) {
       }),
       prisma.coachBrainEntry.findFirst({
         orderBy: { createdAt: 'desc' },
+      }),
+      prisma.mesocyclePlan.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          status: 'active',
+        },
+        include: {
+          workoutDays: {
+            include: {
+              prescriptions: true,
+            },
+          },
+        },
       }),
     ]);
 
@@ -99,6 +97,7 @@ export async function POST(request: NextRequest) {
     } else {
       const analystPrompts = buildDataAnalystPrompts({
         athleteProfile,
+        activeMesocycle,
         recentWorkouts,
         recentWellness,
       });

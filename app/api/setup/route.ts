@@ -11,6 +11,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const {
+      displayName,
       trainingAgeYears,
       sessionDurationMin,
       athleteContext,
@@ -22,6 +23,7 @@ export async function POST(request: Request) {
     const athleteProfile = await prisma.athleteProfile.upsert({
       where: { id: 'singleton' },
       update: {
+        displayName: displayName || null,
         trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
         sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
         athleteContext: athleteContext || null,
@@ -30,35 +32,12 @@ export async function POST(request: Request) {
       },
       create: {
         id: 'singleton',
+        displayName: displayName || null,
         trainingAgeYears: trainingAgeYears ? parseFloat(String(trainingAgeYears)) : null,
         sessionDurationMin: sessionDurationMin ? parseInt(String(sessionDurationMin)) : 60,
         athleteContext: athleteContext || null,
         availableEquipment: (availableEquipment || []) as unknown as Prisma.InputJsonValue,
         movementRestrictions: movementRestrictions || null,
-      },
-    });
-
-    // 2. Initialize dummy UserSettings behind the scenes so legacy metabolic widgets do not crash
-    await prisma.userSettings.upsert({
-      where: { id: 'singleton' },
-      update: {
-        age: 30,
-        height: 175,
-        gender: 'M',
-        activityLevel: 1.375,
-        goal: 'gain',
-        weeklyRate: 0,
-        currentCalorieTarget: 2500,
-      },
-      create: {
-        id: 'singleton',
-        age: 30,
-        height: 175,
-        gender: 'M',
-        activityLevel: 1.375,
-        goal: 'gain',
-        weeklyRate: 0,
-        currentCalorieTarget: 2500,
       },
     });
 

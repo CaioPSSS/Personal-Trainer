@@ -8,44 +8,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-model UserSettings {
-  id                   String   @id @default("singleton")
-  age                  Int
-  height               Float
-  gender               String
-  activityLevel        Float
-  goal                 String
-  weeklyRate           Float
-  currentCalorieTarget Int
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-}
-
-model DailyLog {
-  date               String   @id
-  weight             Float?
-  caloriesConsumed   Int?
-  caloriesBurned     Int?
-  trainingType       String
-  sleepHours         Float?
-  waterIntake        Int?
-  stressLevel        Int?
-  mood               String?
-  proteinConsumed    Int?
-  waistCircumference Float?
-  createdAt          DateTime @default(now())
-
-  @@index([date(sort: Desc)])
-}
-
-model AiReport {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
-  content   String   @db.Text
-  isRead    Boolean  @default(false)
-
-  @@index([createdAt(sort: Desc)])
-}
 
 model AthleteProfile {
   id                  String   @id @default("singleton")

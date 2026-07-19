@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized } from '@/lib/auth';
 
 export const maxDuration = 300;
 import {
@@ -9,37 +10,7 @@ import {
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts } from '@/lib/ai/prompts';
-
-type GenericModel = {
-  upsert: (args: unknown) => Promise<unknown>;
-  findUnique: (args: unknown) => Promise<unknown>;
-  findMany: (args: unknown) => Promise<unknown[]>;
-  create: (args: unknown) => Promise<Record<string, unknown>>;
-};
-
-const db = prisma as unknown as {
-  athleteProfile: Pick<GenericModel, 'upsert' | 'findUnique'>;
-  workoutExecution: Pick<GenericModel, 'findMany'>;
-  wellnessDaily: Pick<GenericModel, 'findMany'>;
-  aiRunLog: Pick<GenericModel, 'create'>;
-};
-
-function isAuthorized(request: NextRequest): boolean {
-  const expectedToken = process.env.CRON_SECRET;
-  const publicSecret = process.env.NEXT_PUBLIC_INTERNAL_SECRET;
-
-  if (!expectedToken && !publicSecret) {
-    return true;
-  }
-
-  const authHeader = request.headers.get('authorization');
-  const internalHeader = request.headers.get('x-internal-token');
-
-  const isCronAuthorized = expectedToken && (authHeader === `Bearer ${expectedToken}` || internalHeader === expectedToken);
-  const isPublicAuthorized = publicSecret && internalHeader === publicSecret;
-
-  return !!(isCronAuthorized || isPublicAuthorized);
-}
+import { Prisma } from '@prisma/client';
 
 export async function POST(request: NextRequest) {
   if (!isAuthorized(request)) {
@@ -50,7 +21,7 @@ export async function POST(request: NextRequest) {
   const fallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {
-    await db.athleteProfile.upsert({
+    await prisma.athleteProfile.upsert({
       where: { id: 'singleton' },
       update: {},
       create: {
@@ -59,9 +30,9 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness] = await Promise.all([
-      db.athleteProfile.findUnique({ where: { id: 'singleton' } }),
-      db.workoutExecution.findMany({
+    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle] = await Promise.all([
+      prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
+      prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
         take: 56,
@@ -73,15 +44,29 @@ export async function POST(request: NextRequest) {
           },
         },
       }),
-      db.wellnessDaily.findMany({
+      prisma.wellnessDaily.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
         take: 56,
+      }),
+      prisma.mesocyclePlan.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          status: 'active',
+        },
+        include: {
+          workoutDays: {
+            include: {
+              prescriptions: true,
+            },
+          },
+        },
       }),
     ]);
 
     const prompts = buildDataAnalystPrompts({
       athleteProfile,
+      activeMesocycle,
       recentWorkouts,
       recentWellness,
     });
@@ -97,7 +82,7 @@ export async function POST(request: NextRequest) {
       temperature: 0.15,
     });
 
-    await db.aiRunLog.create({
+    await prisma.aiRunLog.create({
       data: {
         runType: 'data_analyst_cycle_review',
         mode: 'cycle_analysis',
@@ -113,7 +98,7 @@ export async function POST(request: NextRequest) {
             wellness: recentWellness.length,
           },
         },
-        responsePayload: result.data,
+        responsePayload: result.data as unknown as Prisma.InputJsonValue,
       },
     });
 
@@ -127,7 +112,7 @@ export async function POST(request: NextRequest) {
     console.error('[Data Analyst] Error during analysis:', error);
     const message = error instanceof Error ? error.message : String(error);
 
-    await db.aiRunLog.create({
+    await prisma.aiRunLog.create({
       data: {
         runType: 'data_analyst_cycle_review',
         mode: 'cycle_analysis',
@@ -141,7 +126,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: 'Data analyst request failed.',
+        error: 'data analyst request failed.',
         detail: message,
       },
       { status: 500 },

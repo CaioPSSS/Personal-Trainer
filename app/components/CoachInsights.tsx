@@ -73,8 +73,12 @@ export default function CoachInsights() {
 
   if (loading) {
     return (
-      <div className="bg-slate-800/40 border border-slate-700/60 rounded-2xl p-6 text-center text-sm text-slate-400">
-        Carregando insights do Treinador...
+      <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 space-y-4 animate-pulse">
+        <div className="flex justify-between items-center">
+          <div className="h-6 bg-slate-700 rounded w-1/3" />
+          <div className="h-6 bg-slate-700 rounded w-8" />
+        </div>
+        <div className="h-4 bg-slate-700 rounded w-2/3" />
       </div>
     );
   }
@@ -156,7 +160,7 @@ export default function CoachInsights() {
                   <div className="flex items-center justify-between">
                     <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider">Retrospectiva do Ciclo Anterior</h4>
                     <div className="flex items-center gap-1 text-amber-400 text-xs font-semibold">
-                      <Star className="h-3.5 w-3.5 fill-current animate-spin" style={{ animationDuration: '3s' }} />
+                      <Star className="h-3.5 w-3.5 fill-current" />
                       <span>Confiança do Bloco: {Math.round(coachBrain.retrospective.confidenceScore * 100)}%</span>
                     </div>
                   </div>

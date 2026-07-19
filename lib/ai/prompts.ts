@@ -10,6 +10,7 @@ interface MasterPromptContext {
 
 interface AnalystPromptContext {
   athleteProfile: unknown;
+  activeMesocycle: unknown;
   recentWorkouts: unknown[];
   recentWellness: unknown[];
 }
@@ -33,6 +34,7 @@ Hard constraints:
 - Be explicit about uncertainty and mark insufficient data when needed.
 
 Analytical framework:
+- Compare executed exercises against prescribed templates in the active mesocycle to compute adherence rate.
 - Evaluate progressive overload with double progression logic: reps first within target range, then load increase.
 - Quantify load and rep trends for key compound lifts whenever possible.
 - Compute RPE calibration signal: how often achieved effort aligns with planned intensity.
@@ -48,6 +50,8 @@ Output quality bar:
     'Analyze the last cycle and return a JSON report following the contract.',
     'Athlete profile JSON:',
     JSON.stringify(context.athleteProfile),
+    'Active mesocycle prescriptions JSON:',
+    JSON.stringify(context.activeMesocycle),
     'Workout executions JSON (56 days):',
     JSON.stringify(context.recentWorkouts),
     'Wellness logs JSON (56 days):',
