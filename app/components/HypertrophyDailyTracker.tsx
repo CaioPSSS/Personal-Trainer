@@ -62,6 +62,17 @@ interface DraftState {
   sessionRpe: string;
 }
 
+const getRpeLabel = (rpeVal: string | null | undefined) => {
+  if (!rpeVal) return '';
+  const val = parseFloat(rpeVal);
+  if (isNaN(val)) return '';
+  if (val === 10) return 'Falha Absoluta';
+  if (val >= 9) return '1 rep sobrando';
+  if (val >= 8) return '2 reps sobrando';
+  if (val >= 7) return '3 reps sobrando';
+  return 'Leve';
+};
+
 export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTrackerProps) {
   const [selectedDate, setSelectedDate] = useState(getLocalISODate());
   const [activeMesocycleId, setActiveMesocycleId] = useState<string | null>(null);
@@ -89,6 +100,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [restoredFromDraft, setRestoredFromDraft] = useState(false);
   const [hasExistingWorkout, setHasExistingWorkout] = useState(false);
   const [sessionRpe, setSessionRpe] = useState('');
+  
+  const [previousPerformances, setPreviousPerformances] = useState<Record<string, string>>({});
+  const [isDeload, setIsDeload] = useState(false);
+  const [currentWeekNumber, setCurrentWeekNumber] = useState(1);
 
   const { saveDraft, loadDraft, clearDraft } = useFormDraft<DraftState>('workout-draft');
   const [swapCooldownTimeLeft, setSwapCooldownTimeLeft] = useState(0);
@@ -146,6 +161,9 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
 
         setActiveMesocycleId(data.mesocyclePlanId);
         setTemplates(data.templates || []);
+        setPreviousPerformances(data.previousPerformances || {});
+        setIsDeload(data.isDeload || false);
+        setCurrentWeekNumber(data.currentWeekNumber || 1);
 
         // Prepopulate Wellness if exists, else reset to defaults
         if (data.existingWellness) {
@@ -330,6 +348,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       [field]: value,
     } as SetInput;
     setExercises(updated);
+    
+    if (field === 'isFailure' && value === true) {
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(40);
+    }
   };
 
   const addSet = (exIdx: number) => {
@@ -472,6 +494,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       }
 
       setMessage({ type: 'success', text: 'Treino e Métricas de Bem-Estar gravados com sucesso no banco de dados!' });
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([30, 50, 30]);
       clearDraft(selectedDate);
       setRestoredFromDraft(false);
       if (onSaved) onSaved();
@@ -522,6 +545,16 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {isDeload && (
+        <div className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-2xl flex items-start gap-3 shadow-sm mb-6">
+          <span className="text-amber-300 font-bold mt-0.5 text-lg">⚠️</span>
+          <div>
+            <p className="text-sm text-amber-300 font-bold uppercase tracking-wider">Semana de Deload Ativa (Semana {currentWeekNumber})</p>
+            <p className="text-xs text-amber-200 mt-1">O objetivo hoje é recuperação ativa. Mantenha 1-2 repetições a mais na reserva (RPE Menor) e não tente quebrar recordes de carga.</p>
+          </div>
+        </div>
+      )}
+
       {/* Date and Selector Card */}
       <div className="bg-slate-800 border border-slate-700/80 p-5 rounded-2xl shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -773,6 +806,11 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                               )}
                             </span>
                           )}
+                          {prescription && previousPerformances[prescription.id] && (
+                            <span className="text-[11px] text-emerald-400 block mt-1 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md w-fit">
+                              🎯 Última Execução: {previousPerformances[prescription.id]}
+                            </span>
+                          )}
                         </div>
 
                         <button
@@ -788,8 +826,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
 
                       {/* Mobile layout: Card stack */}
                       <div className="sm:hidden space-y-3 mt-3">
-                        {ex.sets.map((set, setIdx) => (
-                          <div key={setIdx} className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3 shadow-inner">
+                        {ex.sets.map((set, setIdx) => {
+                          const isHardSet = set.isFailure || (set.rpe && parseFloat(set.rpe) >= 9);
+                          return (
+                          <div key={setIdx} className={`bg-slate-950 p-4 rounded-xl border ${isHardSet ? 'border-rose-500/50' : 'border-slate-800'} space-y-3 shadow-inner transition-colors duration-300`}>
                             <div className="flex items-center justify-between">
                               <span className="text-xs font-black text-slate-400">Série {set.setNumber}</span>
                               <div className="flex items-center gap-3">
@@ -838,7 +878,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                                 />
                               </div>
                               <div>
-                                <label className="text-[10px] text-slate-500 block mb-1 font-bold">RPE</label>
+                                <label className="text-[10px] text-slate-500 flex justify-between items-center mb-1 font-bold">
+                                  <span>RPE</span>
+                                  <span className="text-indigo-400 text-[9px] ml-1">{getRpeLabel(set.rpe)}</span>
+                                </label>
                                 <select
                                   value={set.rpe}
                                   onChange={(e) => handleSetChange(exIdx, setIdx, 'rpe', e.target.value)}
@@ -869,7 +912,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                               }
                             </button>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       {/* Desktop layout: Table */}
@@ -887,8 +931,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                             </tr>
                           </thead>
                           <tbody>
-                            {ex.sets.map((set, setIdx) => (
-                              <tr key={setIdx} className="border-b border-slate-850 hover:bg-slate-800/10">
+                            {ex.sets.map((set, setIdx) => {
+                              const isHardSet = set.isFailure || (set.rpe && parseFloat(set.rpe) >= 9);
+                              return (
+                              <tr key={setIdx} className={`border-b border-slate-850 hover:bg-slate-800/10 ${isHardSet ? 'bg-rose-500/10' : ''} transition-colors duration-300`}>
                                 <td className="py-2 pr-2 text-center font-bold text-slate-400">
                                   {set.setNumber}
                                 </td>
@@ -912,22 +958,25 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                                   />
                                 </td>
                                 <td className="py-2 px-2">
-                                  <select
-                                    value={set.rpe}
-                                    onChange={(e) => handleSetChange(exIdx, setIdx, 'rpe', e.target.value)}
-                                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-center font-semibold text-slate-200 outline-none focus:border-indigo-400 cursor-pointer"
-                                  >
-                                    <option value="">—</option>
-                                    <option value="10">10 (Falha)</option>
-                                    <option value="9.5">9.5</option>
-                                    <option value="9">9 (1 RIR)</option>
-                                    <option value="8.5">8.5</option>
-                                    <option value="8">8 (2 RIR)</option>
-                                    <option value="7.5">7.5</option>
-                                    <option value="7">7 (3 RIR)</option>
-                                    <option value="6">6</option>
-                                    <option value="5">5</option>
-                                  </select>
+                                  <div className="flex flex-col items-center">
+                                    <select
+                                      value={set.rpe}
+                                      onChange={(e) => handleSetChange(exIdx, setIdx, 'rpe', e.target.value)}
+                                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 text-center font-semibold text-slate-200 outline-none focus:border-indigo-400 cursor-pointer"
+                                    >
+                                      <option value="">—</option>
+                                      <option value="10">10 (Falha)</option>
+                                      <option value="9.5">9.5</option>
+                                      <option value="9">9 (1 RIR)</option>
+                                      <option value="8.5">8.5</option>
+                                      <option value="8">8 (2 RIR)</option>
+                                      <option value="7.5">7.5</option>
+                                      <option value="7">7 (3 RIR)</option>
+                                      <option value="6">6</option>
+                                      <option value="5">5</option>
+                                    </select>
+                                    <span className="text-[9px] text-indigo-400 mt-0.5 min-h-[14px]">{getRpeLabel(set.rpe)}</span>
+                                  </div>
                                 </td>
                                 <td className="py-2 px-2 text-center">
                                   <input
@@ -962,7 +1011,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                                   )}
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

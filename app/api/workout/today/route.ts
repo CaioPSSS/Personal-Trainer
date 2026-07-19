@@ -108,6 +108,43 @@ export async function GET(request: NextRequest) {
 
     const workoutToday = dayTemplates.find((t) => t.dayOrder === predictedDayOrder) || dayTemplates[0];
 
+    // 4. Fetch previous performances for workoutToday prescriptions
+    const previousPerformances: Record<string, string> = {};
+    if (workoutToday) {
+      for (const rx of workoutToday.prescriptions) {
+        const lastExec = await prisma.exerciseExecution.findFirst({
+          where: {
+            exerciseName: rx.exerciseName,
+            workoutExecution: {
+              athleteProfileId: 'singleton',
+              status: 'completed',
+              date: { lt: date }
+            }
+          },
+          orderBy: { createdAt: 'desc' },
+          include: { setExecutions: true }
+        });
+
+        if (lastExec && lastExec.setExecutions.length > 0) {
+          const bestSet = lastExec.setExecutions.reduce((prev, current) => 
+            ((current.loadKg || 0) > (prev.loadKg || 0)) ? current : prev
+          );
+          previousPerformances[rx.id] = `${bestSet.loadKg || 0}kg x ${bestSet.reps} reps (RPE ${bestSet.rpe || '?'})`;
+        }
+      }
+    }
+
+    // 5. Determine if it's a deload week
+    const weeks = await prisma.mesocycleWeek.findMany({
+      where: { mesocyclePlanId: activePlan.id },
+      orderBy: { weekNumber: 'asc' }
+    });
+    
+    const daysSinceStart = Math.floor((new Date(date).getTime() - new Date(activePlan.createdAt).getTime()) / (1000 * 60 * 60 * 24));
+    const currentWeekNumber = Math.max(1, Math.floor(daysSinceStart / 7) + 1);
+    const currentWeekData = weeks.find(w => w.weekNumber === currentWeekNumber) || weeks[weeks.length - 1];
+    const isDeload = currentWeekData?.isDeload || false;
+
     // 4. Fetch existing logs for this date (if already executed or wellness captured)
     const existingWellness = await prisma.wellnessDaily.findUnique({
       where: { date },
@@ -134,6 +171,9 @@ export async function GET(request: NextRequest) {
       templates: dayTemplates,
       existingWellness,
       existingWorkout,
+      previousPerformances,
+      isDeload,
+      currentWeekNumber,
     });
   } catch (error) {
     console.error('Falha ao obter treino do dia.', error);

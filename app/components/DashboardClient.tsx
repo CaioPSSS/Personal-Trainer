@@ -8,16 +8,11 @@ import CoachInsights from './CoachInsights';
 import HypertrophyDailyTracker from './HypertrophyDailyTracker';
 import { ErrorBoundary } from './ErrorBoundary';
 
-interface AthleteProfile {
-  id: string;
-  displayName: string | null;
-  trainingAgeYears: number | null;
-  sessionDurationMin: number;
-  athleteContext: string | null;
-  availableEquipment: unknown;
-  movementRestrictions: unknown;
-  mesocycles?: unknown[];
-}
+import { AthleteProfile as PrismaAthleteProfile, MesocyclePlan } from '@prisma/client';
+
+type AthleteProfile = PrismaAthleteProfile & {
+  mesocycles?: MesocyclePlan[];
+};
 
 interface DashboardClientProps {
   initialAthleteProfile: AthleteProfile | null;
