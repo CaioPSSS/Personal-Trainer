@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const primaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
+  const primaryModel = process.env.DATA_ANALYST_MODEL ?? 'google/gemma-4-31b-it';
   const fallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {

@@ -22,9 +22,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'nvidia/nemotron-3-ultra-550b-a55b:free';
+  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'deepseek/deepseek-v4-pro';
   const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
-  const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'openai/gpt-oss-120b';
+  const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'google/gemma-4-31b-it';
   const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {

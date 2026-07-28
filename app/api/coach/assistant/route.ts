@@ -22,8 +22,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'openai/gpt-oss-120b';
-  const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL;
+  const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'google/gemma-4-31b-it';
+  const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
 
   try {
     const body = (await request.json()) as AssistantRequestBody;
