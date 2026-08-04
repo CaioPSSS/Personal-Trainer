@@ -89,7 +89,7 @@ Output contract:
 - Return strict JSON only.
 - No markdown, no explanatory text, no code fences.`;
 
-  const userPrompt = [
+  const promptSections = [
     'Generate the next mesocycle plan using all available context.',
     'Athlete profile JSON:',
     JSON.stringify(context.athleteProfile),
@@ -97,11 +97,19 @@ Output contract:
     JSON.stringify(context.analystReport),
     'Previous coach brain JSON:',
     JSON.stringify(context.previousCoachBrain),
-    'Raw workout execution context JSON:',
-    JSON.stringify(context.recentWorkouts),
-    'Raw wellness context JSON:',
-    JSON.stringify(context.recentWellness),
-  ].join('\n\n');
+  ];
+
+  // Se o Data Analyst for o fallback/baseline ou não houver relatório estruturado, envia contexto bruto limitado
+  if (context.analystReport?.executiveSummary?.includes('Baseline phase') && context.recentWorkouts.length > 0) {
+    promptSections.push(
+      'Raw workout execution context JSON:',
+      JSON.stringify(context.recentWorkouts.slice(0, 10)),
+      'Raw wellness context JSON:',
+      JSON.stringify(context.recentWellness.slice(0, 10))
+    );
+  }
+
+  const userPrompt = promptSections.join('\n\n');
 
   return { systemPrompt, userPrompt };
 }

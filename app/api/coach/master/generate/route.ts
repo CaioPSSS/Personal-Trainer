@@ -22,10 +22,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterPrimaryModel = process.env.MASTER_COACH_MODEL ?? 'deepseek/deepseek-v4-pro';
-  const masterFallbackModel = process.env.MASTER_COACH_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
-  const analystPrimaryModel = process.env.DATA_ANALYST_MODEL ?? 'google/gemma-4-31b-it';
-  const analystFallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
+  const masterCascade = (process.env.MASTER_COACH_CASCADE ?? 'openai/gpt-5.6-luna,deepseek/deepseek-v4-pro,z-ai/glm-5.2,nvidia/nemotron-3-ultra-550b-a55b:free').split(',');
+  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash,google/gemini-2.5-flash,meta-llama/llama-3.3-70b-instruct:free').split(',');
 
   try {
     await prisma.athleteProfile.upsert({
@@ -107,8 +105,7 @@ export async function POST(request: NextRequest) {
         schema: dataAnalystReportSchema,
         systemPrompt: analystPrompts.systemPrompt,
         userPrompt: analystPrompts.userPrompt,
-        primaryModel: analystPrimaryModel,
-        fallbackModel: analystFallbackModel,
+        modelCascade: analystCascade,
         maxRetries: 2,
         temperature: 0.15,
       });
@@ -118,12 +115,14 @@ export async function POST(request: NextRequest) {
           runType: 'data_analyst_cycle_review',
           mode: 'cycle_analysis',
           status: 'success',
-          primaryModel: analystPrimaryModel,
-          fallbackModel: analystFallbackModel,
+          primaryModel: analystResult.modelUsed,
+          fallbackModel: analystCascade.find((m) => m !== analystResult.modelUsed) ?? null,
           attemptCount: analystResult.attempts,
           latencyMs: analystResult.latencyMs,
           requestPayload: {
             schemaVersion: DATA_ANALYST_REPORT_SCHEMA_VERSION,
+            cascadeConfig: analystCascade,
+            usage: analystResult.usage,
             contextSizes: {
               workouts: recentWorkouts.length,
               wellness: recentWellness.length,
@@ -152,8 +151,7 @@ export async function POST(request: NextRequest) {
       schema: masterPlanOutputSchema,
       systemPrompt: masterPrompts.systemPrompt,
       userPrompt: masterPrompts.userPrompt,
-      primaryModel: masterPrimaryModel,
-      fallbackModel: masterFallbackModel,
+      modelCascade: masterCascade,
       maxRetries: 2,
       temperature: 0.1,
     });
@@ -163,12 +161,14 @@ export async function POST(request: NextRequest) {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',
         status: 'success',
-        primaryModel: masterPrimaryModel,
-        fallbackModel: masterFallbackModel,
+        primaryModel: result.modelUsed,
+        fallbackModel: masterCascade.find((m) => m !== result.modelUsed) ?? null,
         attemptCount: result.attempts,
         latencyMs: result.latencyMs,
         requestPayload: {
           schemaVersion: MASTER_PLAN_SCHEMA_VERSION,
+          cascadeConfig: masterCascade,
+          usage: result.usage,
           analystRunLogId: analystRunLogId,
           analystSummary: analystData.executiveSummary,
           contextSizes: {
@@ -199,8 +199,8 @@ export async function POST(request: NextRequest) {
         runType: 'master_coach_generation',
         mode: 'mesocycle_generation',
         status: 'failed',
-        primaryModel: masterPrimaryModel,
-        fallbackModel: masterFallbackModel,
+        primaryModel: masterCascade[0] ?? 'unknown',
+        fallbackModel: masterCascade[1] ?? null,
         errorMessage: message,
       },
     });

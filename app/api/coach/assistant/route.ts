@@ -22,8 +22,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const primaryModel = process.env.ASSISTANT_COACH_MODEL ?? 'google/gemma-4-31b-it';
-  const fallbackModel = process.env.ASSISTANT_COACH_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
+  const assistantCascade = (process.env.ASSISTANT_COACH_CASCADE ?? 'qwen/qwen3.6-35b-a3b,google/gemini-2.5-flash,google/gemma-4-31b-it:free').split(',');
 
   try {
     const body = (await request.json()) as AssistantRequestBody;
@@ -52,8 +51,7 @@ export async function POST(request: NextRequest) {
       schema: assistantOutputSchema,
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
-      primaryModel,
-      fallbackModel,
+      modelCascade: assistantCascade,
       maxRetries: 2,
       temperature: 0.15,
     });
@@ -92,12 +90,14 @@ export async function POST(request: NextRequest) {
         runType: 'assistant_coach',
         mode: body.mode,
         status: 'success',
-        primaryModel,
-        fallbackModel,
+        primaryModel: result.modelUsed,
+        fallbackModel: assistantCascade.find((m) => m !== result.modelUsed) ?? null,
         attemptCount: result.attempts,
         latencyMs: result.latencyMs,
         requestPayload: {
           schemaVersion: ASSISTANT_OUTPUT_SCHEMA_VERSION,
+          cascadeConfig: assistantCascade,
+          usage: result.usage,
           mode: body.mode,
           payload: body.payload,
         } as unknown as Prisma.InputJsonValue,
@@ -119,8 +119,8 @@ export async function POST(request: NextRequest) {
         runType: 'assistant_coach',
         mode: 'runtime',
         status: 'failed',
-        primaryModel,
-        fallbackModel,
+        primaryModel: assistantCascade[0] ?? 'unknown',
+        fallbackModel: assistantCascade[1] ?? null,
         errorMessage: message,
       },
     });
