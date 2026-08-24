@@ -22,8 +22,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterCascade = (process.env.MASTER_COACH_CASCADE ?? 'openai/gpt-5.6-luna,deepseek/deepseek-v4-pro,z-ai/glm-5.2,nvidia/nemotron-3-ultra-550b-a55b:free').split(',');
-  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash,google/gemini-2.5-flash,meta-llama/llama-3.3-70b-instruct:free').split(',');
+  const masterCascade = (process.env.MASTER_COACH_CASCADE ?? 'deepseek/deepseek-v4-pro,qwen/qwen3.7-plus,minimax/minimax-m3,deepseek/deepseek-v4-flash-0731').split(',');
+  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash,minimax/minimax-m3').split(',');
 
   try {
     await prisma.athleteProfile.upsert({

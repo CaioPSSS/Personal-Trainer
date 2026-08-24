@@ -4,35 +4,31 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-## Development State (2026-07-13)
+## Development State (2026-08-24)
 
 ### Current Milestone
-- Completed active mesocycle dashboard wiring, live Assistant Coach exercise swap integration, and end-of-workout persistence logs.
-- Legacy metabolic flow remains functional but consolidated in a secondary details pane.
+- Re-evaluated and upgraded AI model cascatas with top-tier OpenRouter models (< $0.50-$1.00 / M tokens).
+- Integrated SmartFit equipment catalog, Stimulus-to-Fatigue Ratio (SFR) principles, Stretch-Mediated Hypertrophy directives, conditional density techniques, and strict 60-minute duration constraints across all AI prompts.
 
 ### Implemented In This Iteration
-- Wired `DashboardClient.tsx` to conditionally render the active mesocycle tracker `HypertrophyDailyTracker` and coaching dashboard `CoachInsights` or a prominent plan generation CTA card.
-- Replaced the mock click handler in `HypertrophyDailyTracker.tsx` with a live request to `POST /api/coach/assistant` for the `exercise_swap` mode.
-- Designed a modal suggestion dialog in `HypertrophyDailyTracker` where users can view 3 alternative exercises recommended by the AI and instantly swap them, maintaining the logging state.
-- Implemented `substitutedFrom` tracking to save the original exercise name to the database when logging swapped movements.
-- Updated the Assistant Coach's prompt rules in `lib/ai/prompts.ts` to respect strict 1-hour session duration constraints by favoring quick setups and biomechanical equivalents.
-- Integrated full-page refreshes on success to synchronize Server-Side Component states.
-- Refactored `prisma/schema.prisma` and database types to replace `preferredSplit` with a free-form `athleteContext` text field.
-- Refactored `OnboardingForm.tsx` to collect life context and objective details in a `<textarea>` instead of a rigid training split selection dropdown.
-- Updated `/api/setup` to parse and upsert `athleteContext` in `AthleteProfile`.
-- Updated the Master Coach prompt in `lib/ai/prompts.ts` to analyze `athleteContext` and dynamically determine the split/volume configurations.
-- Patched Vercel 401 Unauthorized errors by verifying client-side requests using `NEXT_PUBLIC_INTERNAL_SECRET` header validation in `isAuthorized` and passing it from the dashboard.
-- Patched Vercel 500 mount errors by wrapping initial database fetches and calculations in `try/catch` fallback blocks in `app/page.tsx`.
-- Patched Vercel 500 Timeout errors by extending `maxDuration` to 300 seconds on the AI API routes.
-- Implemented a Cold Start Bypass logic in the Master Coach route to skip the Data Analyst and provide a hardcoded Baseline Report when the user has less than 3 recorded workouts, preventing AI hallucinations and empty-state timeouts.
-- Adjusted Master Coach prompt to explicitly handle 'Baseline phase' states and rely strictly on the Athlete Profile for virgin mesocycles.
-- Fixed all typescript-eslint (`any[]` casts, catch block parameters, unescaped quote symbols, unused imports) compiler and linter issues.
+- Configured multi-model cascata architecture in `/api/coach/master/generate`, `/api/coach/analyst`, and `/api/coach/assistant`:
+  - **Master Coach Cascade**: `deepseek/deepseek-v4-pro` (Primary, 1.6T MoE, $0.526/M in) -> `qwen/qwen3.7-plus` ($0.32/M in) -> `minimax/minimax-m3` -> `deepseek/deepseek-v4-flash-0731`.
+  - **Data Analyst Cascade**: `deepseek/deepseek-v4-flash-0731` (Primary, 1.31M context, $0.04/M in) -> `deepseek/deepseek-v4-flash` -> `minimax/minimax-m3`.
+  - **Assistant Coach Cascade**: `deepseek/deepseek-v4-flash-0731` (Primary, < 1.2s latency) -> `openai/gpt-5.6-luna` ($0.20/M in) -> `qwen/qwen3.7-plus`.
+- Embedded official SmartFit Equipment Catalog into prompt contexts for all 3 agents (Leg Press 45/180/Linear, Hack Squat, Cadeira/Mesa/Flexora em Pé, Extensora, Pulley, Remadas articuladas/baixa, Smith, Crossover, Halteres monobloco, etc.).
+- Refactored `lib/ai/prompts.ts` to implement evidence-based sport science:
+  - High SFR exercise selection prioritizing stability and axial spinal fatigue management for busy/stressed routines.
+  - Contextual stretch-mediated hypertrophy emphasis where biomechanically superior.
+  - Strict 60-minute session duration (4-6 exercises, 12-18 hard sets max).
+  - Commercial gym crowding awareness (conditional APS/Myo-reps only when genuinely superior in context; avoiding monopolizing 2 distant machines).
+  - Systematic weekly RIR/RPE progression (Week 1: RIR 3 -> Week 2: RIR 2 -> Week 3: RIR 1-2 -> Week 4: RIR 0-1 / RPE 10 -> Week 5: Deload).
+  - Explicit joint health / motor pain compliance (respecting explicit user pain points without arbitrary bans).
 
 ### Architectural Decisions Confirmed
 - Multi-LLM strategy is active by responsibility:
-	- Master Coach: `NVIDIA Nemotron 3 Ultra` for block transition generation.
-	- Data Analyst: `gpt-oss-120b` for raw-cycle diagnostics.
-	- Assistant Coach: `gpt-oss-120b` for day-to-day fast tool-like decisions.
+	- Master Coach: `deepseek/deepseek-v4-pro` (Fallback: `qwen/qwen3.7-plus`).
+	- Data Analyst: `deepseek/deepseek-v4-flash-0731` (Fallback: `minimax/minimax-m3`).
+	- Assistant Coach: `deepseek/deepseek-v4-flash-0731` (Fallback: `openai/gpt-5.6-luna`).
 - Contract-first output is mandatory for all model responses.
 - All transactional mesocycle structures must be stored via relational cascades.
 - ESLint checks must pass cleanly prior to any production deploy to prevent build-time lockouts in Vercel.
@@ -41,11 +37,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Deploy PostgreSQL database changes in production (Neon/Vercel Storage).
 - Add mesocycle lifecycle controls (close block manually, deload visual alerts, rollover trigger).
 - Add integration tests covering AI response schema contracts, retry orchestration, and endpoints error paths.
-
-### Next Steps (Execution Order)
-1. Run Prisma db push (`npx prisma db push`) in the target Vercel database.
-2. Build mesocycle block rollover buttons and status flags.
-3. Add integration tests.
 
 ### Verification Notes (This Iteration)
 - Rebuilt Prisma Client types successfully (`npx prisma generate`).

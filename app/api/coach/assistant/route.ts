@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const assistantCascade = (process.env.ASSISTANT_COACH_CASCADE ?? 'qwen/qwen3.6-35b-a3b,google/gemini-2.5-flash,google/gemma-4-31b-it:free').split(',');
+  const assistantCascade = (process.env.ASSISTANT_COACH_CASCADE ?? 'deepseek/deepseek-v4-flash-0731,openai/gpt-5.6-luna,qwen/qwen3.7-plus').split(',');
 
   try {
     const body = (await request.json()) as AssistantRequestBody;

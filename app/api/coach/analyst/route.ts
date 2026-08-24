@@ -17,8 +17,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const primaryModel = process.env.DATA_ANALYST_MODEL ?? 'google/gemma-4-31b-it';
-  const fallbackModel = process.env.DATA_ANALYST_FALLBACK_MODEL ?? 'google/gemma-4-31b-it:free';
+  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash,minimax/minimax-m3').split(',');
 
   try {
     await prisma.athleteProfile.upsert({
@@ -76,8 +75,7 @@ export async function POST(request: NextRequest) {
       schema: dataAnalystReportSchema,
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
-      primaryModel,
-      fallbackModel,
+      modelCascade: analystCascade,
       maxRetries: 2,
       temperature: 0.15,
     });
@@ -87,12 +85,14 @@ export async function POST(request: NextRequest) {
         runType: 'data_analyst_cycle_review',
         mode: 'cycle_analysis',
         status: 'success',
-        primaryModel,
-        fallbackModel,
+        primaryModel: result.modelUsed,
+        fallbackModel: analystCascade.find((m) => m !== result.modelUsed) ?? null,
         attemptCount: result.attempts,
         latencyMs: result.latencyMs,
         requestPayload: {
           schemaVersion: DATA_ANALYST_REPORT_SCHEMA_VERSION,
+          cascadeConfig: analystCascade,
+          usage: result.usage,
           contextSizes: {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
@@ -117,8 +117,8 @@ export async function POST(request: NextRequest) {
         runType: 'data_analyst_cycle_review',
         mode: 'cycle_analysis',
         status: 'failed',
-        primaryModel,
-        fallbackModel,
+        primaryModel: analystCascade[0] ?? 'unknown',
+        fallbackModel: analystCascade[1] ?? null,
         errorMessage: message,
       },
     });
