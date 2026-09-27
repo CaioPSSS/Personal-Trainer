@@ -7,19 +7,18 @@ This version has breaking changes — APIs, conventions, and file structure may 
 ## Development State (2026-09-27)
 
 ### Current Milestone
-- Completed full multi-sport expansion (hypertrophy preservation + running coach AI + Strava integration + cross-training + unified interactive calendar + analytics & visual polish).
+- Completed full multi-sport expansion (hypertrophy preservation + running coach AI + Strava integration + cross-training + unified interactive calendar + analytics & visual polish + smart multi-sport scheduler).
 
 ### Implemented In This Iteration
-- Expanded Prisma Schema with 8 models: `RunningProfile`, `RunningPlan`, `RunningSession`, `RunningExecution`, `RunningBrainEntry`, `CrossTrainingActivity`, `StravaIntegration`, `CalendarEvent`.
-- Implemented deterministic weekly strength scheduler (`lib/scheduling/strength-scheduler.ts`) balancing split days and recovery.
-- Built unified interactive calendar with weekly agenda view (HTML5 drag-and-drop, sport color-coding, volume summaries) and monthly dot grid view.
-- Added differentiated skip mechanics: strength ("pular apenas" vs "pular e reagendar +1 dia") and running (mark skipped + AI signal).
-- Added cross-training logging (CrossFit, swimming, cycling, yoga, martial arts) with RPE, muscle groups, and auto-CalendarEvent creation, feeding 14-day context to Master Coach.
-- Implemented Running Coach AI with Jack Daniels VDOT, Pete Pfitzinger 4-phase periodization, 80/20 polarized distribution, Karvonen HR zones, 9 session types, and `RunningBrainEntry` temporal memory decay (1.0 -> 0.7 -> 0.4).
-- Built Strava OAuth2 integration (`/api/strava/auth`, `/api/strava/callback`), token auto-refresh lifecycle, real-time webhook (`/api/strava/webhook`), and manual 30-day sync (`/api/strava/sync`).
-- Built dedicated `/running` page with 4-week plan, expandable granular session segments, manual run modal, and Strava sync controls.
-- Built progression analytics with Recharts (`PaceEvolutionChart`, `WeeklyVolumeChart`, `StrengthProgressChart` scoped strictly to current+previous mesocycles, `AdherenceChart`), animated `StreakCounter`, `WeeklyVolumeBar`, `NextWorkoutCard`, and custom `ToastProvider`.
-- Integrated official brand icons (`personal_trainer.svg` and `personal_trainer.png`) in layout, sidebar, and favicon.
+- Expanded `AthleteProfile` with `availableDays` (custom list of available weekdays) and `weeklyWorkoutsTarget` (configurable target workouts per week).
+- Built deterministic, cost-function-based multi-sport scheduler in `lib/scheduling/strength-scheduler.ts` avoiding LLM hallucinations and executing in <3ms:
+  - Dynamically distributes $K$ workouts across $|A|$ available days.
+  - Automatically isolates Lower Body / Leg days from Running Long Runs (preventing pre-fatigue and post-run eccentric damage) and Intervals/Tiros.
+  - Reactive CrossFit rescheduling: immediately upon logging CrossFit or high-fatigue cross-training, remaining strength workouts dynamically re-align.
+- Built `/api/schedule/rebalance` endpoint for on-demand week optimization.
+- Added interactive controls in `SettingsClient.tsx` (toggleable week day pills, target selector 2-6 workouts, instant rebalancing button).
+- Added `⚡ Rebalancear` button to `WeeklyCalendar.tsx` header toolbar with toast notifications.
+- Added cross-week drag-and-drop navigation with hover-paging and drop zones for Sunday/Monday.
 
 ### Architectural Decisions Confirmed
 - Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
@@ -37,6 +36,5 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Rebuilt Prisma Client types: `npx prisma generate` -> 0 errors.
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 15/15 tests passing.
-- Production build: `npx next build` -> 0 errors, all 23 routes compiled.
-
+- Unit tests: `npx tsx --test` -> 21/21 tests passing (including 10 deterministic multi-sport scheduler tests).
+- Production build: `npx next build` -> 0 errors, all 24 routes compiled.
