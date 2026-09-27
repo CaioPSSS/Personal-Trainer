@@ -22,6 +22,15 @@ interface WorkoutExercisePayload {
   sets: WorkoutSetPayload[];
 }
 
+interface WorkoutPayload {
+  workoutDayTemplateId?: string | null;
+  name?: string | null;
+  sessionRpe?: string | number | null;
+  durationMinutes?: string | number | null;
+  notes?: string | null;
+  exercises: WorkoutExercisePayload[];
+}
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -184,7 +193,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { date, wellness, workout, mesocyclePlanId } = body;
+    const { date, wellness, mesocyclePlanId } = body;
+    const workout: WorkoutPayload | undefined = body.workout;
 
     if (!date) {
       return NextResponse.json({ error: 'Missing date field.' }, { status: 400 });
@@ -229,7 +239,7 @@ export async function POST(request: NextRequest) {
         });
 
         // Create the new WorkoutExecution with its exercises and sets
-        await tx.workoutExecution.create({
+        const workoutExecution = await tx.workoutExecution.create({
           data: {
             athleteProfileId: 'singleton',
             mesocyclePlanId: mesocyclePlanId || null,
@@ -260,6 +270,79 @@ export async function POST(request: NextRequest) {
             },
           },
         });
+
+        // 3. Sync CalendarEvent on workout completion
+        let workoutTitle = workout.name || 'Treino de Força';
+        if (workout.workoutDayTemplateId) {
+          const t = await tx.workoutDayTemplate.findUnique({
+            where: { id: workout.workoutDayTemplateId },
+          });
+          if (t?.label) {
+            workoutTitle = t.label;
+          }
+        } else if (workout.exercises && workout.exercises.length > 0) {
+          const firstRxId = workout.exercises.find((e: WorkoutExercisePayload) => e.exercisePrescriptionId)?.exercisePrescriptionId;
+          if (firstRxId) {
+            const rx = await tx.exercisePrescription.findUnique({
+              where: { id: firstRxId },
+              include: { workoutDayTemplate: true },
+            });
+            if (rx?.workoutDayTemplate?.label) {
+              workoutTitle = rx.workoutDayTemplate.label;
+            }
+          }
+        }
+
+        // Mark any existing planned CalendarEvent on that date as completed
+        const plannedUpdated = await tx.calendarEvent.updateMany({
+          where: {
+            athleteProfileId: 'singleton',
+            date,
+            eventType: 'strength',
+            status: 'planned',
+          },
+          data: {
+            status: 'completed',
+            referenceModel: 'WorkoutExecution',
+            referenceId: workoutExecution.id,
+            title: workoutTitle,
+          },
+        });
+
+        // If no planned event was updated, check if an existing strength event exists on this date
+        if (plannedUpdated.count === 0) {
+          const existingEvent = await tx.calendarEvent.findFirst({
+            where: {
+              athleteProfileId: 'singleton',
+              date,
+              eventType: 'strength',
+            },
+          });
+
+          if (existingEvent) {
+            await tx.calendarEvent.update({
+              where: { id: existingEvent.id },
+              data: {
+                status: 'completed',
+                referenceModel: 'WorkoutExecution',
+                referenceId: workoutExecution.id,
+                title: workoutTitle,
+              },
+            });
+          } else {
+            await tx.calendarEvent.create({
+              data: {
+                athleteProfileId: 'singleton',
+                date,
+                eventType: 'strength',
+                referenceModel: 'WorkoutExecution',
+                referenceId: workoutExecution.id,
+                title: workoutTitle,
+                status: 'completed',
+              },
+            });
+          }
+        }
       }
     });
 

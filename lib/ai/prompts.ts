@@ -6,6 +6,7 @@ interface MasterPromptContext {
   previousCoachBrain: unknown | null;
   recentWorkouts: unknown[];
   recentWellness: unknown[];
+  crossTrainingSummary?: unknown[];
 }
 
 interface AnalystPromptContext {
@@ -97,6 +98,8 @@ Biomechanical & Hypertrophy Directives:
    - Do NOT arbitrarily blacklist exercises unless explicitly flagged as problematic by the athlete.
 6. Baseline / Cold-Start Rule:
    - If the Analyst Report states 'Baseline phase' or lacks prior workout history, treat this as the athlete's inaugural mesocycle. Build a rock-solid, high-SFR baseline plan relying on the Athlete Profile.
+7. CROSS-TRAINING AWARENESS:
+   - The athlete performs concurrent training modalities (e.g. CrossFit, swimming, cycling). Use the 14-day cross-training summary to autoregulate exercise selection, fatigue, and axial lower body volume when heavy cross-training occurs, while maintaining primary hypertrophy volume brackets (12-18 hard sets, 6-15 reps) and high SFR movements.
 
 Output Contract:
 - Return strictly valid JSON conforming to the MasterPlanOutput schema.
@@ -111,6 +114,13 @@ Output Contract:
     'Previous coach brain JSON:',
     JSON.stringify(context.previousCoachBrain),
   ];
+
+  if (context.crossTrainingSummary && context.crossTrainingSummary.length > 0) {
+    promptSections.push(
+      'Cross-training summary (last 14 days):',
+      JSON.stringify(context.crossTrainingSummary)
+    );
+  }
 
   if (context.analystReport?.executiveSummary?.includes('Baseline phase') && context.recentWorkouts.length > 0) {
     promptSections.push(

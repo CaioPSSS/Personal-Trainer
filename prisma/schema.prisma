@@ -24,6 +24,8 @@ model AthleteProfile {
   workoutExecutions   WorkoutExecution[]
   wellnessLogs        WellnessDaily[]
   assistantAlerts     AssistantAlert[]
+  crossTrainingActivities CrossTrainingActivity[]
+  calendarEvents        CalendarEvent[]
 }
 
 model MesocyclePlan {
@@ -246,4 +248,189 @@ model CoachBrainEntry {
   mesocyclePlan     MesocyclePlan @relation(fields: [mesocyclePlanId], references: [id], onDelete: Cascade)
 
   @@index([mesocyclePlanId, createdAt(sort: Desc)])
+}
+
+// ============================================
+// RUNNING (CORRIDA)
+// ============================================
+
+model RunningProfile {
+  id                   String   @id @default("singleton")
+  currentPace5kSec     Int?     // pace em segundos/km para 5K
+  currentPace10kSec    Int?     // pace em segundos/km para 10K
+  currentPaceHalfSec   Int?     // pace em segundos/km para meia maratona
+  weeklyVolumeKm       Float?   // km/semana atual
+  maxHeartRate         Int?     // FC máxima
+  restingHeartRate     Int?     // FC repouso
+  primaryObjective     String?  // "improve_5k_pace", "complete_10k", "half_marathon_prep", etc.
+  targetPaceSec        Int?     // pace alvo em segundos/km
+  targetDistanceKm     Float?   // distância alvo
+  availableDays        Json?    // ["monday", "wednesday", "saturday"]
+  injuryHistory        Json?    // [{ area: "shin", description: "canelite leve 2024" }]
+  primaryTerrain       String?  // "treadmill", "road_flat", "trail", "mixed"
+  hrZones              Json?    // zonas de FC calculadas
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  runningPlans         RunningPlan[]
+  runningExecutions    RunningExecution[]
+  runningBrainEntries  RunningBrainEntry[]
+}
+
+model RunningPlan {
+  id                   String   @id @default(cuid())
+  runningProfileId     String
+  title                String   // "Outubro 2026 — Build Phase"
+  month                Int      // 1-12
+  year                 Int
+  objective            String   // "Melhorar pace 5K de 5:30 para 5:15"
+  phase                String   // "base", "build", "peak", "taper", "recovery"
+  weeklyTargetKm       Float?   // volume semanal alvo
+  status               String   @default("active") // "active", "completed", "draft"
+  rawPlan              Json?    // JSON completo gerado pela AI
+  createdByAiRunId     String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  runningProfile       RunningProfile @relation(fields: [runningProfileId], references: [id], onDelete: Cascade)
+  sessions             RunningSession[]
+
+  @@unique([runningProfileId, month, year])
+  @@index([status])
+}
+
+model RunningSession {
+  id                   String   @id @default(cuid())
+  runningPlanId        String
+  scheduledDate        String   // "YYYY-MM-DD"
+  dayOfWeek            String   // "monday", "tuesday", etc.
+  weekNumber           Int      // 1-4 dentro do mês
+  sessionType          String   // "easy", "tempo", "intervals", "long_run", "fartlek", "hill_repeats", "progression", "race_pace", "recovery"
+  title                String   // "Easy Run — Regenerativo"
+  totalDistanceKm      Float?
+  totalDurationMin     Int?
+  targetPaceSec        Int?     // pace alvo médio em seg/km
+  targetHrZone         String?  // "zone2", "zone3", "zone4", etc.
+  segments             Json?    // [{ type: "warmup", distanceKm: 1, paceRange: "6:00-6:30" }, ...]
+  notes                String?  @db.Text
+  status               String   @default("planned") // "planned", "completed", "skipped"
+  createdAt            DateTime @default(now())
+
+  runningPlan          RunningPlan @relation(fields: [runningPlanId], references: [id], onDelete: Cascade)
+  executions           RunningExecution[]
+
+  @@index([runningPlanId, scheduledDate])
+  @@index([status])
+}
+
+model RunningExecution {
+  id                   String   @id @default(cuid())
+  runningProfileId     String
+  runningSessionId     String?  // nullable: pode ser corrida manual não planejada
+  date                 String   // "YYYY-MM-DD"
+  source               String   @default("manual") // "manual", "strava"
+  stravaActivityId     String?  @unique
+  distanceKm           Float
+  durationSeconds      Int
+  avgPaceSec           Int?     // pace médio seg/km
+  avgHeartRate         Int?
+  maxHeartRate         Int?
+  elevationGainM       Float?
+  cadenceAvg           Int?
+  temperature          Float?   // celsius
+  splits               Json?    // [{ km: 1, paceSec: 320 }, { km: 2, paceSec: 315 }]
+  sessionRpe           Float?   // 1-10
+  notes                String?  @db.Text
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  runningProfile       RunningProfile  @relation(fields: [runningProfileId], references: [id], onDelete: Cascade)
+  runningSession       RunningSession? @relation(fields: [runningSessionId], references: [id], onDelete: SetNull)
+
+  @@index([runningProfileId, date(sort: Desc)])
+  @@index([source])
+}
+
+model RunningBrainEntry {
+  id                   String   @id @default(cuid())
+  runningProfileId     String
+  aiRunLogId           String?
+  month                Int
+  year                 Int
+  version              Int      @default(1)
+  hypotheses           Json     // hipóteses do mês
+  retrospective        Json?    // retrospectiva do mês anterior
+  decayWeight          Float    @default(1.0) // 1.0 = atual, 0.7 = mês passado, 0.4 = 2 meses atrás
+  createdAt            DateTime @default(now())
+
+  runningProfile       RunningProfile @relation(fields: [runningProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([runningProfileId, month, year])
+  @@index([runningProfileId, createdAt(sort: Desc)])
+}
+
+// ============================================
+// CROSS-TRAINING (CrossFit, Natação, etc.)
+// ============================================
+
+model CrossTrainingActivity {
+  id                   String   @id @default(cuid())
+  athleteProfileId     String
+  date                 String   // "YYYY-MM-DD"
+  activityType         String   // "crossfit", "swimming", "cycling", "yoga", "martial_arts", "other"
+  title                String?  // "WOD Box CrossFit" ou "Natação livre"
+  durationMinutes      Int
+  sessionRpe           Float?   // 1-10
+  muscleGroups         Json?    // ["legs", "back", "shoulders", "core"]
+  notes                String?  @db.Text
+  status               String   @default("completed") // "planned", "completed", "skipped"
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  athleteProfile       AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([athleteProfileId, date(sort: Desc)])
+  @@index([activityType])
+}
+
+// ============================================
+// STRAVA INTEGRATION
+// ============================================
+
+model StravaIntegration {
+  id                   String   @id @default("singleton")
+  accessToken          String   @db.Text
+  refreshToken         String   @db.Text
+  expiresAt            Int      // UNIX timestamp
+  athleteStravaId      Int      @unique
+  scope                String?
+  lastSyncAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+// ============================================
+// CALENDÁRIO / SCHEDULING (AGREGAÇÃO)
+// ============================================
+
+model CalendarEvent {
+  id                   String   @id @default(cuid())
+  athleteProfileId     String
+  date                 String   // "YYYY-MM-DD"
+  eventType            String   // "strength", "running", "crossfit", "swimming", "rest", "other"
+  referenceId          String?  // ID do WorkoutExecution, WorkoutDayTemplate, RunningSession, ou CrossTrainingActivity
+  referenceModel       String?  // "WorkoutExecution", "WorkoutDayTemplate", "RunningSession", "CrossTrainingActivity"
+  title                String
+  status               String   @default("planned") // "planned", "completed", "skipped"
+  colorCode            String?  // hex color para override
+  sortOrder            Int      @default(0) // para múltiplos eventos no mesmo dia
+  originalDate         String?  // data original antes de drag-and-drop
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  athleteProfile       AthleteProfile @relation(fields: [athleteProfileId], references: [id], onDelete: Cascade)
+
+  @@index([athleteProfileId, date])
+  @@index([eventType, date])
+  @@index([referenceId])
 }

@@ -14,6 +14,7 @@ import {
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
+import { scheduleMesocycleWorkouts } from '@/lib/scheduling/strength-scheduler';
 import { Prisma } from '@prisma/client';
 
 
@@ -35,7 +36,11 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness, previousBrain, activeMesocycle] = await Promise.all([
+    const fourteenDaysAgo = new Date();
+    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+    const fourteenDaysAgoStr = fourteenDaysAgo.toISOString().split('T')[0];
+
+    const [athleteProfile, recentWorkouts, recentWellness, previousBrain, activeMesocycle, recentCrossTraining] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -69,6 +74,13 @@ export async function POST(request: NextRequest) {
             },
           },
         },
+      }),
+      prisma.crossTrainingActivity.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: fourteenDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
       }),
     ]);
 
@@ -144,6 +156,7 @@ export async function POST(request: NextRequest) {
       previousCoachBrain: previousBrain,
       recentWorkouts,
       recentWellness,
+      crossTrainingSummary: recentCrossTraining,
     });
 
     const result = await generateStructuredOutput<MasterPlanOutput>({
@@ -181,6 +194,9 @@ export async function POST(request: NextRequest) {
     });
 
     const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id);
+
+    // Deterministically schedule workouts across the active mesocycle into CalendarEvent
+    await scheduleMesocycleWorkouts('singleton');
 
     return NextResponse.json({
       success: true,
