@@ -17,6 +17,8 @@ model AthleteProfile {
   athleteContext      String?  @db.Text
   availableEquipment  Json?
   movementRestrictions Json?
+  availableDays       Json?    // ["Seg", "Ter", "Qua", "Sex", "Sáb"] ou [0, 1, 2, 4, 5]
+  weeklyWorkoutsTarget Int?    // ex: 3 treinos por semana
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 

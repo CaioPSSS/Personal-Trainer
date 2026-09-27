@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   User,
   Settings as SettingsIcon,
@@ -15,6 +15,9 @@ import {
   Timer,
   Activity,
   AlertCircle,
+  Calendar,
+  Sparkles,
+  Check,
 } from 'lucide-react';
 import { useToast } from '@/app/components/ToastProvider';
 
@@ -40,6 +43,8 @@ interface SettingsClientProps {
     athleteContext?: string | null;
     availableEquipment?: unknown;
     movementRestrictions?: unknown;
+    availableDays?: unknown;
+    weeklyWorkoutsTarget?: number | null;
   } | null;
   runningProfile?: RunningProfileInfo | null;
   stravaConnected: boolean;
@@ -54,6 +59,39 @@ function formatPaceSec(paceSec?: number | null): string {
   const sec = Math.round(paceSec % 60);
   return `${min}:${sec.toString().padStart(2, '0')} /km`;
 }
+
+function parseDaysToIndices(raw: unknown): number[] {
+  if (Array.isArray(raw)) {
+    const res: number[] = [];
+    for (const item of raw) {
+      if (typeof item === 'number' && item >= 0 && item <= 6) res.push(item);
+      else if (typeof item === 'string') {
+        const lower = item.toLowerCase();
+        if (lower.startsWith('seg') || lower === '0') res.push(0);
+        else if (lower.startsWith('ter') || lower === '1') res.push(1);
+        else if (lower.startsWith('qua') || lower === '2') res.push(2);
+        else if (lower.startsWith('qui') || lower === '3') res.push(3);
+        else if (lower.startsWith('sex') || lower === '4') res.push(4);
+        else if (lower.startsWith('sab') || lower.startsWith('sáb') || lower === '5') res.push(5);
+        else if (lower.startsWith('dom') || lower === '6') res.push(6);
+      }
+    }
+    if (res.length > 0) return Array.from(new Set(res)).sort((a, b) => a - b);
+  }
+  return [0, 1, 2, 4, 5]; // Default: Seg, Ter, Qua, Sex, Sáb (5 dias)
+}
+
+const WEEK_DAYS = [
+  { id: 0, short: 'Seg', name: 'Segunda-feira' },
+  { id: 1, short: 'Ter', name: 'Terça-feira' },
+  { id: 2, short: 'Qua', name: 'Quarta-feira' },
+  { id: 3, short: 'Qui', name: 'Quinta-feira' },
+  { id: 4, short: 'Sex', name: 'Sexta-feira' },
+  { id: 5, short: 'Sáb', name: 'Sábado' },
+  { id: 6, short: 'Dom', name: 'Domingo' },
+];
+
+const TARGET_WORKOUT_OPTIONS = [2, 3, 4, 5, 6];
 
 const OBJECTIVE_LABELS: Record<string, string> = {
   improve_5k_pace: 'Melhorar Pace nos 5K',
@@ -80,6 +118,62 @@ export default function SettingsClient({
   const { success, error: toastError, info } = useToast();
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(initialLastSync ?? null);
+
+  // Available days & workout target state
+  const initialDays = useMemo(() => {
+    return parseDaysToIndices(athleteProfile?.availableDays);
+  }, [athleteProfile?.availableDays]);
+
+  const [selectedDays, setSelectedDays] = useState<number[]>(initialDays);
+  const [weeklyTarget, setWeeklyTarget] = useState<number>(athleteProfile?.weeklyWorkoutsTarget ?? 3);
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+
+  const handleToggleDay = (dayId: number) => {
+    setSelectedDays((prev) => {
+      if (prev.includes(dayId)) {
+        if (prev.length <= 1) return prev; // Keep at least 1 day
+        return prev.filter((d) => d !== dayId);
+      } else {
+        return [...prev, dayId].sort((a, b) => a - b);
+      }
+    });
+  };
+
+  const handleSaveSchedule = async () => {
+    if (selectedDays.length === 0) {
+      toastError('Selecione pelo menos 1 dia disponível na semana.');
+      return;
+    }
+    setIsSavingSchedule(true);
+    info('Salvando preferências e rebalanceando calendário...', 'Agendador Inteligente');
+    try {
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          availableDays: selectedDays,
+          weeklyWorkoutsTarget: weeklyTarget,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toastError(data.error || 'Falha ao salvar configurações.');
+        return;
+      }
+
+      const rebalancedCount = data.rebalance?.rebalancedCount ?? 0;
+      success(
+        `Meta de ${weeklyTarget} treinos em ${selectedDays.length} dias salva com sucesso! (${rebalancedCount} treinos reorganizados na semana).`,
+        'Calendário Rebalanceado'
+      );
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+    } catch (err) {
+      console.error(err);
+      toastError('Erro ao salvar preferências de treino.');
+    } finally {
+      setIsSavingSchedule(false);
+    }
+  };
 
   const handleConnectStrava = () => {
     window.location.href = '/api/strava/auth';
@@ -174,6 +268,146 @@ export default function SettingsClient({
           <p className="text-slate-400">
             Catálogo SmartFit: Crossover, Halteres monobloco, Máquinas articuladas, Smith Machine, Leg Press 45°, Cadeira Extensora, Mesa Flexora.
           </p>
+        </div>
+      </div>
+
+      {/* Available Days & Weekly Workouts Target (Smart Multi-Sport Scheduler) */}
+      <div className="glass-card p-6 space-y-5 border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
+                Disponibilidade Semanal & Meta de Treinos
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  Smart Scheduler
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Defina seus dias livres e a quantidade de treinos semanais. A IA distribui as sessões afastando pernas de corridas longas e CrossFit.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Days of week selector */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-slate-200">
+              1. Dias Disponíveis na Semana:
+            </span>
+            <span className="text-indigo-400 font-mono text-[11px]">
+              {selectedDays.length} {selectedDays.length === 1 ? 'dia selecionado' : 'dias selecionados'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            {WEEK_DAYS.map((day) => {
+              const isSelected = selectedDays.includes(day.id);
+              return (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => handleToggleDay(day.id)}
+                  className={`py-2.5 px-2 rounded-xl text-xs font-semibold border transition flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                    isSelected
+                      ? 'bg-indigo-600/25 border-indigo-500 text-indigo-200 shadow-sm shadow-indigo-500/20'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                  title={`${day.name} (${isSelected ? 'Disponível' : 'Indisponível'})`}
+                >
+                  <span className="text-sm font-bold">{day.short}</span>
+                  <div className="flex items-center gap-1 text-[10px]">
+                    {isSelected ? (
+                      <Check className="w-3 h-3 text-indigo-400" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Weekly workout target selector */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-slate-200">
+              2. Meta de Treinos de Musculação por Semana:
+            </span>
+            <span className="text-indigo-400 font-mono text-[11px]">
+              {weeklyTarget} sessões / semana
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+            {TARGET_WORKOUT_OPTIONS.map((count) => {
+              const isCurrent = weeklyTarget === count;
+              return (
+                <button
+                  key={count}
+                  type="button"
+                  onClick={() => setWeeklyTarget(count)}
+                  className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 cursor-pointer ${
+                    isCurrent
+                      ? 'bg-gradient-to-r from-indigo-600 to-violet-600 border-indigo-400 text-white shadow-md shadow-indigo-600/20'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                  }`}
+                >
+                  <Dumbbell className="w-3.5 h-3.5" />
+                  <span>{count} Treinos</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {weeklyTarget > selectedDays.length && (
+            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs animate-fadeIn">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>
+                Você configurou uma meta de {weeklyTarget} treinos, mas apenas {selectedDays.length} dias disponíveis. O agendador utilizará todos os {selectedDays.length} dias ou você pode selecionar mais dias.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Multi-sport intelligence rules notes */}
+        <div className="bg-slate-900/40 rounded-xl p-3.5 border border-slate-800/80 space-y-2 text-xs text-slate-300">
+          <div className="flex items-center gap-1.5 font-semibold text-indigo-300">
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Regras Biomecânicas Automáticas:</span>
+          </div>
+          <ul className="space-y-1 text-slate-400 list-disc list-inside text-[11px] leading-relaxed">
+            <li>
+              <strong className="text-slate-300">Proteção de Corrida Longa:</strong> O treino de pernas é automaticamente repelido do dia da Corrida Longa e do dia anterior (evita fadiga excêntrica e risco articular).
+            </li>
+            <li>
+              <strong className="text-slate-300">Janela para Tiros e Velocidade:</strong> Pernas não colidem com treinos de ritmo ou tiros intensos na semana.
+            </li>
+            <li>
+              <strong className="text-slate-300">Reatividade a CrossFit:</strong> Ao adicionar um treino de CrossFit na semana, os treinos de força restantes são reorganizados instantaneamente para respeitar a recuperação muscular.
+            </li>
+          </ul>
+        </div>
+
+        {/* Action button */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleSaveSchedule}
+            disabled={isSavingSchedule}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-bold shadow-md shadow-indigo-600/25 transition disabled:opacity-50 cursor-pointer"
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${isSavingSchedule ? 'animate-spin' : ''}`} />
+            <span>
+              {isSavingSchedule
+                ? 'Rebalanceando Calendário...'
+                : 'Salvar Preferências & Rebalancear Calendário'}
+            </span>
+          </button>
         </div>
       </div>
 

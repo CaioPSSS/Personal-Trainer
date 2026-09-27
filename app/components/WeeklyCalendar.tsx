@@ -13,6 +13,7 @@ import {
   Waves,
   GripVertical,
   Plus,
+  Sparkles,
 } from 'lucide-react';
 import { useToast } from './ToastProvider';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
@@ -56,11 +57,12 @@ function formatDateISO(date: Date): string {
 }
 
 export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: WeeklyCalendarProps) {
-  const { success, error } = useToast();
+  const { success, error, info } = useToast();
   const [currentWeekStart, setCurrentWeekStart] = useState<Date>(() => getStartOfWeek(new Date()));
   const [events, setEvents] = useState<CalendarEventDTO[]>([]);
   const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
   const [dragOverDate, setDragOverDate] = useState<string | null>(null);
+  const [isRebalancing, setIsRebalancing] = useState(false);
   const navHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Skip dialog state
@@ -98,6 +100,41 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       }
     } catch (err) {
       console.error('Falha ao carregar eventos:', err);
+    }
+  };
+
+  const handleRebalanceWeek = async () => {
+    setIsRebalancing(true);
+    info('Otimizando distribuição semanal com base em corridas e CrossFit...', 'Smart Scheduler');
+    try {
+      const res = await fetch('/api/schedule/rebalance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anchorDate: weekDays[0].dateStr }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        error(data.error || 'Falha ao rebalancear calendário.', 'Erro');
+        return;
+      }
+
+      if (data.rebalancedCount > 0) {
+        success(
+          `${data.rebalancedCount} treino(s) reorganizado(s) harmonicamente!`,
+          'Calendário Otimizado'
+        );
+      } else {
+        info(
+          'A distribuição atual da semana já é a ideal para recuperação e performance.',
+          'Semana Equilibrada'
+        );
+      }
+      await refreshCalendar();
+    } catch (err) {
+      console.error(err);
+      error('Erro ao rebalancear semana.', 'Erro');
+    } finally {
+      setIsRebalancing(false);
     }
   };
 
@@ -389,6 +426,17 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={handleRebalanceWeek}
+            disabled={isRebalancing}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/20 hover:border-indigo-400 transition cursor-pointer disabled:opacity-50"
+            title="Rebalancear dias de musculação inteligentemente considerando dias livres, corridas e CrossFit"
+          >
+            <Sparkles className={`w-3.5 h-3.5 text-indigo-400 ${isRebalancing ? 'animate-spin' : ''}`} />
+            <span>{isRebalancing ? 'Otimizando...' : 'Rebalancear'}</span>
+          </button>
 
           <button
             type="button"
