@@ -3,12 +3,14 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { isAuthorized } from '@/lib/auth';
 import {
+  DayOfWeek,
   RunningPlanOutput,
   runningPlanOutputSchema,
   RUNNING_PLAN_SCHEMA_VERSION,
 } from '@/lib/ai/running-contracts';
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
+import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -22,6 +24,16 @@ const DAY_OFFSETS: Record<string, number> = {
   saturday: 5,
   sunday: 6,
 };
+
+const ALL_CANONICAL_DAYS: DayOfWeek[] = [
+  'monday',
+  'tuesday',
+  'wednesday',
+  'thursday',
+  'friday',
+  'saturday',
+  'sunday',
+];
 
 function getMondayOfDate(d: Date): Date {
   const date = new Date(d);
@@ -39,13 +51,66 @@ function formatISODate(d: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+function dayDistance(dayA: string, dayB: string): number {
+  const offsetA = DAY_OFFSETS[dayA.toLowerCase()] ?? 0;
+  const offsetB = DAY_OFFSETS[dayB.toLowerCase()] ?? 0;
+  const diff = Math.abs(offsetA - offsetB);
+  return Math.min(diff, 7 - diff);
+}
+
+function resolveSessionDay(
+  dayOfWeek: string,
+  availableDays?: string[] | null,
+  usedDaysInWeek?: Set<string>
+): DayOfWeek {
+  const cleanTarget = (dayOfWeek || 'monday').toLowerCase();
+
+  const validAvailable = (
+    Array.isArray(availableDays) && availableDays.length > 0
+      ? availableDays.map((d) => d.toLowerCase())
+      : ALL_CANONICAL_DAYS
+  ).filter((d): d is DayOfWeek => DAY_OFFSETS[d] !== undefined);
+
+  const candidatePool = validAvailable.length > 0 ? validAvailable : ALL_CANONICAL_DAYS;
+
+  // 1. If target day is in candidate pool and unused in this week, choose it directly
+  if (
+    candidatePool.includes(cleanTarget as DayOfWeek) &&
+    (!usedDaysInWeek || !usedDaysInWeek.has(cleanTarget))
+  ) {
+    return cleanTarget as DayOfWeek;
+  }
+
+  // 2. Otherwise prefer unused days in candidate pool closest to target day
+  const unusedCandidates = usedDaysInWeek
+    ? candidatePool.filter((d) => !usedDaysInWeek.has(d))
+    : candidatePool;
+
+  const poolToSearch = unusedCandidates.length > 0 ? unusedCandidates : candidatePool;
+
+  let bestCandidate = poolToSearch[0];
+  let bestDist = dayDistance(bestCandidate, cleanTarget);
+  for (let i = 1; i < poolToSearch.length; i++) {
+    const dist = dayDistance(poolToSearch[i], cleanTarget);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestCandidate = poolToSearch[i];
+    }
+  }
+
+  return bestCandidate;
+}
+
 function computeSessionDate(
   planMonth: number,
   planYear: number,
   weekNumber: number,
-  dayOfWeek: string
+  dayOfWeek: string,
+  availableDays?: string[] | null,
+  usedDaysInWeek?: Set<string>
 ): string {
-  const dayOffset = DAY_OFFSETS[dayOfWeek.toLowerCase()] ?? 0;
+  const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
+  const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
   const now = new Date();
   const isCurrentMonth = now.getMonth() + 1 === planMonth && now.getFullYear() === planYear;
 
@@ -60,6 +125,25 @@ function computeSessionDate(
   const sessionDate = new Date(baseMonday);
   sessionDate.setDate(baseMonday.getDate() + (weekNumber - 1) * 7 + dayOffset);
   return formatISODate(sessionDate);
+}
+
+function computeSessionSchedule(
+  planMonth: number,
+  planYear: number,
+  weekNumber: number,
+  dayOfWeek: string,
+  availableDays?: string[] | null,
+  usedDaysInWeek?: Set<string>
+): { scheduledDate: string; resolvedDay: DayOfWeek } {
+  const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
+  const scheduledDate = computeSessionDate(
+    planMonth,
+    planYear,
+    weekNumber,
+    resolvedDay,
+    [resolvedDay]
+  );
+  return { scheduledDate, resolvedDay };
 }
 
 export async function GET() {
@@ -213,6 +297,10 @@ export async function POST(req: NextRequest) {
     }));
 
     // 4. Build prompt context
+    const athleteAvailableDays = Array.isArray(runningProfile.availableDays)
+      ? (runningProfile.availableDays as string[])
+      : null;
+
     const { systemPrompt, userPrompt } = buildRunningCoachPrompts({
       runningProfile: {
         id: runningProfile.id,
@@ -225,9 +313,8 @@ export async function POST(req: NextRequest) {
         primaryObjective: runningProfile.primaryObjective,
         targetPaceSec: runningProfile.targetPaceSec,
         targetDistanceKm: runningProfile.targetDistanceKm,
-        availableDays: Array.isArray(runningProfile.availableDays)
-          ? (runningProfile.availableDays as string[])
-          : null,
+        availableDays: athleteAvailableDays,
+        weeklyRunsTarget: runningProfile.weeklyRunsTarget,
         injuryHistory: runningProfile.injuryHistory,
         primaryTerrain: runningProfile.primaryTerrain,
         hrZones: (runningProfile.hrZones as Record<string, { min: number; max: number; label: string }>) ?? null,
@@ -370,19 +457,29 @@ export async function POST(req: NextRequest) {
 
       // Create running sessions & planned calendar events
       const createdSessions = [];
+      const usedDaysPerWeek = new Map<number, Set<string>>();
+      for (let w = 1; w <= 4; w++) {
+        usedDaysPerWeek.set(w, new Set<string>());
+      }
+
       for (const session of output.plan.sessions) {
-        const scheduledDate = computeSessionDate(
+        const weekSet = usedDaysPerWeek.get(session.weekNumber) ?? new Set<string>();
+        const { scheduledDate, resolvedDay } = computeSessionSchedule(
           plan.month,
           plan.year,
           session.weekNumber,
-          session.dayOfWeek
+          session.dayOfWeek,
+          athleteAvailableDays,
+          weekSet
         );
+        weekSet.add(resolvedDay);
+        usedDaysPerWeek.set(session.weekNumber, weekSet);
 
         const createdSession = await tx.runningSession.create({
           data: {
             runningPlanId: plan.id,
             scheduledDate,
-            dayOfWeek: session.dayOfWeek,
+            dayOfWeek: resolvedDay,
             weekNumber: session.weekNumber,
             sessionType: session.sessionType,
             title: session.title,
@@ -440,6 +537,13 @@ export async function POST(req: NextRequest) {
 
       return { plan, sessions: createdSessions };
     });
+
+    // 8. Harmonize multi-sport calendar by rebalancing strength workouts around running sessions
+    try {
+      await rebalanceWeekSchedule('singleton');
+    } catch (rebalanceError) {
+      console.warn('[Running Generate] Falha ao rebalancear calendário multi-esportes:', rebalanceError);
+    }
 
     return NextResponse.json({
       success: true,

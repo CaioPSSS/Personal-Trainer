@@ -10,6 +10,7 @@ export interface RunningCoachProfileContext {
   targetPaceSec?: number | null;
   targetDistanceKm?: number | null;
   availableDays?: string[] | null;
+  weeklyRunsTarget?: number | null;
   injuryHistory?: unknown | null;
   primaryTerrain?: string | null;
   hrZones?: Record<string, { min: number; max: number; label: string }> | null;
@@ -112,10 +113,27 @@ export function buildRunningCoachPrompts(context: RunningCoachContext) {
   const baseline5kPace = runningProfile.currentPace5kSec ?? 330; // default 5:30/km if uncalibrated
   const vdotPaces = estimateVdotPaces(baseline5kPace);
 
+  const rawAvailableDays = runningProfile.availableDays;
+  const availableDaysList =
+    Array.isArray(rawAvailableDays) && rawAvailableDays.length > 0
+      ? rawAvailableDays
+      : ['tuesday', 'thursday', 'saturday'];
+  const formattedAvailableDays = availableDaysList.join(', ');
+
+  const rawTarget =
+    runningProfile.weeklyRunsTarget ??
+    (availableDaysList.length >= 3 ? 3 : availableDaysList.length);
+  const clampedTarget = Math.max(1, Math.min(rawTarget, availableDaysList.length));
+
   const systemPrompt = `You are Running Coach AI, a world-class endurance architect and exercise physiologist specializing in periodized running programs based on Jack Daniels VDOT, Pete Pfitzinger endurance principles, and 80/20 polarized volume distribution.
 
 MISSION & ATHLETE OBJECTIVE:
 Design a precise, periodized 4-week running mesocycle (month: ${targetMonth}, year: ${targetYear}) tailored to the athlete's baseline fitness, weekly available days, terrain, and concurrent cross-training / hypertrophy load.
+
+ATHLETE WEEKLY SCHEDULE CONSTRAINTS:
+- ATHLETE WEEKLY SCHEDULE CONSTRAINTS: The athlete is strictly available to run on these days: [${formattedAvailableDays}].
+- WEEKLY TARGET: Exactly ${clampedTarget} sessions per week (clamped to available days). You MUST NOT schedule sessions on unavailable days.
+- HARD-EASY POLARIZATION: Place quality sessions (Intervals, Tempo, Long Run) on available days separated by rest days or easy sessions.
 
 CORE SCIENTIFIC FRAMEWORK:
 
@@ -182,6 +200,7 @@ No markdown wrappers, no introductory prose, no code comments.`;
 
   const userPrompt = [
     `Generate the periodized 4-week running plan for month ${targetMonth}, year ${targetYear}.`,
+    `ATHLETE WEEKLY SCHEDULE CONSTRAINTS: The athlete is strictly available to run on these days: [${formattedAvailableDays}].\nWEEKLY TARGET: Exactly ${clampedTarget} sessions per week (clamped to available days). You MUST NOT schedule sessions on unavailable days.\nHARD-EASY POLARIZATION: Place quality sessions (Intervals, Tempo, Long Run) on available days separated by rest days or easy sessions.`,
     'ATHLETE RUNNING PROFILE:',
     JSON.stringify(runningProfile, null, 2),
     'CALCULATED HR ZONES (KARVONEN):',

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Dumbbell, Sparkles, Sliders } from 'lucide-react';
 import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
 import CoachInsights from './CoachInsights';
+import StrengthCoachHub from './StrengthCoachHub';
 import HypertrophyDailyTracker from './HypertrophyDailyTracker';
 import { ErrorBoundary } from './ErrorBoundary';
 import StrengthProgressChart from './charts/StrengthProgressChart';
@@ -22,6 +23,7 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
   const router = useRouter();
   const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(initialAthleteProfile);
   const hasActiveMesocycle = (athleteProfile?.mesocycles?.length ?? 0) > 0;
+  const activeMesocycle = athleteProfile?.mesocycles?.[0] || null;
 
   const [setupForm, setSetupForm] = useState<AthleteProfileFormState>({
     displayName: initialAthleteProfile?.displayName || '',
@@ -201,6 +203,37 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
           {coachRunMessage}
         </section>
       ) : null}
+
+      {/* 🧠 Master Coach AI Command Center */}
+      {hasActiveMesocycle && (
+        <ErrorBoundary
+          fallback={
+            <div className="glass-card p-6 text-rose-300 text-sm">
+              ⚠️ Erro ao carregar Master Coach Hub.
+            </div>
+          }
+        >
+          <StrengthCoachHub
+            mesocycle={
+              activeMesocycle
+                ? {
+                    id: activeMesocycle.id,
+                    title: activeMesocycle.title,
+                    objective: activeMesocycle.objective,
+                    split: activeMesocycle.split,
+                    durationWeeks: activeMesocycle.durationWeeks,
+                  }
+                : undefined
+            }
+            onOpenStructure={() => {
+              const el = document.getElementById('workout-select') || document.querySelector('form');
+              if (el) el.scrollIntoView({ behavior: 'smooth' });
+            }}
+            onPlanNextBlock={handleForceGeneration}
+            onForceRegenerate={handleForceGeneration}
+          />
+        </ErrorBoundary>
+      )}
 
       {/* 🧠 Coach Insights Panel */}
       {hasActiveMesocycle && (

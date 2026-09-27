@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { Dumbbell, Calendar, Plus, Trash, Save, Sparkles, Smile } from 'lucide-react';
 import { useFormDraft } from '@/app/hooks/useFormDraft';
 import { getLocalISODate } from '@/lib/dateUtils';
+import PostWorkoutSummaryModal, { PostWorkoutSummaryModalProps } from './PostWorkoutSummaryModal';
+import { ExercisePreviousPerformanceData } from '@/lib/progression/load-calculator';
 
 interface Prescription {
   id: string;
@@ -102,8 +104,11 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [sessionRpe, setSessionRpe] = useState('');
   
   const [previousPerformances, setPreviousPerformances] = useState<Record<string, string>>({});
+  const [progressionData, setProgressionData] = useState<Record<string, ExercisePreviousPerformanceData>>({});
   const [isDeload, setIsDeload] = useState(false);
   const [currentWeekNumber, setCurrentWeekNumber] = useState(1);
+  const [isSummaryModalOpen, setIsSummaryModalOpen] = useState(false);
+  const [summaryModalProps, setSummaryModalProps] = useState<PostWorkoutSummaryModalProps | null>(null);
 
   const { saveDraft, loadDraft, clearDraft } = useFormDraft<DraftState>('workout-draft');
   const [swapCooldownTimeLeft, setSwapCooldownTimeLeft] = useState(0);
@@ -162,6 +167,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         setActiveMesocycleId(data.mesocyclePlanId);
         setTemplates(data.templates || []);
         setPreviousPerformances(data.previousPerformances || {});
+        const progs: Record<string, ExercisePreviousPerformanceData> = data.progressionData || data.previousPerformance || {};
+        setProgressionData(progs);
         setIsDeload(data.isDeload || false);
         setCurrentWeekNumber(data.currentWeekNumber || 1);
 
@@ -241,21 +248,26 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setExercises(mappedExs);
         } else if (currentTemplate) {
           setHasExistingWorkout(false);
-          // Initialize empty sets based on prescription
-          const initializedExs: ExerciseInput[] = currentTemplate.prescriptions.map((p) => ({
-            exercisePrescriptionId: p.id,
-            exerciseName: p.exerciseName,
-            movementPattern: p.movementPattern,
-            sortOrder: p.sortOrder,
-            notes: '',
-            sets: Array.from({ length: p.targetSets }).map((_, i) => ({
-              setNumber: i + 1,
-              loadKg: '',
-              reps: '',
-              rpe: '',
-              isFailure: false,
-            })),
-          }));
+          // Initialize empty sets based on prescription with suggested load prefilled
+          const initializedExs: ExerciseInput[] = currentTemplate.prescriptions.map((p) => {
+            const prog = progs[p.id];
+            const prefillLoad = prog && prog.suggestedLoadKg > 0 ? prog.suggestedLoadKg.toString() : '';
+
+            return {
+              exercisePrescriptionId: p.id,
+              exerciseName: p.exerciseName,
+              movementPattern: p.movementPattern,
+              sortOrder: p.sortOrder,
+              notes: '',
+              sets: Array.from({ length: p.targetSets }).map((_, i) => ({
+                setNumber: i + 1,
+                loadKg: prefillLoad,
+                reps: '',
+                rpe: '',
+                isFailure: false,
+              })),
+            };
+          });
           setExercises(initializedExs);
         }
 
@@ -322,20 +334,25 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     if (!template) return;
     setSelectedTemplate(template);
 
-    const initializedExs: ExerciseInput[] = template.prescriptions.map((p) => ({
-      exercisePrescriptionId: p.id,
-      exerciseName: p.exerciseName,
-      movementPattern: p.movementPattern,
-      sortOrder: p.sortOrder,
-      notes: '',
-      sets: Array.from({ length: p.targetSets }).map((_, i) => ({
-        setNumber: i + 1,
-        loadKg: '',
-        reps: '',
-        rpe: '',
-        isFailure: false,
-      })),
-    }));
+    const initializedExs: ExerciseInput[] = template.prescriptions.map((p) => {
+      const prog = progressionData[p.id];
+      const prefillLoad = prog && prog.suggestedLoadKg > 0 ? prog.suggestedLoadKg.toString() : '';
+
+      return {
+        exercisePrescriptionId: p.id,
+        exerciseName: p.exerciseName,
+        movementPattern: p.movementPattern,
+        sortOrder: p.sortOrder,
+        notes: '',
+        sets: Array.from({ length: p.targetSets }).map((_, i) => ({
+          setNumber: i + 1,
+          loadKg: prefillLoad,
+          reps: '',
+          rpe: '',
+          isFailure: false,
+        })),
+      };
+    });
     setExercises(initializedExs);
     setMessage({ type: 'info', text: `Treino alterado manualmente para: ${template.label}` });
   };
@@ -493,11 +510,39 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         throw new Error('Falha ao enviar registro de treino.');
       }
 
+      const data = await response.json();
+
       setMessage({ type: 'success', text: 'Treino e Métricas de Bem-Estar gravados com sucesso no banco de dados!' });
       if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([30, 50, 30]);
       clearDraft(selectedDate);
       setRestoredFromDraft(false);
-      if (onSaved) onSaved();
+
+      if (data.summary) {
+        setSummaryModalProps({
+          isOpen: true,
+          onClose: () => {
+            setIsSummaryModalOpen(false);
+            if (onSaved) onSaved();
+          },
+          workoutTitle: selectedTemplate?.label || 'Treino do Dia',
+          durationMinutes: data.summary.durationMinutes ?? selectedTemplate?.estimatedDurationMin,
+          sessionRpe: sessionRpe ? parseFloat(sessionRpe) : data.summary.averageRpe,
+          averageRpe: data.summary.averageRpe,
+          totalTonnage: data.summary.totalTonnage,
+          totalTonnageKg: data.summary.totalTonnage,
+          previousTonnage: data.summary.previousTonnage,
+          previousTonnageKg: data.summary.previousTonnage,
+          tonnageDeltaPercent: data.summary.tonnageDeltaPercent,
+          validSetsCount: data.summary.validSetsCount,
+          completedSetsCount: data.summary.completedSetsCount,
+          personalRecords: data.summary.personalRecords,
+          recovery: data.summary.recovery,
+          recoveryGuidance: data.summary.recoveryGuidance,
+        });
+        setIsSummaryModalOpen(true);
+      } else {
+        if (onSaved) onSaved();
+      }
     } catch (err) {
       setMessage({ type: 'error', text: err instanceof Error ? err.message : 'Falha ao salvar registros diários.' });
     } finally {
@@ -782,9 +827,39 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                           <span className="text-xs text-slate-400 block uppercase font-mono tracking-wider">
                             Padrão: {ex.movementPattern}
                           </span>
-                          <h4 className="text-sm font-bold text-slate-100 mt-0.5">
-                            {ex.exerciseName}
-                          </h4>
+                          <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                            <h4 className="text-sm font-bold text-slate-100">
+                              {ex.exerciseName}
+                            </h4>
+                            {prescription && (() => {
+                              const prog = progressionData[prescription.id];
+                              if (!prog || prog.lastLoadKg === 0) {
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[11px] text-indigo-300 font-semibold bg-indigo-500/15 border border-indigo-500/30 px-2.5 py-0.5 rounded-full">
+                                    Primeira sessão
+                                  </span>
+                                );
+                              }
+                              if (prog.deltaKg > 0) {
+                                return (
+                                  <span
+                                    title={prog.reason || prog.progressionReason}
+                                    className="inline-flex items-center gap-1 text-[11px] text-emerald-300 font-semibold bg-emerald-500/20 border border-emerald-500/40 px-2.5 py-0.5 rounded-full"
+                                  >
+                                    Último: {prog.lastLoadKg} kg (+{prog.deltaKg} kg sugerido)
+                                  </span>
+                                );
+                              }
+                              return (
+                                <span
+                                  title={prog.reason || prog.progressionReason}
+                                  className="inline-flex items-center gap-1 text-[11px] text-slate-300 font-semibold bg-slate-800 border border-slate-700 px-2.5 py-0.5 rounded-full"
+                                >
+                                  Último: {prog.lastLoadKg} kg (manter carga)
+                                </span>
+                              );
+                            })()}
+                          </div>
                           {prescription && (
                             <span className="text-[11px] text-indigo-300 block mt-0.5">
                               Meta IA: <span className="font-semibold">{prescription.targetSets} séries</span> x{' '}
@@ -807,8 +882,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                             </span>
                           )}
                           {prescription && previousPerformances[prescription.id] && (
-                            <span className="text-[11px] text-emerald-400 block mt-1 font-semibold bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md w-fit">
-                              🎯 Última Execução: {previousPerformances[prescription.id]}
+                            <span className="text-[11px] text-slate-400 block mt-1 font-mono text-[10px]">
+                              Detalhes da última sessão: {previousPerformances[prescription.id]}
                             </span>
                           )}
                         </div>
@@ -1147,6 +1222,17 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
             </div>
           </div>
         </div>
+      )}
+      {/* 🏆 Modal de Resumo Pós-Treino (Debrief Factual) */}
+      {summaryModalProps && (
+        <PostWorkoutSummaryModal
+          {...summaryModalProps}
+          isOpen={isSummaryModalOpen}
+          onClose={() => {
+            setIsSummaryModalOpen(false);
+            if (onSaved) onSaved();
+          }}
+        />
       )}
     </form>
   );

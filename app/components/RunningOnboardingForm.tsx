@@ -22,6 +22,7 @@ interface RunningOnboardingFormProps {
     currentPace10kSec?: number | null;
     weeklyVolumeKm?: number | null;
     availableDays?: string[] | null;
+    weeklyRunsTarget?: number | null;
     maxHeartRate?: number | null;
     restingHeartRate?: number | null;
     primaryTerrain?: string | null;
@@ -54,6 +55,8 @@ const WEEKDAYS = [
   { id: 'sunday', label: 'Dom' },
 ];
 
+const RUNNING_TARGET_OPTIONS = [2, 3, 4, 5];
+
 function secondsToMmSs(seconds?: number | null): string {
   if (!seconds || isNaN(seconds)) return '';
   const m = Math.floor(seconds / 60);
@@ -83,6 +86,9 @@ export default function RunningOnboardingForm({
     Array.isArray(initialProfile?.availableDays) && initialProfile.availableDays.length > 0
       ? initialProfile.availableDays
       : ['tuesday', 'thursday', 'saturday']
+  );
+  const [weeklyRunsTarget, setWeeklyRunsTarget] = useState<number>(
+    initialProfile?.weeklyRunsTarget ?? 3
   );
   const [maxHeartRate, setMaxHeartRate] = useState(
     initialProfile?.maxHeartRate ? String(initialProfile.maxHeartRate) : '185'
@@ -148,6 +154,7 @@ export default function RunningOnboardingForm({
           currentPace10kSec: pace10k || null,
           weeklyVolumeKm: weeklyVolumeKm ? Number(weeklyVolumeKm) : null,
           availableDays,
+          weeklyRunsTarget: Number(weeklyRunsTarget),
           maxHeartRate: maxHeartRate ? Number(maxHeartRate) : null,
           restingHeartRate: restingHeartRate ? Number(restingHeartRate) : null,
           primaryTerrain,
@@ -327,35 +334,86 @@ export default function RunningOnboardingForm({
           </div>
         </div>
 
-        {/* Dias Disponíveis */}
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-            <Calendar className="w-4 h-4 text-emerald-400" />
-            Dias da Semana Disponíveis para Correr *
-          </label>
-          <div className="grid grid-cols-7 gap-2">
-            {WEEKDAYS.map((day) => {
-              const isSelected = availableDays.includes(day.id);
-              return (
-                <button
-                  key={day.id}
-                  type="button"
-                  disabled={isSubmitting}
-                  onClick={() => toggleDay(day.id)}
-                  className={`py-2 text-xs font-semibold rounded-xl border transition cursor-pointer ${
-                    isSelected
-                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-sm shadow-emerald-950'
-                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
-                  }`}
-                >
-                  {day.label}
-                </button>
-              );
-            })}
+        {/* Dias Disponíveis & Meta Semanal */}
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <label className="font-semibold text-slate-300 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 text-emerald-400" />
+                Dias da Semana Disponíveis para Correr *
+              </label>
+              <span className="text-emerald-400 font-mono text-[11px]">
+                {availableDays.length} {availableDays.length === 1 ? 'dia selecionado' : 'dias selecionados'}
+              </span>
+            </div>
+            <div className="grid grid-cols-7 gap-2">
+              {WEEKDAYS.map((day) => {
+                const isSelected = availableDays.includes(day.id);
+                return (
+                  <button
+                    key={day.id}
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => toggleDay(day.id)}
+                    className={`py-2 text-xs font-semibold rounded-xl border transition cursor-pointer ${
+                      isSelected
+                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-sm shadow-emerald-950'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                    }`}
+                  >
+                    {day.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[10px] text-slate-400">
+              A IA distribuirá rodagens leves e treinos-chave respeitando intervalos de recuperação.
+            </span>
           </div>
-          <span className="text-[10px] text-slate-400">
-            A IA distribuirá rodagens leves e treinos-chave respeitando intervalos de recuperação.
-          </span>
+
+          {/* Meta Semanal de Treinos de Corrida */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <label className="font-semibold text-slate-300 flex items-center gap-1.5">
+                <Footprints className="w-4 h-4 text-emerald-400" />
+                Meta de Corridas por Semana *
+              </label>
+              <span className="text-emerald-400 font-mono text-[11px]">
+                {weeklyRunsTarget} sessões / semana
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {RUNNING_TARGET_OPTIONS.map((count) => {
+                const isCurrent = weeklyRunsTarget === count;
+                return (
+                  <button
+                    key={count}
+                    type="button"
+                    disabled={isSubmitting}
+                    onClick={() => setWeeklyRunsTarget(count)}
+                    className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 cursor-pointer ${
+                      isCurrent
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-400 text-white shadow-md shadow-emerald-600/20'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                    }`}
+                  >
+                    <Footprints className="w-3.5 h-3.5" />
+                    <span>{count} Corridas</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {weeklyRunsTarget > availableDays.length && (
+              <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs animate-fadeIn">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>
+                  Meta de {weeklyRunsTarget} corridas excede os {availableDays.length} dias selecionados. A IA limitará o plano aos dias disponíveis.
+                </span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Terreno e Histórico de Lesões */}

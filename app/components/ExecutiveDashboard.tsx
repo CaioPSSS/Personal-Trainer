@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
 import Link from 'next/link';
-import { Sparkles, Dumbbell, Footprints, ArrowRight, Plus } from 'lucide-react';
+
+const emptySubscribe = () => () => {};
+import { Sparkles, Dumbbell, Footprints, ArrowRight, Plus, Brain, Zap, ShieldCheck } from 'lucide-react';
 import NextWorkoutCard from './NextWorkoutCard';
 import StreakCounter from './StreakCounter';
 import WeeklyVolumeBar from './WeeklyVolumeBar';
@@ -24,6 +26,7 @@ interface ExecutiveDashboardProps {
 
 export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboardProps) {
   const router = useRouter();
+  const clientNow = useSyncExternalStore(emptySubscribe, () => Date.now(), () => 0);
   const [isMonthlyOpen, setIsMonthlyOpen] = useState(false);
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -108,7 +111,17 @@ export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboar
   }
 
   const hasActiveMesocycle = (athleteProfile.mesocycles?.length ?? 0) > 0;
+  const activeMesocycle = athleteProfile.mesocycles?.[0] || null;
   const firstName = athleteProfile.displayName?.split(' ')[0] || 'Atleta';
+
+  const daysSinceStart = clientNow > 0 && activeMesocycle?.createdAt
+    ? Math.floor((clientNow - new Date(activeMesocycle.createdAt).getTime()) / (1000 * 60 * 60 * 24))
+    : 0;
+  const currentWeek = activeMesocycle?.durationWeeks
+    ? Math.min(activeMesocycle.durationWeeks, Math.max(1, Math.floor(daysSinceStart / 7) + 1))
+    : 1;
+  const totalWeeks = activeMesocycle?.durationWeeks || 4;
+  const progressPercent = Math.min(100, Math.round((currentWeek / totalWeeks) * 100));
 
   const handleRefreshCalendar = () => {
     setCalendarKey((prev) => prev + 1);
@@ -184,6 +197,78 @@ export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboar
             <span>Configurar Bloco</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </Link>
+        </div>
+      )}
+
+      {/* 🧠 Master Coach Highlight Card */}
+      {hasActiveMesocycle && activeMesocycle && (
+        <div className="relative overflow-hidden rounded-2xl border border-indigo-500/25 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950/40 p-5 sm:p-6 shadow-xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="p-3 bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 text-white rounded-2xl shadow-lg shadow-indigo-500/25 shrink-0">
+                <Brain className="h-6 w-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400">
+                    Master Coach AI
+                  </span>
+                  <span className="text-slate-600">•</span>
+                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                    <Sparkles className="h-2.5 w-2.5" />
+                    Periodização Ativa
+                  </span>
+                </div>
+                <h2 className="text-base sm:text-lg font-bold text-slate-100 mt-0.5">
+                  {activeMesocycle.title}
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Divisão: {activeMesocycle.split} • Objetivo: {activeMesocycle.objective}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              <div className="text-right hidden sm:block">
+                <span className="text-xs font-mono font-bold text-indigo-300 block">
+                  Semana {currentWeek} de {totalWeeks}
+                </span>
+                <span className="text-[10px] text-slate-500">{progressPercent}% do bloco</span>
+              </div>
+              <Link
+                href="/strength"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 text-slate-100 font-bold text-xs transition shadow-md shadow-indigo-500/10 cursor-pointer"
+              >
+                <span>Acessar Módulo Força</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          </div>
+
+          {/* Week Progress Bar */}
+          <div className="space-y-1">
+            <div className="flex sm:hidden justify-between text-[11px] font-mono text-slate-400">
+              <span>Semana {currentWeek} de {totalWeeks}</span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden p-0.5 border border-slate-800">
+              <div
+                className="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-full transition-all duration-500"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Multi-Sport Radar Banner */}
+          <div className="rounded-xl border border-cyan-500/25 bg-cyan-950/20 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5">
+              <Zap className="h-4 w-4 text-cyan-400 shrink-0" />
+              <p className="text-slate-300 leading-snug">
+                <strong className="text-cyan-300 font-semibold">Radar Multi-Esportes:</strong> Sinergia ativa. Treinos de pernas e corrida longão/intervalos protegidos com janela regenerativa de 48h.
+              </p>
+            </div>
+            <ShieldCheck className="h-4 w-4 text-cyan-400 shrink-0 hidden md:block" />
+          </div>
         </div>
       )}
 

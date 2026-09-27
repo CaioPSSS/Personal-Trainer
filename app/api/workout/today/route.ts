@@ -1,5 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import {
+  calculateProgressiveOverload,
+  isCompoundExercise,
+  roundToHalfKg,
+  ExercisePreviousPerformanceData,
+  PreviousExercisePerformance,
+} from '@/lib/progression/load-calculator';
 
 export const dynamic = 'force-dynamic';
 
@@ -117,8 +124,10 @@ export async function GET(request: NextRequest) {
 
     const workoutToday = dayTemplates.find((t) => t.dayOrder === predictedDayOrder) || dayTemplates[0];
 
-    // 4. Fetch previous performances for workoutToday prescriptions
+    // 4. Fetch previous performances for workoutToday prescriptions and compute progressive overload
     const previousPerformances: Record<string, string> = {};
+    const progressionData: Record<string, ExercisePreviousPerformanceData> = {};
+
     if (workoutToday) {
       for (const rx of workoutToday.prescriptions) {
         const lastExec = await prisma.exerciseExecution.findFirst({
@@ -135,10 +144,56 @@ export async function GET(request: NextRequest) {
         });
 
         if (lastExec && lastExec.setExecutions.length > 0) {
-          const bestSet = lastExec.setExecutions.reduce((prev, current) => 
-            ((current.loadKg || 0) > (prev.loadKg || 0)) ? current : prev
-          );
-          previousPerformances[rx.id] = `${bestSet.loadKg || 0}kg x ${bestSet.reps} reps (RPE ${bestSet.rpe || '?'})`;
+          const validSets = lastExec.setExecutions.filter((s) => s.reps > 0);
+          const bestSet = validSets.length > 0
+            ? validSets.reduce((prev, current) => 
+                ((current.loadKg || 0) > (prev.loadKg || 0)) ? current : prev
+              )
+            : lastExec.setExecutions[0];
+
+          previousPerformances[rx.id] = `${bestSet.loadKg || 0}kg x ${bestSet.reps} reps (RPE ${bestSet.rpe ?? '?'})`;
+
+          const isCompound = isCompoundExercise(rx.exerciseName, rx.movementPattern);
+          const perfInput: PreviousExercisePerformance = {
+            exerciseName: rx.exerciseName,
+            movementPattern: rx.movementPattern,
+            isCompound,
+            targetRepMin: rx.targetRepMin || 8,
+            targetRepMax: rx.targetRepMax || 12,
+            targetRpeMin: rx.targetRpeMin ?? 7,
+            targetRpeMax: rx.targetRpeMax ?? 8.5,
+            completedSets: lastExec.setExecutions.map((s) => ({
+              setNumber: s.setNumber,
+              loadKg: s.loadKg || 0,
+              reps: s.reps || 0,
+              rpe: s.rpe,
+              isFailure: s.isFailure,
+            })),
+          };
+
+          const prog = calculateProgressiveOverload(perfInput);
+
+          progressionData[rx.id] = {
+            lastLoadKg: prog.previousMaxLoadKg,
+            suggestedLoadKg: prog.suggestedLoadKg,
+            deltaKg: prog.deltaKg,
+            lastReps: bestSet.reps,
+            lastRpe: bestSet.rpe ?? null,
+            action: prog.action,
+            reason: prog.progressionReason,
+            progressionReason: prog.progressionReason,
+          };
+        } else {
+          progressionData[rx.id] = {
+            lastLoadKg: 0,
+            suggestedLoadKg: 0,
+            deltaKg: 0,
+            lastReps: 0,
+            lastRpe: null,
+            action: 'maintain',
+            reason: 'Primeira execução do exercício. Defina a carga inicial.',
+            progressionReason: 'Primeira execução do exercício. Defina a carga inicial.',
+          };
         }
       }
     }
@@ -154,7 +209,7 @@ export async function GET(request: NextRequest) {
     const currentWeekData = weeks.find(w => w.weekNumber === currentWeekNumber) || weeks[weeks.length - 1];
     const isDeload = currentWeekData?.isDeload || false;
 
-    // 4. Fetch existing logs for this date (if already executed or wellness captured)
+    // 6. Fetch existing logs for this date (if already executed or wellness captured)
     const existingWellness = await prisma.wellnessDaily.findUnique({
       where: { date },
     });
@@ -181,6 +236,8 @@ export async function GET(request: NextRequest) {
       existingWellness,
       existingWorkout,
       previousPerformances,
+      progressionData,
+      previousPerformance: progressionData,
       isDeload,
       currentWeekNumber,
     });
@@ -199,6 +256,8 @@ export async function POST(request: NextRequest) {
     if (!date) {
       return NextResponse.json({ error: 'Missing date field.' }, { status: 400 });
     }
+
+    let createdWorkoutExecutionId: string | null = null;
 
     await prisma.$transaction(async (tx) => {
       // 1. Upsert Wellness log if provided
@@ -270,6 +329,8 @@ export async function POST(request: NextRequest) {
             },
           },
         });
+
+        createdWorkoutExecutionId = workoutExecution.id;
 
         // 3. Sync CalendarEvent on workout completion
         let workoutTitle = workout.name || 'Treino de Força';
@@ -346,7 +407,290 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    return NextResponse.json({ success: true });
+    if (!workout) {
+      return NextResponse.json({ success: true });
+    }
+
+    // 4. Calculate session summary metrics
+    let totalTonnage = 0;
+    let validSetsCount = 0;
+    let rpeSum = 0;
+    let rpeCount = 0;
+    let legSetsCount = 0;
+    let upperSetsCount = 0;
+
+    const lowerBodyPatterns = ['squat', 'hinge', 'lunge', 'knee_extension', 'knee_flexion', 'calf_raise', 'hip_thrust'];
+    const lowerBodyKeywords = [
+      'agachamento', 'leg press', 'hack', 'stiff', 'terra', 'deadlift',
+      'extensora', 'flexora', 'panturrilha', 'afundo', 'passada',
+      'bulgaro', 'bulgarian', 'gluteo', 'quadriceps'
+    ];
+
+    for (const ex of workout.exercises) {
+      const normName = (ex.exerciseName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const normPattern = (ex.movementPattern || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const isLeg = lowerBodyPatterns.some((p) => normPattern.includes(p)) || lowerBodyKeywords.some((kw) => normName.includes(kw));
+
+      for (const s of ex.sets) {
+        const load = s.loadKg ? parseFloat(String(s.loadKg)) : 0;
+        const reps = parseInt(String(s.reps)) || 0;
+        if (reps > 0) {
+          validSetsCount++;
+          if (load > 0) {
+            totalTonnage += load * reps;
+          }
+          if (isLeg) {
+            legSetsCount++;
+          } else {
+            upperSetsCount++;
+          }
+          if (s.rpe) {
+            const rpeVal = parseFloat(String(s.rpe));
+            if (!isNaN(rpeVal) && rpeVal > 0) {
+              rpeSum += rpeVal;
+              rpeCount++;
+            }
+          }
+        }
+      }
+    }
+    totalTonnage = Math.round(totalTonnage * 10) / 10;
+
+    let averageRpe: number | null = null;
+    if (rpeCount > 0) {
+      averageRpe = Math.round((rpeSum / rpeCount) * 10) / 10;
+    } else if (workout.sessionRpe) {
+      const sessRpe = parseFloat(String(workout.sessionRpe));
+      if (!isNaN(sessRpe) && sessRpe > 0) {
+        averageRpe = Math.round(sessRpe * 10) / 10;
+      }
+    }
+
+    const durationMinutes = workout.durationMinutes ? parseInt(String(workout.durationMinutes)) : 60;
+
+    // 5. Query previous session for the same workout template
+    let templateId = workout.workoutDayTemplateId || null;
+    if (!templateId && workout.exercises.length > 0) {
+      const firstRxId = workout.exercises.find((e) => e.exercisePrescriptionId)?.exercisePrescriptionId;
+      if (firstRxId) {
+        const rx = await prisma.exercisePrescription.findUnique({
+          where: { id: firstRxId },
+          select: { workoutDayTemplateId: true },
+        });
+        if (rx?.workoutDayTemplateId) {
+          templateId = rx.workoutDayTemplateId;
+        }
+      }
+    }
+
+    let previousWorkout = null;
+    if (templateId) {
+      previousWorkout = await prisma.workoutExecution.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          status: 'completed',
+          id: { not: createdWorkoutExecutionId || undefined },
+          exerciseExecutions: {
+            some: {
+              exercisePrescription: {
+                workoutDayTemplateId: templateId,
+              },
+            },
+          },
+        },
+        orderBy: [
+          { date: 'desc' },
+          { createdAt: 'desc' },
+        ],
+        include: {
+          exerciseExecutions: {
+            include: {
+              setExecutions: true,
+            },
+          },
+        },
+      });
+    }
+
+    if (!previousWorkout && workout.exercises.length > 0) {
+      const exerciseNames = workout.exercises.map((e) => e.exerciseName);
+      previousWorkout = await prisma.workoutExecution.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          status: 'completed',
+          id: { not: createdWorkoutExecutionId || undefined },
+          exerciseExecutions: {
+            some: {
+              exerciseName: { in: exerciseNames },
+            },
+          },
+        },
+        orderBy: [
+          { date: 'desc' },
+          { createdAt: 'desc' },
+        ],
+        include: {
+          exerciseExecutions: {
+            include: {
+              setExecutions: true,
+            },
+          },
+        },
+      });
+    }
+
+    let previousTonnage: number | null = null;
+    let tonnageDeltaPercent: number | null = null;
+
+    if (previousWorkout && previousWorkout.exerciseExecutions.length > 0) {
+      let prevSum = 0;
+      for (const pEx of previousWorkout.exerciseExecutions) {
+        for (const pSet of pEx.setExecutions) {
+          const pLoad = pSet.loadKg || 0;
+          const pReps = pSet.reps || 0;
+          if (pLoad > 0 && pReps > 0) {
+            prevSum += pLoad * pReps;
+          }
+        }
+      }
+      if (prevSum > 0) {
+        previousTonnage = Math.round(prevSum * 10) / 10;
+        if (previousTonnage > 0) {
+          tonnageDeltaPercent = Math.round(((totalTonnage - previousTonnage) / previousTonnage) * 1000) / 10;
+        }
+      }
+    }
+
+    // 6. Detect Personal Records (PRs)
+    interface PersonalRecordItem {
+      exerciseName: string;
+      metric: 'load' | 'volume';
+      currentValue: number;
+      previousBest: number;
+      unit: 'kg' | 'kg-total';
+    }
+
+    const personalRecords: PersonalRecordItem[] = [];
+
+    for (const ex of workout.exercises) {
+      const currentSetsWithLoad = ex.sets.filter(
+        (s) => (parseFloat(String(s.loadKg)) || 0) > 0 && (parseInt(String(s.reps)) || 0) > 0
+      );
+      if (currentSetsWithLoad.length === 0) continue;
+
+      const currentMaxLoad = Math.max(...currentSetsWithLoad.map((s) => parseFloat(String(s.loadKg)) || 0));
+      const currentVolume = currentSetsWithLoad.reduce(
+        (sum, s) => sum + (parseFloat(String(s.loadKg)) || 0) * (parseInt(String(s.reps)) || 0),
+        0
+      );
+
+      const namesToSearch = [ex.exerciseName];
+      if (ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName) {
+        namesToSearch.push(ex.substitutedFrom);
+      }
+
+      const historicalExecs = await prisma.exerciseExecution.findMany({
+        where: {
+          exerciseName: { in: namesToSearch },
+          workoutExecution: {
+            athleteProfileId: 'singleton',
+            status: 'completed',
+            id: { not: createdWorkoutExecutionId || undefined },
+          },
+        },
+        include: {
+          setExecutions: true,
+        },
+      });
+
+      if (historicalExecs.length > 0) {
+        let historicalMaxLoad = 0;
+        let historicalMaxVolume = 0;
+
+        for (const hExec of historicalExecs) {
+          let execVolume = 0;
+          for (const s of hExec.setExecutions) {
+            const l = s.loadKg || 0;
+            const r = s.reps || 0;
+            if (l > historicalMaxLoad) {
+              historicalMaxLoad = l;
+            }
+            if (l > 0 && r > 0) {
+              execVolume += l * r;
+            }
+          }
+          if (execVolume > historicalMaxVolume) {
+            historicalMaxVolume = execVolume;
+          }
+        }
+
+        // Check Load PR
+        if (currentMaxLoad > historicalMaxLoad && historicalMaxLoad > 0) {
+          personalRecords.push({
+            exerciseName: ex.exerciseName,
+            metric: 'load',
+            currentValue: roundToHalfKg(currentMaxLoad),
+            previousBest: roundToHalfKg(historicalMaxLoad),
+            unit: 'kg',
+          });
+        }
+
+        // Check Volume PR
+        if (currentVolume > historicalMaxVolume && historicalMaxVolume > 0) {
+          personalRecords.push({
+            exerciseName: ex.exerciseName,
+            metric: 'volume',
+            currentValue: Math.round(currentVolume * 10) / 10,
+            previousBest: Math.round(historicalMaxVolume * 10) / 10,
+            unit: 'kg-total',
+          });
+        }
+      }
+    }
+
+    // 7. Factual multi-sport recovery guidance
+    interface RecoveryGuidance {
+      hours: number;
+      muscleGroups: string[];
+      guidanceText: string;
+    }
+
+    let recovery: RecoveryGuidance;
+    if (legSetsCount > 0 && legSetsCount >= upperSetsCount) {
+      recovery = {
+        hours: 48,
+        muscleGroups: ['inferiores', 'pernas'],
+        guidanceText: `Treino de inferiores concluído com ${legSetsCount} séries pesadas. Janela ideal: 48h de recuperação muscular antes de treinos longos de corrida ou CrossFit intenso.`,
+      };
+    } else if (legSetsCount > 0 && upperSetsCount > 0) {
+      recovery = {
+        hours: 48,
+        muscleGroups: ['full_body', 'corpo_inteiro'],
+        guidanceText: `Treino Full Body concluído (${validSetsCount} séries). Janela recomendada: 48h de recuperação muscular antes de treinos de endurance ou alta intensidade.`,
+      };
+    } else {
+      recovery = {
+        hours: 36,
+        muscleGroups: ['superiores', 'peito_costas_bracos'],
+        guidanceText: `Treino de membros superiores finalizado (${upperSetsCount || validSetsCount} séries). Corrida leve ou moderada liberada para amanhã sem conflito mecânico.`,
+      };
+    }
+
+    return NextResponse.json({
+      success: true,
+      summary: {
+        totalTonnage,
+        previousTonnage,
+        tonnageDeltaPercent,
+        personalRecords,
+        averageRpe,
+        durationMinutes,
+        validSetsCount,
+        completedSetsCount: validSetsCount,
+        recoveryGuidance: recovery.guidanceText,
+        recovery,
+      },
+    });
   } catch (error) {
     console.error('Falha ao registrar dados de treino.', error);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });

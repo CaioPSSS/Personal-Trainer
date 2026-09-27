@@ -56,6 +56,90 @@ export async function GET() {
   }
 }
 
+const CANONICAL_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+
+const DAY_NAME_TO_CANONICAL: Record<string, string> = {
+  // Portuguese
+  seg: 'monday',
+  segunda: 'monday',
+  'segunda-feira': 'monday',
+  ter: 'tuesday',
+  terca: 'tuesday',
+  terça: 'tuesday',
+  'terca-feira': 'tuesday',
+  'terça-feira': 'tuesday',
+  qua: 'wednesday',
+  quarta: 'wednesday',
+  'quarta-feira': 'wednesday',
+  qui: 'thursday',
+  quinta: 'thursday',
+  'quinta-feira': 'thursday',
+  sex: 'friday',
+  sexta: 'friday',
+  'sexta-feira': 'friday',
+  sab: 'saturday',
+  sabado: 'saturday',
+  sábado: 'saturday',
+  dom: 'sunday',
+  domingo: 'sunday',
+  // English
+  mon: 'monday',
+  monday: 'monday',
+  tue: 'tuesday',
+  tues: 'tuesday',
+  tuesday: 'tuesday',
+  wed: 'wednesday',
+  wednesday: 'wednesday',
+  thu: 'thursday',
+  thur: 'thursday',
+  thurs: 'thursday',
+  thursday: 'thursday',
+  fri: 'friday',
+  friday: 'friday',
+  sat: 'saturday',
+  saturday: 'saturday',
+  sun: 'sunday',
+  sunday: 'sunday',
+};
+
+function normalizeAvailableDays(val: unknown): { isValid: boolean; days: string[] | null } {
+  if (val === undefined || val === null) {
+    return { isValid: true, days: null };
+  }
+
+  if (!Array.isArray(val)) {
+    return { isValid: false, days: null };
+  }
+
+  if (val.length === 0) {
+    return { isValid: false, days: null };
+  }
+
+  const normalized = new Set<string>();
+  for (const item of val) {
+    if (typeof item === 'number' && item >= 0 && item <= 6) {
+      normalized.add(CANONICAL_DAYS[item]);
+    } else if (typeof item === 'string') {
+      const clean = item.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (DAY_NAME_TO_CANONICAL[clean]) {
+        normalized.add(DAY_NAME_TO_CANONICAL[clean]);
+      } else if (!isNaN(Number(clean))) {
+        const num = Number(clean);
+        if (num >= 0 && num <= 6) {
+          normalized.add(CANONICAL_DAYS[num]);
+        }
+      }
+    }
+  }
+
+  if (normalized.size === 0) {
+    return { isValid: false, days: null };
+  }
+
+  const sortedDays = CANONICAL_DAYS.filter((d) => normalized.has(d));
+  return { isValid: true, days: sortedDays };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -71,8 +155,30 @@ export async function POST(req: NextRequest) {
     const targetDistanceKm = body.targetDistanceKm ? Number(body.targetDistanceKm) : null;
     const primaryObjective = body.primaryObjective ?? null;
     const primaryTerrain = body.primaryTerrain ?? null;
-    const availableDays = Array.isArray(body.availableDays) ? body.availableDays : null;
     const injuryHistory = body.injuryHistory ?? null;
+
+    // Validate and normalize availableDays
+    const parsedDays = normalizeAvailableDays(body.availableDays);
+    if (!parsedDays.isValid) {
+      return NextResponse.json(
+        { error: 'Dias disponíveis inválidos. Selecione pelo menos 1 dia válido da semana para correr.' },
+        { status: 400 }
+      );
+    }
+    const availableDays = parsedDays.days;
+
+    // Validate weeklyRunsTarget (integer between 2 and 5, or null)
+    let weeklyRunsTarget: number | null = null;
+    if (body.weeklyRunsTarget !== undefined && body.weeklyRunsTarget !== null && body.weeklyRunsTarget !== '') {
+      const numTarget = Number(body.weeklyRunsTarget);
+      if (!Number.isInteger(numTarget) || numTarget < 2 || numTarget > 5) {
+        return NextResponse.json(
+          { error: 'Meta semanal de corridas (weeklyRunsTarget) deve ser um número inteiro entre 2 e 5.' },
+          { status: 400 }
+        );
+      }
+      weeklyRunsTarget = numTarget;
+    }
 
     let hrZones: Record<string, unknown> | null = null;
     if (maxHeartRate && restingHeartRate && maxHeartRate > restingHeartRate) {
@@ -94,6 +200,7 @@ export async function POST(req: NextRequest) {
       targetDistanceKm,
       primaryTerrain,
       availableDays: availableDays as unknown as Prisma.InputJsonValue,
+      weeklyRunsTarget,
       injuryHistory: injuryHistory as unknown as Prisma.InputJsonValue,
       ...(hrZones ? { hrZones: hrZones as unknown as Prisma.InputJsonValue } : {}),
     };

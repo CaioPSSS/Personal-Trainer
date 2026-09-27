@@ -31,7 +31,10 @@ interface RunningProfileInfo {
   maxHeartRate?: number | null;
   restingHeartRate?: number | null;
   primaryTerrain?: string | null;
+  targetPaceSec?: number | null;
+  targetDistanceKm?: number | null;
   availableDays?: unknown;
+  weeklyRunsTarget?: number | null;
   hrZones?: unknown;
 }
 
@@ -60,26 +63,29 @@ function formatPaceSec(paceSec?: number | null): string {
   return `${min}:${sec.toString().padStart(2, '0')} /km`;
 }
 
-function parseDaysToIndices(raw: unknown): number[] {
+function parseDaysToIndices(raw: unknown, defaultDays: number[] = [0, 1, 2, 4, 5]): number[] {
   if (Array.isArray(raw)) {
     const res: number[] = [];
     for (const item of raw) {
-      if (typeof item === 'number' && item >= 0 && item <= 6) res.push(item);
-      else if (typeof item === 'string') {
+      if (typeof item === 'number' && item >= 0 && item <= 6) {
+        res.push(item);
+      } else if (typeof item === 'string') {
         const lower = item.toLowerCase();
-        if (lower.startsWith('seg') || lower === '0') res.push(0);
-        else if (lower.startsWith('ter') || lower === '1') res.push(1);
-        else if (lower.startsWith('qua') || lower === '2') res.push(2);
-        else if (lower.startsWith('qui') || lower === '3') res.push(3);
-        else if (lower.startsWith('sex') || lower === '4') res.push(4);
-        else if (lower.startsWith('sab') || lower.startsWith('sáb') || lower === '5') res.push(5);
-        else if (lower.startsWith('dom') || lower === '6') res.push(6);
+        if (lower.startsWith('seg') || lower.startsWith('mon') || lower === '0') res.push(0);
+        else if (lower.startsWith('ter') || lower.startsWith('tue') || lower === '1') res.push(1);
+        else if (lower.startsWith('qua') || lower.startsWith('wed') || lower === '2') res.push(2);
+        else if (lower.startsWith('qui') || lower.startsWith('thu') || lower === '3') res.push(3);
+        else if (lower.startsWith('sex') || lower.startsWith('fri') || lower === '4') res.push(4);
+        else if (lower.startsWith('sab') || lower.startsWith('sáb') || lower.startsWith('sat') || lower === '5') res.push(5);
+        else if (lower.startsWith('dom') || lower.startsWith('sun') || lower === '6') res.push(6);
       }
     }
     if (res.length > 0) return Array.from(new Set(res)).sort((a, b) => a - b);
   }
-  return [0, 1, 2, 4, 5]; // Default: Seg, Ter, Qua, Sex, Sáb (5 dias)
+  return defaultDays;
 }
+
+const CANONICAL_DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
 
 const WEEK_DAYS = [
   { id: 0, short: 'Seg', name: 'Segunda-feira' },
@@ -92,6 +98,7 @@ const WEEK_DAYS = [
 ];
 
 const TARGET_WORKOUT_OPTIONS = [2, 3, 4, 5, 6];
+const RUNNING_TARGET_OPTIONS = [2, 3, 4, 5];
 
 const OBJECTIVE_LABELS: Record<string, string> = {
   improve_5k_pace: 'Melhorar Pace nos 5K',
@@ -172,6 +179,73 @@ export default function SettingsClient({
       toastError('Erro ao salvar preferências de treino.');
     } finally {
       setIsSavingSchedule(false);
+    }
+  };
+
+  // Running available days & weekly target state
+  const initialRunningDays = useMemo(() => {
+    return parseDaysToIndices(runningProfile?.availableDays, [1, 3, 5]); // Default: Ter, Qui, Sáb (3 dias)
+  }, [runningProfile?.availableDays]);
+
+  const [selectedRunningDays, setSelectedRunningDays] = useState<number[]>(initialRunningDays);
+  const [runningWeeklyTarget, setRunningWeeklyTarget] = useState<number>(
+    runningProfile?.weeklyRunsTarget ?? 3
+  );
+  const [isSavingRunningSchedule, setIsSavingRunningSchedule] = useState(false);
+
+  const handleToggleRunningDay = (dayId: number) => {
+    setSelectedRunningDays((prev) => {
+      if (prev.includes(dayId)) {
+        if (prev.length <= 1) return prev; // Keep at least 1 day
+        return prev.filter((d) => d !== dayId);
+      } else {
+        return [...prev, dayId].sort((a, b) => a - b);
+      }
+    });
+  };
+
+  const handleSaveRunningSchedule = async () => {
+    if (selectedRunningDays.length === 0) {
+      toastError('Selecione pelo menos 1 dia disponível na semana para correr.');
+      return;
+    }
+    setIsSavingRunningSchedule(true);
+    info('Salvando preferências de corrida...', 'Perfil de Corrida');
+    try {
+      const res = await fetch('/api/running/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          primaryObjective: runningProfile?.primaryObjective,
+          currentPace5kSec: runningProfile?.currentPace5kSec,
+          currentPace10kSec: runningProfile?.currentPace10kSec,
+          currentPaceHalfSec: runningProfile?.currentPaceHalfSec,
+          weeklyVolumeKm: runningProfile?.weeklyVolumeKm,
+          maxHeartRate: runningProfile?.maxHeartRate,
+          restingHeartRate: runningProfile?.restingHeartRate,
+          targetPaceSec: runningProfile?.targetPaceSec,
+          targetDistanceKm: runningProfile?.targetDistanceKm,
+          primaryTerrain: runningProfile?.primaryTerrain,
+          availableDays: selectedRunningDays.map((id) => CANONICAL_DAYS[id]),
+          weeklyRunsTarget: runningWeeklyTarget,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toastError(data.error || 'Falha ao salvar preferências de corrida.');
+        return;
+      }
+
+      success(
+        `Meta de ${runningWeeklyTarget} corridas em ${selectedRunningDays.length} dias salva com sucesso!`,
+        'Preferências de Corrida Salvas'
+      );
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+    } catch (err) {
+      console.error(err);
+      toastError('Erro ao salvar preferências de corrida.');
+    } finally {
+      setIsSavingRunningSchedule(false);
     }
   };
 
@@ -475,6 +549,116 @@ export default function SettingsClient({
               Terreno: {runningProfile?.primaryTerrain ? TERRAIN_LABELS[runningProfile.primaryTerrain] ?? runningProfile.primaryTerrain : 'Asfalto / Plano'}
             </span>
           </div>
+        </div>
+
+        {/* Available Days for Running */}
+        <div className="space-y-2 pt-3 border-t border-slate-800">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-slate-200">
+              1. Dias Disponíveis para Correr na Semana:
+            </span>
+            <span className="text-emerald-400 font-mono text-[11px]">
+              {selectedRunningDays.length} {selectedRunningDays.length === 1 ? 'dia selecionado' : 'dias selecionados'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            {WEEK_DAYS.map((day) => {
+              const isSelected = selectedRunningDays.includes(day.id);
+              return (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => handleToggleRunningDay(day.id)}
+                  className={`py-2.5 px-2 rounded-xl text-xs font-semibold border transition flex flex-col items-center justify-center gap-1 cursor-pointer ${
+                    isSelected
+                      ? 'bg-emerald-600/25 border-emerald-500 text-emerald-200 shadow-sm shadow-emerald-500/20'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                  }`}
+                  title={`${day.name} (${isSelected ? 'Disponível' : 'Indisponível'})`}
+                >
+                  <span className="text-sm font-bold">{day.short}</span>
+                  <div className="flex items-center gap-1 text-[10px]">
+                    {isSelected ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Weekly Running Target Selector */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-slate-200">
+              2. Meta de Treinos de Corrida por Semana:
+            </span>
+            <span className="text-emerald-400 font-mono text-[11px]">
+              {runningWeeklyTarget} sessões / semana
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            {RUNNING_TARGET_OPTIONS.map((count) => {
+              const isCurrent = runningWeeklyTarget === count;
+              return (
+                <button
+                  key={count}
+                  type="button"
+                  onClick={() => setRunningWeeklyTarget(count)}
+                  className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 cursor-pointer ${
+                    isCurrent
+                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-400 text-white shadow-md shadow-emerald-600/20'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                  }`}
+                >
+                  <Footprints className="w-3.5 h-3.5" />
+                  <span>{count} Corridas</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {runningWeeklyTarget > selectedRunningDays.length && (
+            <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs animate-fadeIn">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>
+                Você configurou uma meta de {runningWeeklyTarget} corridas, mas apenas {selectedRunningDays.length} dias disponíveis. O Running Coach AI distribuirá as sessões nos dias disponíveis ou você pode selecionar mais dias.
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Running schedule rules note */}
+        <div className="bg-slate-900/40 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5 text-xs text-slate-300">
+          <div className="flex items-center gap-1.5 font-semibold text-emerald-300">
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Harmonização Automática da Corrida:</span>
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Ao gerar novos mesociclos no Hub de Corrida, o modelo respeitará estritamente os dias selecionados e sua meta semanal. O agendador multi-esportes manterá treinos de pernas e corridas de alta intensidade separados por pelo menos 48h.
+          </p>
+        </div>
+
+        {/* Save Running Schedule Button */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleSaveRunningSchedule}
+            disabled={isSavingRunningSchedule}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-600/25 transition disabled:opacity-50 cursor-pointer"
+          >
+            <Sparkles className={`w-3.5 h-3.5 ${isSavingRunningSchedule ? 'animate-spin' : ''}`} />
+            <span>
+              {isSavingRunningSchedule
+                ? 'Salvando Preferências...'
+                : 'Salvar Preferências de Corrida'}
+            </span>
+          </button>
         </div>
       </div>
 

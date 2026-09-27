@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Footprints,
   RefreshCw,
@@ -17,6 +17,10 @@ import {
   SkipForward,
   ExternalLink,
   Zap,
+  Calendar,
+  Sparkles,
+  Check,
+  AlertCircle,
 } from 'lucide-react';
 import { useToast } from '@/app/components/ToastProvider';
 import RunningOnboardingForm from '@/app/components/RunningOnboardingForm';
@@ -74,6 +78,7 @@ interface RunningProfileData {
   targetPaceSec?: number | null;
   targetDistanceKm?: number | null;
   availableDays?: string[] | null;
+  weeklyRunsTarget?: number | null;
   injuryHistory?: unknown | null;
   primaryTerrain?: string | null;
   hrZones?: Record<string, { min: number; max: number; label: string }> | null;
@@ -85,6 +90,41 @@ interface StravaStatusData {
   athleteStravaId: number | null;
   scope: string | null;
   lastSyncAt: string | null;
+}
+
+const WEEK_DAYS_CONFIG = [
+  { id: 0, key: 'monday', short: 'Seg', name: 'Segunda-feira' },
+  { id: 1, key: 'tuesday', short: 'Ter', name: 'Terça-feira' },
+  { id: 2, key: 'wednesday', short: 'Qua', name: 'Quarta-feira' },
+  { id: 3, key: 'thursday', short: 'Qui', name: 'Quinta-feira' },
+  { id: 4, key: 'friday', short: 'Sex', name: 'Sexta-feira' },
+  { id: 5, key: 'saturday', short: 'Sáb', name: 'Sábado' },
+  { id: 6, key: 'sunday', short: 'Dom', name: 'Domingo' },
+];
+
+const RUNNING_TARGET_OPTIONS = [2, 3, 4, 5];
+
+function normalizeProfileDays(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    const res: string[] = [];
+    for (const item of raw) {
+      if (typeof item === 'string') {
+        const lower = item.toLowerCase();
+        if (lower.startsWith('seg') || lower.startsWith('mon') || lower === '0') res.push('monday');
+        else if (lower.startsWith('ter') || lower.startsWith('tue') || lower === '1') res.push('tuesday');
+        else if (lower.startsWith('qua') || lower.startsWith('wed') || lower === '2') res.push('wednesday');
+        else if (lower.startsWith('qui') || lower.startsWith('thu') || lower === '3') res.push('thursday');
+        else if (lower.startsWith('sex') || lower.startsWith('fri') || lower === '4') res.push('friday');
+        else if (lower.startsWith('sab') || lower.startsWith('sáb') || lower.startsWith('sat') || lower === '5') res.push('saturday');
+        else if (lower.startsWith('dom') || lower.startsWith('sun') || lower === '6') res.push('sunday');
+      } else if (typeof item === 'number' && item >= 0 && item <= 6) {
+        const keys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+        res.push(keys[item]);
+      }
+    }
+    if (res.length > 0) return Array.from(new Set(res));
+  }
+  return ['tuesday', 'thursday', 'saturday'];
 }
 
 const SESSION_TYPE_LABELS: Record<string, string> = {
@@ -148,6 +188,143 @@ export default function RunningPage() {
 
   // Skipping state
   const [skippingSessionId, setSkippingSessionId] = useState<string | null>(null);
+
+  const configuredDays = useMemo(() => {
+    return normalizeProfileDays(profile?.availableDays);
+  }, [profile?.availableDays]);
+  const currentRunsTarget = profile?.weeklyRunsTarget ?? 3;
+
+  // Quick Availability Adjustment state
+  const [isAdjustingSchedule, setIsAdjustingSchedule] = useState(false);
+  const [quickDays, setQuickDays] = useState<string[]>(['tuesday', 'thursday', 'saturday']);
+  const [quickTarget, setQuickTarget] = useState<number>(3);
+  const [isSavingQuickSchedule, setIsSavingQuickSchedule] = useState(false);
+  const [isRegeneratingPlan, setIsRegeneratingPlan] = useState(false);
+
+  const startAdjustingSchedule = () => {
+    setQuickDays(normalizeProfileDays(profile?.availableDays));
+    setQuickTarget(profile?.weeklyRunsTarget ?? 3);
+    setIsAdjustingSchedule(true);
+  };
+
+  const handleToggleQuickDay = (dayKey: string) => {
+    setQuickDays((prev) => {
+      if (prev.includes(dayKey)) {
+        if (prev.length <= 1) {
+          toastError('Selecione pelo menos 1 dia disponível na semana para correr.');
+          return prev;
+        }
+        return prev.filter((d) => d !== dayKey);
+      } else {
+        return [...prev, dayKey];
+      }
+    });
+  };
+
+  const handleSaveQuickSchedule = async () => {
+    if (quickDays.length === 0) {
+      toastError('Selecione pelo menos 1 dia disponível na semana para correr.');
+      return;
+    }
+    setIsSavingQuickSchedule(true);
+    info('Salvando preferências de disponibilidade...', 'Perfil de Corrida');
+    try {
+      const res = await fetch('/api/running/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          primaryObjective: profile?.primaryObjective,
+          currentPace5kSec: profile?.currentPace5kSec,
+          currentPace10kSec: profile?.currentPace10kSec,
+          weeklyVolumeKm: profile?.weeklyVolumeKm,
+          maxHeartRate: profile?.maxHeartRate,
+          restingHeartRate: profile?.restingHeartRate,
+          targetPaceSec: profile?.targetPaceSec,
+          targetDistanceKm: profile?.targetDistanceKm,
+          primaryTerrain: profile?.primaryTerrain,
+          availableDays: quickDays,
+          weeklyRunsTarget: quickTarget,
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha ao salvar disponibilidade.');
+      }
+
+      const data = await res.json();
+      setProfile(data.profile ?? null);
+      success(
+        `Disponibilidade atualizada: ${quickDays.length} dias, meta de ${quickTarget} corridas/sem.`,
+        'Configuração Atualizada'
+      );
+      setIsAdjustingSchedule(false);
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : 'Erro ao salvar disponibilidade.');
+    } finally {
+      setIsSavingQuickSchedule(false);
+    }
+  };
+
+  const handleConfirmAndRegeneratePlan = async () => {
+    if (quickDays.length === 0) {
+      toastError('Selecione pelo menos 1 dia disponível na semana para correr.');
+      return;
+    }
+    setIsRegeneratingPlan(true);
+    info('Atualizando disponibilidade e gerando novo plano com a IA...', 'Novo Mesociclo');
+    try {
+      // Step 1: Save updated profile
+      const profileRes = await fetch('/api/running/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          primaryObjective: profile?.primaryObjective,
+          currentPace5kSec: profile?.currentPace5kSec,
+          currentPace10kSec: profile?.currentPace10kSec,
+          weeklyVolumeKm: profile?.weeklyVolumeKm,
+          maxHeartRate: profile?.maxHeartRate,
+          restingHeartRate: profile?.restingHeartRate,
+          targetPaceSec: profile?.targetPaceSec,
+          targetDistanceKm: profile?.targetDistanceKm,
+          primaryTerrain: profile?.primaryTerrain,
+          availableDays: quickDays,
+          weeklyRunsTarget: quickTarget,
+        }),
+      });
+
+      if (!profileRes.ok) {
+        const errData = await profileRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha ao salvar disponibilidade.');
+      }
+
+      // Step 2: Trigger plan generation
+      const genRes = await fetch('/api/running/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      if (!genRes.ok) {
+        const errData = await genRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha na geração do novo plano.');
+      }
+
+      const genData = await genRes.json();
+      success(
+        `Novo mesociclo de 4 semanas gerado com sucesso via ${genData.modelUsed || 'Running Coach AI'} (${genData.sessionsCount} sessões distribuídas em ${quickDays.length} dias)!`,
+        'Plano Gerado'
+      );
+      setIsAdjustingSchedule(false);
+      await reloadRunningData();
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+    } catch (err) {
+      toastError(err instanceof Error ? err.message : 'Erro ao gerar novo mesociclo.');
+    } finally {
+      setIsRegeneratingPlan(false);
+    }
+  };
 
   const toggleExpandSession = (sessionId: string) => {
     setExpandedSessions((prev) => ({
@@ -520,6 +697,190 @@ export default function RunningPage() {
             <Settings2 className="w-4 h-4" />
           </button>
         </div>
+      </div>
+
+      {/* Availability & Frequency Section (Running AI Schedule Indicator & Quick Adjustment) */}
+      <div className="glass-card p-5 space-y-4 border-slate-800">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <Calendar className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
+                Disponibilidade Semanal & Meta de Treinos
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Running AI Schedule
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                {isAdjustingSchedule
+                  ? 'Ajuste seus dias e meta semanal antes de gerar um novo ciclo de corrida.'
+                  : 'Configuração atual respeitada pelo gerador de periodização e pelo calendário multi-esportes.'}
+              </p>
+            </div>
+          </div>
+
+          {!isAdjustingSchedule && (
+            <button
+              type="button"
+              onClick={startAdjustingSchedule}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-700 hover:border-emerald-500/40 bg-slate-800/80 hover:bg-slate-800 text-xs font-semibold text-slate-300 hover:text-emerald-300 transition cursor-pointer"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
+              <span>Ajustar Disponibilidade & Meta</span>
+            </button>
+          )}
+        </div>
+
+        {/* Days of Week pills */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold text-slate-200">
+              {isAdjustingSchedule ? '1. Selecione os Dias Disponíveis para Correr:' : 'Dias Configurados para Corrida:'}
+            </span>
+            <span className="text-emerald-400 font-mono text-[11px]">
+              {isAdjustingSchedule
+                ? `${quickDays.length} ${quickDays.length === 1 ? 'dia selecionado' : 'dias selecionados'}`
+                : `${configuredDays.length} ${configuredDays.length === 1 ? 'dia ativo' : 'dias ativos'}`}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+            {WEEK_DAYS_CONFIG.map((day) => {
+              const isSelected = isAdjustingSchedule
+                ? quickDays.includes(day.key)
+                : configuredDays.includes(day.key);
+
+              return (
+                <button
+                  key={day.id}
+                  type="button"
+                  disabled={!isAdjustingSchedule || isSavingQuickSchedule || isRegeneratingPlan}
+                  onClick={() => isAdjustingSchedule && handleToggleQuickDay(day.key)}
+                  className={`py-2 px-2 rounded-xl text-xs font-semibold border transition flex flex-col items-center justify-center gap-1 ${
+                    isAdjustingSchedule ? 'cursor-pointer' : 'cursor-default'
+                  } ${
+                    isSelected
+                      ? 'bg-emerald-600/25 border-emerald-500 text-emerald-200 shadow-sm shadow-emerald-500/20'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-500'
+                  }`}
+                  title={`${day.name} (${isSelected ? 'Disponível' : 'Descanso'})`}
+                >
+                  <span className="text-sm font-bold">{day.short}</span>
+                  <div className="flex items-center gap-1 text-[10px]">
+                    {isSelected ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Weekly runs target selector or summary */}
+        {isAdjustingSchedule ? (
+          <div className="space-y-3 pt-2">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-200">
+                  2. Meta de Treinos de Corrida por Semana:
+                </span>
+                <span className="text-emerald-400 font-mono text-[11px]">
+                  {quickTarget} treinos / semana
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {RUNNING_TARGET_OPTIONS.map((count) => {
+                  const isCurrent = quickTarget === count;
+                  return (
+                    <button
+                      key={count}
+                      type="button"
+                      disabled={isSavingQuickSchedule || isRegeneratingPlan}
+                      onClick={() => setQuickTarget(count)}
+                      className={`py-2 px-3 rounded-xl text-xs font-semibold border transition flex items-center justify-center gap-2 cursor-pointer ${
+                        isCurrent
+                          ? 'bg-gradient-to-r from-emerald-600 to-teal-600 border-emerald-400 text-white shadow-md shadow-emerald-600/20'
+                          : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                      }`}
+                    >
+                      <Footprints className="w-3.5 h-3.5" />
+                      <span>{count} Corridas</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {quickTarget > quickDays.length && (
+                <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>
+                    Você configurou meta de {quickTarget} corridas, mas apenas {quickDays.length} dias disponíveis. A IA limitará o cronograma aos dias disponíveis ou selecione mais dias.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Adjustment Actions */}
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800 flex-wrap">
+              <button
+                type="button"
+                disabled={isSavingQuickSchedule || isRegeneratingPlan}
+                onClick={() => setIsAdjustingSchedule(false)}
+                className="px-4 py-2 rounded-xl border border-slate-700 text-xs font-semibold text-slate-300 hover:text-white transition disabled:opacity-50 cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isSavingQuickSchedule || isRegeneratingPlan}
+                onClick={handleSaveQuickSchedule}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+              >
+                <Check className={`w-3.5 h-3.5 ${isSavingQuickSchedule ? 'animate-spin' : ''}`} />
+                <span>{isSavingQuickSchedule ? 'Salvando...' : 'Salvar Disponibilidade'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isSavingQuickSchedule || isRegeneratingPlan}
+                onClick={handleConfirmAndRegeneratePlan}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 text-xs font-bold transition shadow-md shadow-emerald-500/20 disabled:opacity-50 cursor-pointer"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isRegeneratingPlan ? 'animate-spin' : ''}`} />
+                <span>{isRegeneratingPlan ? 'Gerando Plano com IA...' : 'Confirmar & Gerar Novo Mesociclo'}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pt-2 border-t border-slate-800/60 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-slate-400">Meta Semanal:</span>
+              <span className="font-bold text-emerald-300 flex items-center gap-1 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
+                <Footprints className="w-3 h-3" />
+                {currentRunsTarget} corridas / semana
+              </span>
+              {currentRunsTarget > configuredDays.length ? (
+                <span className="text-amber-300 text-[11px] flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  Limitado aos {configuredDays.length} dias livres
+                </span>
+              ) : (
+                <span className="text-slate-400 text-[11px] flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  Alinhado com disponibilidade
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Sessões de corrida isoladas a 48h de treinos pesados de pernas.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Plan Summary Banner & Progress */}
