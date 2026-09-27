@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -61,6 +61,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   const [events, setEvents] = useState<CalendarEventDTO[]>([]);
   const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
   const [dragOverDate, setDragOverDate] = useState<string | null>(null);
+  const navHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Skip dialog state
   const [skipTarget, setSkipTarget] = useState<CalendarEventDTO | null>(null);
@@ -148,6 +149,15 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
     setCurrentWeekStart(getStartOfWeek(new Date()));
   };
 
+  // Adjacent week anchor dates for cross-week dragging
+  const nextWeekStartDate = new Date(currentWeekStart);
+  nextWeekStartDate.setDate(nextWeekStartDate.getDate() + 7);
+  const nextMondayStr = formatDateISO(nextWeekStartDate);
+
+  const prevSundayDate = new Date(currentWeekStart);
+  prevSundayDate.setDate(prevSundayDate.getDate() - 1);
+  const prevSundayStr = formatDateISO(prevSundayDate);
+
   // Drag-and-drop mechanics
   const handleDragStart = (e: React.DragEvent, event: CalendarEventDTO) => {
     if (event.status !== 'planned') return;
@@ -171,10 +181,75 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
     setDragOverDate(null);
   };
 
+  const handleNavButtonDragOver = (e: React.DragEvent, direction: 'prev' | 'next') => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (navHoverTimeoutRef.current) return;
+    navHoverTimeoutRef.current = setTimeout(() => {
+      if (direction === 'next') {
+        handleNextWeek();
+      } else {
+        handlePrevWeek();
+      }
+      navHoverTimeoutRef.current = null;
+    }, 450);
+  };
+
+  const handleNavButtonDragLeave = () => {
+    if (navHoverTimeoutRef.current) {
+      clearTimeout(navHoverTimeoutRef.current);
+      navHoverTimeoutRef.current = null;
+    }
+  };
+
+  const handleCrossWeekDrop = async (e: React.DragEvent, targetDate: string, weekShiftDays: number) => {
+    e.preventDefault();
+    setDragOverDate(null);
+    setDraggingEventId(null);
+    if (navHoverTimeoutRef.current) {
+      clearTimeout(navHoverTimeoutRef.current);
+      navHoverTimeoutRef.current = null;
+    }
+
+    const rawData = e.dataTransfer.getData('application/json');
+    if (!rawData) return;
+
+    try {
+      const { eventId, sourceDate } = JSON.parse(rawData);
+      if (sourceDate === targetDate) return;
+
+      // Optimistically shift the current week view so the moved workout is immediately visible
+      setCurrentWeekStart((prev) => {
+        const next = new Date(prev);
+        next.setDate(next.getDate() + weekShiftDays);
+        return next;
+      });
+
+      const res = await fetch('/api/calendar', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId, newDate: targetDate }),
+      });
+
+      if (!res.ok) {
+        throw new Error('Falha ao reagendar treino');
+      }
+
+      success(`Treino movido para ${targetDate}`, 'Reagendado');
+    } catch (err) {
+      console.error(err);
+      error('Não foi possível reagendar o treino.', 'Erro');
+    }
+  };
+
   const handleDrop = async (e: React.DragEvent, targetDate: string) => {
     e.preventDefault();
     setDragOverDate(null);
     setDraggingEventId(null);
+    if (navHoverTimeoutRef.current) {
+      clearTimeout(navHoverTimeoutRef.current);
+      navHoverTimeoutRef.current = null;
+    }
 
     const rawData = e.dataTransfer.getData('application/json');
     if (!rawData) return;
@@ -283,8 +358,13 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
             <button
               type="button"
               onClick={handlePrevWeek}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-              title="Semana anterior"
+              onDragOver={(e) => handleNavButtonDragOver(e, 'prev')}
+              onDragLeave={handleNavButtonDragLeave}
+              onDrop={(e) => handleCrossWeekDrop(e, prevSundayStr, -7)}
+              className={`p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition ${
+                draggingEventId ? 'ring-1 ring-indigo-500/50' : ''
+              }`}
+              title="Semana anterior (segure o treino aqui para voltar a semana ou solte para mover para Domingo)"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
@@ -298,8 +378,13 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
             <button
               type="button"
               onClick={handleNextWeek}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-              title="Próxima semana"
+              onDragOver={(e) => handleNavButtonDragOver(e, 'next')}
+              onDragLeave={handleNavButtonDragLeave}
+              onDrop={(e) => handleCrossWeekDrop(e, nextMondayStr, 7)}
+              className={`p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition ${
+                draggingEventId ? 'ring-1 ring-indigo-500/50' : ''
+              }`}
+              title="Próxima semana (segure o treino aqui para avançar a semana ou solte para mover para Segunda)"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -329,6 +414,43 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
           )}
         </div>
       </div>
+
+      {/* Cross-Week Quick Drop Zones (Active when dragging an event) */}
+      {draggingEventId && (
+        <div className="flex flex-col sm:flex-row items-center gap-2 p-2.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 animate-fadeSlideIn">
+          <div
+            onDragOver={(e) => handleDragOver(e, prevSundayStr)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleCrossWeekDrop(e, prevSundayStr, -7)}
+            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
+              dragOverDate === prevSundayStr
+                ? 'border-indigo-400 bg-indigo-600/30 text-indigo-100 font-bold scale-[1.01]'
+                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span className="text-xs">
+              Solte aqui para mover para o <strong>Domingo Anterior ({prevSundayStr.split('-')[2]}/{prevSundayStr.split('-')[1]})</strong>
+            </span>
+          </div>
+
+          <div
+            onDragOver={(e) => handleDragOver(e, nextMondayStr)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleCrossWeekDrop(e, nextMondayStr, 7)}
+            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
+              dragOverDate === nextMondayStr
+                ? 'border-emerald-400 bg-emerald-600/30 text-emerald-100 font-bold scale-[1.01]'
+                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <span className="text-xs">
+              Solte aqui para mover para a <strong>Próxima Segunda ({nextMondayStr.split('-')[2]}/{nextMondayStr.split('-')[1]})</strong>
+            </span>
+            <ChevronRight className="w-4 h-4 text-emerald-400 shrink-0" />
+          </div>
+        </div>
+      )}
 
       {/* 7-Day Agenda Columns */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
@@ -383,6 +505,14 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                         key={event.id}
                         draggable={isPlanned}
                         onDragStart={(e) => handleDragStart(e, event)}
+                        onDragEnd={() => {
+                          setDraggingEventId(null);
+                          setDragOverDate(null);
+                          if (navHoverTimeoutRef.current) {
+                            clearTimeout(navHoverTimeoutRef.current);
+                            navHoverTimeoutRef.current = null;
+                          }
+                        }}
                         className={`group relative rounded-xl border p-2.5 text-xs transition-all duration-200 select-none ${
                           isPlanned ? 'cursor-grab active:cursor-grabbing border-dashed' : ''
                         } ${

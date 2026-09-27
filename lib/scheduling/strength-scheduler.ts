@@ -134,7 +134,7 @@ export async function scheduleMesocycleWorkouts(
       workoutDate.setDate(weekStart.getDate() + offset);
       const dateStr = formatISODate(workoutDate);
 
-      // Check if any strength event already exists for this date and template
+      // Check if any strength event already exists for this date and template/title
       const existing = await prisma.calendarEvent.findFirst({
         where: {
           athleteProfileId,
@@ -142,7 +142,7 @@ export async function scheduleMesocycleWorkouts(
           eventType: 'strength',
           OR: [
             { referenceId: template.id },
-            { referenceModel: 'WorkoutDayTemplate' },
+            { title: template.label },
             { referenceModel: 'WorkoutExecution' },
           ],
         },
@@ -164,16 +164,60 @@ export async function scheduleMesocycleWorkouts(
       }
     }
   }
+
+  // Ensure no duplicates exist after scheduling
+  await cleanupDuplicateStrengthEvents(athleteProfileId);
+}
+
+/**
+ * Removes duplicate planned strength events on the same date with the same title,
+ * keeping only the earliest created event for each date/title combination.
+ */
+export async function cleanupDuplicateStrengthEvents(athleteProfileId: string): Promise<number> {
+  const prisma = await getPrisma();
+  const plannedEvents = await prisma.calendarEvent.findMany({
+    where: {
+      athleteProfileId,
+      eventType: 'strength',
+      status: 'planned',
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const seen = new Set<string>();
+  const duplicateIds: string[] = [];
+
+  for (const ev of plannedEvents) {
+    const key = `${ev.date}::${ev.title.trim().toLowerCase()}`;
+    if (seen.has(key)) {
+      duplicateIds.push(ev.id);
+    } else {
+      seen.add(key);
+    }
+  }
+
+  if (duplicateIds.length > 0) {
+    await prisma.calendarEvent.deleteMany({
+      where: { id: { in: duplicateIds } },
+    });
+    console.log(`[Scheduler] Removidos ${duplicateIds.length} eventos de força duplicados.`);
+  }
+
+  return duplicateIds.length;
 }
 
 /**
  * Ensures planned strength workout events exist in CalendarEvent for the current active mesocycle.
- * If none exist for the athlete, triggers scheduleMesocycleWorkouts.
+ * Cleans up any duplicate events, and if none exist for the athlete, triggers scheduleMesocycleWorkouts.
  *
  * @param athleteProfileId - ID of the athlete profile (e.g. 'singleton')
  */
 export async function syncPlannedCalendarEvents(athleteProfileId: string): Promise<void> {
   const prisma = await getPrisma();
+
+  // 1. Purge any duplicate planned strength events
+  await cleanupDuplicateStrengthEvents(athleteProfileId);
+
   const activePlan = await prisma.mesocyclePlan.findFirst({
     where: {
       athleteProfileId,
@@ -202,3 +246,4 @@ export async function syncPlannedCalendarEvents(athleteProfileId: string): Promi
     await scheduleMesocycleWorkouts(athleteProfileId);
   }
 }
+

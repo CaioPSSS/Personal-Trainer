@@ -38,7 +38,17 @@ export async function GET(req: NextRequest) {
       ],
     });
 
-    return NextResponse.json({ events });
+    // In-memory safety deduplication for planned events on the same date with the same title and type
+    const seen = new Set<string>();
+    const deduplicatedEvents = events.filter((ev) => {
+      if (ev.status !== 'planned') return true;
+      const key = `${ev.date}::${ev.eventType}::${ev.title.trim().toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    return NextResponse.json({ events: deduplicatedEvents });
   } catch (error) {
     console.error('Erro ao buscar eventos do calendário:', error);
     return NextResponse.json(

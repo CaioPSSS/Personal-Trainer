@@ -23,6 +23,15 @@ export async function saveMasterPlanToDb(
       },
     });
 
+    // Clean up uncompleted planned strength calendar events from previous plans
+    await tx.calendarEvent.deleteMany({
+      where: {
+        athleteProfileId,
+        eventType: 'strength',
+        status: 'planned',
+      },
+    });
+
     const today = new Date();
     const startDate = today.toISOString().split('T')[0];
     const endDate = new Date(today.getTime() + plan.mesocycle.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
