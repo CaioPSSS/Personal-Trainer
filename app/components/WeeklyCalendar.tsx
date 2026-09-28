@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { useToast } from './ToastProvider';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
+import UnskipWorkoutDialog from './UnskipWorkoutDialog';
 import CrossTrainingModal from './CrossTrainingModal';
 
 export interface CalendarEventDTO {
@@ -64,10 +65,13 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   const [dragOverDate, setDragOverDate] = useState<string | null>(null);
   const [isRebalancing, setIsRebalancing] = useState(false);
   const navHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const draggedEventRef = useRef<CalendarEventDTO | null>(null);
 
-  // Skip dialog state
+  // Skip & Unskip dialog states
   const [skipTarget, setSkipTarget] = useState<CalendarEventDTO | null>(null);
   const [isSkipOpen, setIsSkipOpen] = useState(false);
+  const [unskipTarget, setUnskipTarget] = useState<CalendarEventDTO | null>(null);
+  const [isUnskipOpen, setIsUnskipOpen] = useState(false);
 
   // Cross-training modal state
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
@@ -198,28 +202,45 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   // Drag-and-drop mechanics
   const handleDragStart = (e: React.DragEvent, event: CalendarEventDTO) => {
     if (event.status !== 'planned') return;
+    draggedEventRef.current = event;
     setDraggingEventId(event.id);
-    e.dataTransfer.setData(
-      'application/json',
-      JSON.stringify({ eventId: event.id, sourceDate: event.date })
-    );
     e.dataTransfer.effectAllowed = 'move';
+    const payload = JSON.stringify({ eventId: event.id, sourceDate: event.date });
+    e.dataTransfer.setData('text/plain', payload);
+    try {
+      e.dataTransfer.setData('application/json', payload);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDragEnter = (e: React.DragEvent, dateStr: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dragOverDate !== dateStr) {
+      setDragOverDate(dateStr);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent, dateStr: string) => {
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     if (dragOverDate !== dateStr) {
       setDragOverDate(dateStr);
     }
   };
 
-  const handleDragLeave = () => {
-    setDragOverDate(null);
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragOverDate(null);
+    }
   };
 
   const handleNavButtonDragOver = (e: React.DragEvent, direction: 'prev' | 'next') => {
     e.preventDefault();
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     if (navHoverTimeoutRef.current) return;
     navHoverTimeoutRef.current = setTimeout(() => {
@@ -241,6 +262,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
   const handleCrossWeekDrop = async (e: React.DragEvent, targetDate: string, weekShiftDays: number) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOverDate(null);
     setDraggingEventId(null);
     if (navHoverTimeoutRef.current) {
@@ -248,13 +270,31 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       navHoverTimeoutRef.current = null;
     }
 
-    const rawData = e.dataTransfer.getData('application/json');
-    if (!rawData) return;
+    const dragged = draggedEventRef.current;
+    draggedEventRef.current = null;
+
+    let eventId = dragged?.id;
+    let sourceDate = dragged?.date;
+
+    if (!eventId) {
+      const rawData =
+        e.dataTransfer.getData('application/json') ||
+        e.dataTransfer.getData('text/plain') ||
+        e.dataTransfer.getData('text');
+      if (rawData) {
+        try {
+          const parsed = JSON.parse(rawData);
+          eventId = parsed.eventId;
+          sourceDate = parsed.sourceDate;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    }
+
+    if (!eventId || sourceDate === targetDate) return;
 
     try {
-      const { eventId, sourceDate } = JSON.parse(rawData);
-      if (sourceDate === targetDate) return;
-
       // Optimistically shift the current week view so the moved workout is immediately visible
       setCurrentWeekStart((prev) => {
         const next = new Date(prev);
@@ -273,14 +313,18 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       }
 
       success(`Treino movido para ${targetDate}`, 'Reagendado');
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      refreshCalendar();
     } catch (err) {
       console.error(err);
       error('Não foi possível reagendar o treino.', 'Erro');
+      refreshCalendar();
     }
   };
 
   const handleDrop = async (e: React.DragEvent, targetDate: string) => {
     e.preventDefault();
+    e.stopPropagation();
     setDragOverDate(null);
     setDraggingEventId(null);
     if (navHoverTimeoutRef.current) {
@@ -288,13 +332,31 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       navHoverTimeoutRef.current = null;
     }
 
-    const rawData = e.dataTransfer.getData('application/json');
-    if (!rawData) return;
+    const dragged = draggedEventRef.current;
+    draggedEventRef.current = null;
+
+    let eventId = dragged?.id;
+    let sourceDate = dragged?.date;
+
+    if (!eventId) {
+      const rawData =
+        e.dataTransfer.getData('application/json') ||
+        e.dataTransfer.getData('text/plain') ||
+        e.dataTransfer.getData('text');
+      if (rawData) {
+        try {
+          const parsed = JSON.parse(rawData);
+          eventId = parsed.eventId;
+          sourceDate = parsed.sourceDate;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    }
+
+    if (!eventId || sourceDate === targetDate) return;
 
     try {
-      const { eventId, sourceDate } = JSON.parse(rawData);
-      if (sourceDate === targetDate) return;
-
       // Optimistic update
       setEvents((prev) =>
         prev.map((ev) => (ev.id === eventId ? { ...ev, date: targetDate } : ev))
@@ -311,6 +373,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       }
 
       success(`Treino remarcado para ${targetDate}`, 'Reagendado');
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
       refreshCalendar();
     } catch (err) {
       console.error(err);
@@ -463,43 +526,6 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
         </div>
       </div>
 
-      {/* Cross-Week Quick Drop Zones (Active when dragging an event) */}
-      {draggingEventId && (
-        <div className="flex flex-col sm:flex-row items-center gap-2 p-2.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 animate-fadeSlideIn">
-          <div
-            onDragOver={(e) => handleDragOver(e, prevSundayStr)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleCrossWeekDrop(e, prevSundayStr, -7)}
-            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
-              dragOverDate === prevSundayStr
-                ? 'border-indigo-400 bg-indigo-600/30 text-indigo-100 font-bold scale-[1.01]'
-                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
-            }`}
-          >
-            <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0" />
-            <span className="text-xs">
-              Solte aqui para mover para o <strong>Domingo Anterior ({prevSundayStr.split('-')[2]}/{prevSundayStr.split('-')[1]})</strong>
-            </span>
-          </div>
-
-          <div
-            onDragOver={(e) => handleDragOver(e, nextMondayStr)}
-            onDragLeave={handleDragLeave}
-            onDrop={(e) => handleCrossWeekDrop(e, nextMondayStr, 7)}
-            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
-              dragOverDate === nextMondayStr
-                ? 'border-emerald-400 bg-emerald-600/30 text-emerald-100 font-bold scale-[1.01]'
-                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
-            }`}
-          >
-            <span className="text-xs">
-              Solte aqui para mover para a <strong>Próxima Segunda ({nextMondayStr.split('-')[2]}/{nextMondayStr.split('-')[1]})</strong>
-            </span>
-            <ChevronRight className="w-4 h-4 text-emerald-400 shrink-0" />
-          </div>
-        </div>
-      )}
-
       {/* 7-Day Agenda Columns */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
         {weekDays.map((day) => {
@@ -509,6 +535,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
           return (
             <div
               key={day.dateStr}
+              onDragEnter={(e) => handleDragEnter(e, day.dateStr)}
               onDragOver={(e) => handleDragOver(e, day.dateStr)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, day.dateStr)}
@@ -537,7 +564,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
               {/* Day Events Stack */}
               <div className="flex-1 space-y-2">
                 {dayEvents.length === 0 ? (
-                  <div className="h-full flex items-center justify-center py-6 text-center">
+                  <div className="h-full flex items-center justify-center py-6 text-center pointer-events-none">
                     <span className="text-[11px] text-slate-600 italic">Descanso / Livre</span>
                   </div>
                 ) : (
@@ -572,7 +599,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                         } ${draggingEventId === event.id ? 'opacity-40 scale-95' : ''}`}
                       >
                         {/* Event Content */}
-                        <div className="flex items-start justify-between gap-1.5">
+                        <div className="flex items-start justify-between gap-1.5 pointer-events-none">
                           <div className="flex items-center gap-1.5 min-w-0">
                             <SportIcon className="w-3.5 h-3.5 shrink-0" />
                             <span className="font-semibold truncate text-[11px] text-slate-100">
@@ -598,10 +625,23 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                               </span>
                             )}
                             {isSkipped && (
-                              <span className="flex items-center gap-0.5 text-slate-500">
-                                <XCircle className="w-3 h-3" />
-                                <span>Pulado</span>
-                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="flex items-center gap-0.5 text-slate-500">
+                                  <XCircle className="w-3 h-3" />
+                                  <span>Pulado</span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setUnskipTarget(event);
+                                    setIsUnskipOpen(true);
+                                  }}
+                                  className="text-indigo-400 hover:text-indigo-300 font-bold transition-colors px-1.5 py-0.5 rounded bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 cursor-pointer"
+                                  title="Despular treino e reverter para planejado"
+                                >
+                                  Despular
+                                </button>
+                              </div>
                             )}
                             {isPlanned && (
                               <button
@@ -627,6 +667,45 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
           );
         })}
       </div>
+
+      {/* Cross-Week Quick Drop Zones (Active when dragging an event, positioned below columns so 0 layout shift occurs) */}
+      {draggingEventId && (
+        <div className="flex flex-col sm:flex-row items-center gap-2 p-2.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 animate-fadeSlideIn">
+          <div
+            onDragEnter={(e) => handleDragEnter(e, prevSundayStr)}
+            onDragOver={(e) => handleDragOver(e, prevSundayStr)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleCrossWeekDrop(e, prevSundayStr, -7)}
+            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
+              dragOverDate === prevSundayStr
+                ? 'border-indigo-400 bg-indigo-600/30 text-indigo-100 font-bold scale-[1.01]'
+                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <ChevronLeft className="w-4 h-4 text-indigo-400 shrink-0 pointer-events-none" />
+            <span className="text-xs pointer-events-none">
+              Solte aqui para mover para o <strong>Domingo Anterior ({prevSundayStr.split('-')[2]}/{prevSundayStr.split('-')[1]})</strong>
+            </span>
+          </div>
+
+          <div
+            onDragEnter={(e) => handleDragEnter(e, nextMondayStr)}
+            onDragOver={(e) => handleDragOver(e, nextMondayStr)}
+            onDragLeave={handleDragLeave}
+            onDrop={(e) => handleCrossWeekDrop(e, nextMondayStr, 7)}
+            className={`flex-1 w-full py-2.5 px-3 rounded-xl border-2 border-dashed text-center transition flex items-center justify-center gap-2 cursor-pointer ${
+              dragOverDate === nextMondayStr
+                ? 'border-emerald-400 bg-emerald-600/30 text-emerald-100 font-bold scale-[1.01]'
+                : 'border-slate-700 bg-slate-900/60 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <span className="text-xs pointer-events-none">
+              Solte aqui para mover para a <strong>Próxima Segunda ({nextMondayStr.split('-')[2]}/{nextMondayStr.split('-')[1]})</strong>
+            </span>
+            <ChevronRight className="w-4 h-4 text-emerald-400 shrink-0 pointer-events-none" />
+          </div>
+        </div>
+      )}
 
       {/* Weekly Volume Totals Footer */}
       <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
@@ -657,6 +736,17 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
           setSkipTarget(null);
         }}
         event={skipTarget}
+        onSuccess={refreshCalendar}
+      />
+
+      {/* Unskip Workout Dialog */}
+      <UnskipWorkoutDialog
+        isOpen={isUnskipOpen}
+        onClose={() => {
+          setIsUnskipOpen(false);
+          setUnskipTarget(null);
+        }}
+        event={unskipTarget}
         onSuccess={refreshCalendar}
       />
 

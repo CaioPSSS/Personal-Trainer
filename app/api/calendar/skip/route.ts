@@ -51,11 +51,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Mark target event as skipped
+    // 1. Mark target event as skipped and save the strategy used
     const updatedEvent = await prisma.calendarEvent.update({
       where: { id: eventId },
       data: {
         status: 'skipped',
+        originalDate: strategy === 'skip_and_reschedule' ? 'skip_and_reschedule' : 'skip_only',
       },
     });
 

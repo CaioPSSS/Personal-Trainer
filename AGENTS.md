@@ -11,14 +11,16 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ### Implemented In This Iteration
 - Expanded `AthleteProfile` with `availableDays` (custom list of available weekdays) and `weeklyWorkoutsTarget` (configurable target workouts per week).
-- Built deterministic, cost-function-based multi-sport scheduler in `lib/scheduling/strength-scheduler.ts` avoiding LLM hallucinations and executing in <3ms:
-  - Dynamically distributes $K$ workouts across $|A|$ available days.
-  - Automatically isolates Lower Body / Leg days from Running Long Runs (preventing pre-fatigue and post-run eccentric damage) and Intervals/Tiros.
-  - Reactive CrossFit rescheduling: immediately upon logging CrossFit or high-fatigue cross-training, remaining strength workouts dynamically re-align.
-- Built `/api/schedule/rebalance` endpoint for on-demand week optimization.
-- Added interactive controls in `SettingsClient.tsx` (toggleable week day pills, target selector 2-6 workouts, instant rebalancing button).
-- Added `⚡ Rebalancear` button to `WeeklyCalendar.tsx` header toolbar with toast notifications.
-- Added cross-week drag-and-drop navigation with hover-paging and drop zones for Sunday/Monday.
+- Built deterministic, cost-function-based multi-sport scheduler in `lib/scheduling/strength-scheduler.ts` avoiding LLM hallucinations and executing in <3ms.
+- Added "Despular" (Unskip) functionality:
+  - Created `/api/calendar/unskip` endpoint supporting auto-detection, schedule restoration, and isolated unskipping.
+  - Added `UnskipWorkoutDialog.tsx` modal allowing athletes to revert skipped workouts and undo `skip_and_reschedule` day shifts.
+  - Added interactive "Despular" button to skipped workout cards in `WeeklyCalendar.tsx`.
+- Completely restored and hardened Calendar Drag-and-Drop:
+  - Eliminated layout shift by repositioning quick cross-week drop targets below the 7-day columns, preventing Chromium from canceling drag sessions.
+  - Added synchronous `draggedEventRef` tracking and dual MIME type support (`text/plain` + `application/json`).
+  - Added `!e.currentTarget.contains(e.relatedTarget)` boundary check to prevent `dragleave` bubbling across child elements.
+  - Added `pointer-events-none` to inner card elements ensuring smooth, glitch-free dragging.
 
 ### Architectural Decisions Confirmed
 - Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
@@ -36,7 +38,8 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Rebuilt Prisma Client types: `npx prisma generate` -> 0 errors.
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 34/34 tests passing (100% assertions green).
-- Production build: `npx next build` -> 0 errors, all 24 routes compiled.
+- Unit tests: `npx tsx --test` -> 37/37 tests passing (100% assertions green).
+- Production build: `npx next build` -> 0 errors, all 25 routes compiled.
 - Resolved React Error #185 by removing dynamic snapshot generators and ensuring purity compliance in React 19 / Next.js.
+
 
