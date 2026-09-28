@@ -36,5 +36,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Rebuilt Prisma Client types: `npx prisma generate` -> 0 errors.
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 21/21 tests passing (including 10 deterministic multi-sport scheduler tests).
+- Unit tests: `npx tsx --test` -> 34/34 tests passing (100% assertions green).
 - Production build: `npx next build` -> 0 errors, all 24 routes compiled.
+- Resolved React Error #185 by removing dynamic snapshot generators and ensuring purity compliance in React 19 / Next.js.
+
