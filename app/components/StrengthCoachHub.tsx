@@ -53,10 +53,18 @@ export default function StrengthCoachHub({
   onPlanNextBlock,
   onForceRegenerate,
 }: StrengthCoachHubProps) {
-  const [mesocycle, setMesocycle] = useState<MesocycleData | null>(initialMesocycle || null);
-  const [coachBrain, setCoachBrain] = useState<CoachBrainData | null>(initialCoachBrain || null);
-  const [upcomingRuns, setUpcomingRuns] = useState<UpcomingRun[]>(initialUpcomingRuns || []);
+  const [fetchedMesocycle, setFetchedMesocycle] = useState<MesocycleData | null>(null);
+  const [fetchedCoachBrain, setFetchedCoachBrain] = useState<CoachBrainData | null>(null);
+  const [fetchedRuns, setFetchedRuns] = useState<UpcomingRun[]>([]);
   const [loading, setLoading] = useState(!initialMesocycle);
+
+  const mesocycle = initialMesocycle || fetchedMesocycle;
+  const coachBrain = initialCoachBrain || fetchedCoachBrain;
+  const upcomingRuns = initialUpcomingRuns && initialUpcomingRuns.length > 0 ? initialUpcomingRuns : fetchedRuns;
+
+  const hasMesocycle = Boolean(initialMesocycle);
+  const hasBrain = Boolean(initialCoachBrain);
+  const hasRuns = (initialUpcomingRuns?.length ?? 0) > 0;
 
   // If props were not fully provided, fetch insights and calendar events
   useEffect(() => {
@@ -64,22 +72,22 @@ export default function StrengthCoachHub({
 
     async function loadData() {
       try {
-        if (!initialMesocycle || !initialCoachBrain) {
+        if (!hasMesocycle || !hasBrain) {
           const res = await fetch('/api/coach/insights');
           if (res.ok) {
             const data = await res.json();
             if (isMounted && data.active && data.mesocycle) {
-              setMesocycle((prev) => ({
+              setFetchedMesocycle({
                 id: data.mesocycle.id,
                 title: data.mesocycle.title,
                 objective: data.mesocycle.objective,
                 split: data.mesocycle.split,
                 durationWeeks: data.mesocycle.durationWeeks,
-                currentWeek: prev?.currentWeek || 1,
-                isDeload: prev?.isDeload || false,
-              }));
+                currentWeek: 1,
+                isDeload: false,
+              });
               if (data.coachBrain) {
-                setCoachBrain(data.coachBrain);
+                setFetchedCoachBrain(data.coachBrain);
               }
             }
           }
@@ -89,7 +97,7 @@ export default function StrengthCoachHub({
           if (todayRes.ok) {
             const todayData = await todayRes.json();
             if (isMounted && todayData.active) {
-              setMesocycle((prev) =>
+              setFetchedMesocycle((prev) =>
                 prev
                   ? {
                       ...prev,
@@ -103,7 +111,7 @@ export default function StrengthCoachHub({
         }
 
         // Fetch upcoming running events for radar
-        if (!initialUpcomingRuns || initialUpcomingRuns.length === 0) {
+        if (!hasRuns) {
           const todayStr = new Date().toISOString().split('T')[0];
           const calRes = await fetch(`/api/calendar?startDate=${todayStr}`);
           if (calRes.ok) {
@@ -122,7 +130,7 @@ export default function StrengthCoachHub({
                   sessionType: 'running',
                   title: ev.title,
                 }));
-              setUpcomingRuns(runs);
+              setFetchedRuns(runs);
             }
           }
         }
@@ -138,7 +146,7 @@ export default function StrengthCoachHub({
     return () => {
       isMounted = false;
     };
-  }, [initialMesocycle, initialCoachBrain, initialUpcomingRuns]);
+  }, [hasMesocycle, hasBrain, hasRuns]);
 
   if (loading) {
     return (

@@ -91,7 +91,7 @@ function ToastCard({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => vo
       onDismiss();
     }, duration);
     return () => clearTimeout(timer);
-  }, [toast, onDismiss]);
+  }, [toast.id, toast.duration, onDismiss]);
 
   const typeStyles: Record<
     ToastType,

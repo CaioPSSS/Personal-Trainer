@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState, useEffect } from 'react';
+import { FormEvent, useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Dumbbell, Sparkles, Sliders } from 'lucide-react';
 import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
@@ -24,6 +24,17 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
   const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(initialAthleteProfile);
   const hasActiveMesocycle = (athleteProfile?.mesocycles?.length ?? 0) > 0;
   const activeMesocycle = athleteProfile?.mesocycles?.[0] || null;
+
+  const coachHubMesocycle = useMemo(() => {
+    if (!activeMesocycle) return undefined;
+    return {
+      id: activeMesocycle.id,
+      title: activeMesocycle.title,
+      objective: activeMesocycle.objective,
+      split: activeMesocycle.split,
+      durationWeeks: activeMesocycle.durationWeeks,
+    };
+  }, [activeMesocycle]);
 
   const [setupForm, setSetupForm] = useState<AthleteProfileFormState>({
     displayName: initialAthleteProfile?.displayName || '',
@@ -214,17 +225,7 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
           }
         >
           <StrengthCoachHub
-            mesocycle={
-              activeMesocycle
-                ? {
-                    id: activeMesocycle.id,
-                    title: activeMesocycle.title,
-                    objective: activeMesocycle.objective,
-                    split: activeMesocycle.split,
-                    durationWeeks: activeMesocycle.durationWeeks,
-                  }
-                : undefined
-            }
+            mesocycle={coachHubMesocycle}
             onOpenStructure={() => {
               const el = document.getElementById('workout-select') || document.querySelector('form');
               if (el) el.scrollIntoView({ behavior: 'smooth' });

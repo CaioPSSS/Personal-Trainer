@@ -1,9 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useSyncExternalStore } from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-
-const emptySubscribe = () => () => {};
 import { Sparkles, Dumbbell, Footprints, ArrowRight, Plus, Brain, Zap, ShieldCheck } from 'lucide-react';
 import NextWorkoutCard from './NextWorkoutCard';
 import StreakCounter from './StreakCounter';
@@ -22,11 +20,16 @@ type ProfileWithMesocycles = AthleteProfile & {
 
 interface ExecutiveDashboardProps {
   athleteProfile: ProfileWithMesocycles | null;
+  initialCurrentWeek?: number;
+  currentDateFormatted?: string;
 }
 
-export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboardProps) {
+export default function ExecutiveDashboard({
+  athleteProfile,
+  initialCurrentWeek = 1,
+  currentDateFormatted,
+}: ExecutiveDashboardProps) {
   const router = useRouter();
-  const clientNow = useSyncExternalStore(emptySubscribe, () => Date.now(), () => 0);
   const [isMonthlyOpen, setIsMonthlyOpen] = useState(false);
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -114,12 +117,7 @@ export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboar
   const activeMesocycle = athleteProfile.mesocycles?.[0] || null;
   const firstName = athleteProfile.displayName?.split(' ')[0] || 'Atleta';
 
-  const daysSinceStart = clientNow > 0 && activeMesocycle?.createdAt
-    ? Math.floor((clientNow - new Date(activeMesocycle.createdAt).getTime()) / (1000 * 60 * 60 * 24))
-    : 0;
-  const currentWeek = activeMesocycle?.durationWeeks
-    ? Math.min(activeMesocycle.durationWeeks, Math.max(1, Math.floor(daysSinceStart / 7) + 1))
-    : 1;
+  const currentWeek = initialCurrentWeek;
   const totalWeeks = activeMesocycle?.durationWeeks || 4;
   const progressPercent = Math.min(100, Math.round((currentWeek / totalWeeks) * 100));
 
@@ -138,11 +136,7 @@ export default function ExecutiveDashboard({ athleteProfile }: ExecutiveDashboar
             </span>
             <span className="text-slate-500">•</span>
             <span className="text-xs text-slate-400">
-              {new Date().toLocaleDateString('pt-BR', {
-                weekday: 'long',
-                day: 'numeric',
-                month: 'long',
-              })}
+              {currentDateFormatted || 'Hoje'}
             </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-slate-100 via-indigo-200 to-emerald-300 mt-1">
