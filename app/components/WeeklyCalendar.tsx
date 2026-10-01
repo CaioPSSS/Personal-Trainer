@@ -19,6 +19,7 @@ import { useToast } from './ToastProvider';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
 import UnskipWorkoutDialog from './UnskipWorkoutDialog';
 import CrossTrainingModal from './CrossTrainingModal';
+import LinkRunningSessionModal from './LinkRunningSessionModal';
 
 export interface CalendarEventDTO {
   id: string;
@@ -75,6 +76,14 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
   // Cross-training modal state
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
+
+  // Running session link modal state
+  const [linkTarget, setLinkTarget] = useState<{
+    executionId?: string | null;
+    sessionId?: string | null;
+    date?: string | null;
+  } | null>(null);
+  const [isLinkOpen, setIsLinkOpen] = useState(false);
 
   const todayStr = formatDateISO(new Date());
 
@@ -619,10 +628,29 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
                           <div className="flex items-center gap-1">
                             {isCompleted && (
-                              <span className="flex items-center gap-0.5 text-emerald-400 font-semibold">
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>Feito</span>
-                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="flex items-center gap-0.5 text-emerald-400 font-semibold">
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Feito</span>
+                                </span>
+                                {event.eventType === 'running' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setLinkTarget({
+                                        executionId: event.referenceModel === 'RunningExecution' ? event.referenceId : null,
+                                        sessionId: event.referenceModel === 'RunningSession' ? event.referenceId : null,
+                                        date: event.date,
+                                      });
+                                      setIsLinkOpen(true);
+                                    }}
+                                    className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold transition px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 cursor-pointer"
+                                    title="Vincular ou alterar vínculo desta corrida no plano"
+                                  >
+                                    🔗 Link
+                                  </button>
+                                )}
+                              </div>
                             )}
                             {isSkipped && (
                               <div className="flex items-center gap-1.5">
@@ -644,17 +672,35 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                               </div>
                             )}
                             {isPlanned && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSkipTarget(event);
-                                  setIsSkipOpen(true);
-                                }}
-                                className="text-slate-400 hover:text-amber-300 transition-colors px-1 py-0.5 rounded hover:bg-slate-800/80"
-                                title="Pular treino"
-                              >
-                                Pular
-                              </button>
+                              <div className="flex items-center gap-1">
+                                {event.eventType === 'running' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setLinkTarget({
+                                        sessionId: event.referenceModel === 'RunningSession' ? event.referenceId : null,
+                                        date: event.date,
+                                      });
+                                      setIsLinkOpen(true);
+                                    }}
+                                    className="text-emerald-400 hover:text-emerald-300 font-medium transition-colors px-1 py-0.5 rounded hover:bg-emerald-500/10 cursor-pointer text-[10px]"
+                                    title="Vincular atividade Strava a esta sessão planejada"
+                                  >
+                                    🔗 Link
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSkipTarget(event);
+                                    setIsSkipOpen(true);
+                                  }}
+                                  className="text-slate-400 hover:text-amber-300 transition-colors px-1 py-0.5 rounded hover:bg-slate-800/80 cursor-pointer"
+                                  title="Pular treino"
+                                >
+                                  Pular
+                                </button>
+                              </div>
                             )}
                           </div>
                         </div>
@@ -754,6 +800,19 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       <CrossTrainingModal
         isOpen={isCrossModalOpen}
         onClose={() => setIsCrossModalOpen(false)}
+        onSuccess={refreshCalendar}
+      />
+
+      {/* Link Running Session Modal */}
+      <LinkRunningSessionModal
+        isOpen={isLinkOpen}
+        onClose={() => {
+          setIsLinkOpen(false);
+          setLinkTarget(null);
+        }}
+        initialExecutionId={linkTarget?.executionId}
+        initialSessionId={linkTarget?.sessionId}
+        initialDate={linkTarget?.date}
         onSuccess={refreshCalendar}
       />
     </div>

@@ -26,6 +26,7 @@ import { useToast } from '@/app/components/ToastProvider';
 import RunningOnboardingForm from '@/app/components/RunningOnboardingForm';
 import PaceEvolutionChart from '@/app/components/charts/PaceEvolutionChart';
 import WeeklyVolumeChart from '@/app/components/charts/WeeklyVolumeChart';
+import LinkRunningSessionModal from '@/app/components/LinkRunningSessionModal';
 
 interface RunningSegmentData {
   type: string;
@@ -189,6 +190,11 @@ export default function RunningPage() {
   // Skipping state
   const [skippingSessionId, setSkippingSessionId] = useState<string | null>(null);
 
+  // Link modal state
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkTargetSessionId, setLinkTargetSessionId] = useState<string | null>(null);
+  const [unlinkedCount, setUnlinkedCount] = useState(0);
+
   const configuredDays = useMemo(() => {
     return normalizeProfileDays(profile?.availableDays);
   }, [profile?.availableDays]);
@@ -340,8 +346,14 @@ export default function RunningPage() {
         const data = await res.json();
         setStravaStatus(data);
       }
+
+      const linkRes = await fetch('/api/running/session/link');
+      if (linkRes.ok) {
+        const linkData = await linkRes.json();
+        setUnlinkedCount(linkData.unlinkedExecutions?.length || 0);
+      }
     } catch (err) {
-      console.error('[RunningPage] Erro ao carregar status do Strava:', err);
+      console.error('[RunningPage] Erro ao carregar status do Strava / vínculos:', err);
     }
   }, []);
 
@@ -659,6 +671,38 @@ export default function RunningPage() {
           </button>
         </div>
       </div>
+
+      {/* Unlinked Runs Alert Banner */}
+      {unlinkedCount > 0 && (
+        <div className="glass-card p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-emerald-500/30 bg-emerald-950/20 rounded-2xl animate-fadeIn">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-sm shrink-0">
+              🔗
+            </div>
+            <div>
+              <div className="text-xs sm:text-sm font-bold text-slate-100 flex items-center gap-2">
+                <span>{unlinkedCount} {unlinkedCount === 1 ? 'corrida realizada' : 'corridas realizadas'} aguardando vínculo com o plano</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Strava & Manual
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Vincule suas corridas do Strava às sessões do ciclo para atualizar o volume e a meta de treinos concluídos.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setLinkTargetSessionId(null);
+              setShowLinkModal(true);
+            }}
+            className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 text-xs font-bold transition cursor-pointer shadow-md shadow-emerald-500/10 shrink-0 text-center"
+          >
+            Vincular Atividades Agora
+          </button>
+        </div>
+      )}
 
       {/* Running Header */}
       <div className="glass-card p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -1158,23 +1202,52 @@ export default function RunningPage() {
 
                 {/* Quick actions for planned session */}
                 {isPlanned && (
-                  <div className="flex items-center gap-2 pt-3 border-t border-slate-800/80">
+                  <div className="flex items-center gap-1.5 pt-3 border-t border-slate-800/80">
                     <button
                       type="button"
                       onClick={() => openManualModalForSession(session)}
-                      className="flex-1 py-1.5 px-2.5 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition text-center cursor-pointer"
+                      className="flex-1 py-1.5 px-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition text-center cursor-pointer"
                     >
                       Registrar
                     </button>
                     <button
                       type="button"
+                      onClick={() => {
+                        setLinkTargetSessionId(session.id);
+                        setShowLinkModal(true);
+                      }}
+                      className="flex items-center gap-1 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold transition cursor-pointer"
+                      title="Vincular corrida do Strava a esta sessão"
+                    >
+                      <span>🔗 Vincular</span>
+                    </button>
+                    <button
+                      type="button"
                       onClick={(e) => handleSkipSession(session.id, e)}
                       disabled={skippingSessionId === session.id}
-                      className="flex items-center justify-center gap-1 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                      className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
                       title="Marcar treino como pulado"
                     >
                       <SkipForward className="w-3 h-3" />
                       <span>{skippingSessionId === session.id ? '...' : 'Pular'}</span>
+                    </button>
+                  </div>
+                )}
+
+                {/* Quick link manager for completed session */}
+                {isCompleted && (
+                  <div className="flex items-center justify-between pt-2 border-t border-emerald-900/40 text-[11px]">
+                    <span className="text-emerald-400 font-medium">✓ Sessão contabilizada no ciclo</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLinkTargetSessionId(session.id);
+                        setShowLinkModal(true);
+                      }}
+                      className="text-slate-400 hover:text-emerald-300 transition text-[10px] font-semibold flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded hover:bg-slate-800/60"
+                      title="Gerenciar atividade Strava vinculada a esta sessão"
+                    >
+                      <span>🔗 Gerenciar Vínculo</span>
                     </button>
                   </div>
                 )}
@@ -1301,6 +1374,19 @@ export default function RunningPage() {
           </div>
         </div>
       )}
+
+      {/* Link Running Session Modal */}
+      <LinkRunningSessionModal
+        isOpen={showLinkModal}
+        onClose={() => {
+          setShowLinkModal(false);
+          setLinkTargetSessionId(null);
+        }}
+        initialSessionId={linkTargetSessionId}
+        onSuccess={async () => {
+          await reloadRunningData();
+        }}
+      />
     </div>
   );
 }

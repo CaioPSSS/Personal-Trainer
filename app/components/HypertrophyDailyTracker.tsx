@@ -329,7 +329,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   ]);
 
   // When manually changing the template template in dropdown
-  const handleTemplateChange = (templateId: string) => {
+  const handleTemplateChange = async (templateId: string) => {
     const template = templates.find((t) => t.id === templateId);
     if (!template) return;
     setSelectedTemplate(template);
@@ -354,7 +354,35 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       };
     });
     setExercises(initializedExs);
-    setMessage({ type: 'info', text: `Treino alterado manualmente para: ${template.label}` });
+    setMessage({ type: 'info', text: `Atualizando calendário para: ${template.label}...` });
+
+    try {
+      const res = await fetch('/api/workout/select-template', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          templateId,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setMessage({
+          type: 'success',
+          text: data.message || `Treino atualizado no calendário para "${template.label}" e semana reorganizada pela IA!`,
+        });
+        window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        setMessage({
+          type: 'info',
+          text: `Treino alterado na ficha para "${template.label}". (${errData.error || 'Calendário mantido'})`,
+        });
+      }
+    } catch (err) {
+      console.error('Erro ao atualizar treino no calendário:', err);
+    }
   };
 
   // Log inputs update

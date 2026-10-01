@@ -225,3 +225,53 @@ test('Multi-Sport Solver: CrossFit on Wednesday repels Leg Day from Wednesday an
   assert.notEqual(legWorkout.dayIndex, 2, 'Lower body should not be on Wednesday with heavy CrossFit');
   assert.notEqual(legWorkout.dayIndex, 3, 'Lower body should not be immediately after heavy CrossFit (DOMS)');
 });
+
+test('Multi-Sport Solver: User selects workout on Wednesday, remaining split days sequence properly without collisions', () => {
+  const weekMonday = new Date(2026, 8, 28); // 2026-09-28 (Monday)
+  const availableDays = [0, 1, 3, 4]; // Mon, Tue, Thu, Fri (Wednesday fixed)
+
+  // Wednesday (dayIndex=2) is fixed by the athlete with Upper Push
+  const fixedEvents: CalendarEventScheduleContext[] = [
+    {
+      date: '2026-09-30',
+      dayIndex: 2, // Wednesday
+      eventType: 'strength',
+      title: 'Treino B - Superiores Push',
+    },
+    // Also a Long Run on Sunday (dayIndex=6)
+    {
+      date: '2026-10-04',
+      dayIndex: 6,
+      eventType: 'running',
+      title: 'Longão de Domingo (15 km)',
+      runningSessionType: 'long_run',
+    },
+  ];
+
+  // The remaining workouts in the split sequence: Lower B and Upper Pull
+  const remainingWorkouts: StrengthWorkoutToSchedule[] = [
+    { id: 'w3', title: 'Treino C - Inferiores Posterior/Glúteos', isLower: true, sortOrder: 3 },
+    { id: 'w4', title: 'Treino D - Superiores Pull', isLower: false, sortOrder: 4 },
+  ];
+
+  const result = solveOptimalWeeklyStrengthDistribution({
+    weekMonday,
+    availableDays,
+    workouts: remainingWorkouts,
+    fixedEvents,
+  });
+
+  assert.equal(result.assignment.length, 2);
+  // Must not collide with Wednesday
+  for (const sol of result.assignment) {
+    assert.notEqual(sol.dayIndex, 2, 'Cannot schedule on fixed Wednesday');
+  }
+  // No two workouts on the same day
+  assert.notEqual(result.assignment[0].dayIndex, result.assignment[1].dayIndex);
+
+  // Leg workout (Treino C) should not be on Saturday (day before long run)
+  const legSol = result.assignment.find((a) => a.isLower);
+  assert.ok(legSol);
+  assert.notEqual(legSol.dayIndex, 6, 'Lower body cannot be on Sunday with Long Run');
+});
+

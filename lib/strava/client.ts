@@ -348,14 +348,33 @@ export async function syncActivityRecord(activity: StravaActivity) {
 
   const mapped = mapStravaActivityToExecution(activity);
 
-  // Match planned session if date aligns
-  const matchedSession = await prisma.runningSession.findFirst({
+  // Match planned session if date aligns or falls within +/- 1 day
+  let matchedSession = await prisma.runningSession.findFirst({
     where: {
       scheduledDate: mapped.date,
       status: 'planned',
     },
     orderBy: { createdAt: 'desc' },
   });
+
+  if (!matchedSession) {
+    const actDate = new Date(`${mapped.date}T00:00:00`);
+    const prevDay = new Date(actDate);
+    prevDay.setDate(actDate.getDate() - 1);
+    const nextDay = new Date(actDate);
+    nextDay.setDate(actDate.getDate() + 1);
+
+    const prevDateStr = prevDay.toISOString().split('T')[0];
+    const nextDateStr = nextDay.toISOString().split('T')[0];
+
+    matchedSession = await prisma.runningSession.findFirst({
+      where: {
+        scheduledDate: { in: [prevDateStr, nextDateStr] },
+        status: 'planned',
+      },
+      orderBy: { scheduledDate: 'asc' },
+    });
+  }
 
   const execution = await prisma.runningExecution.upsert({
     where: { stravaActivityId: mapped.stravaActivityId },
@@ -427,8 +446,21 @@ export async function syncActivityRecord(activity: StravaActivity) {
         title: eventTitle,
         status: 'completed',
         colorCode: '#10b981',
+        date: mapped.date,
       },
     });
+
+    // Delete redundant duplicate session event if both existed
+    if (matchedSession) {
+      await prisma.calendarEvent.deleteMany({
+        where: {
+          athleteProfileId: 'singleton',
+          referenceId: matchedSession.id,
+          referenceModel: 'RunningSession',
+          id: { not: existingEvent.id },
+        },
+      });
+    }
   } else {
     await prisma.calendarEvent.create({
       data: {

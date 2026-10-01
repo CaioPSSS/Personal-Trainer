@@ -10,17 +10,17 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Completed full multi-sport expansion (hypertrophy preservation + running coach AI + Strava integration + cross-training + unified interactive calendar + analytics & visual polish + smart multi-sport scheduler).
 
 ### Implemented In This Iteration
-- Expanded `AthleteProfile` with `availableDays` (custom list of available weekdays) and `weeklyWorkoutsTarget` (configurable target workouts per week).
-- Built deterministic, cost-function-based multi-sport scheduler in `lib/scheduling/strength-scheduler.ts` avoiding LLM hallucinations and executing in <3ms.
-- Added "Despular" (Unskip) functionality:
-  - Created `/api/calendar/unskip` endpoint supporting auto-detection, schedule restoration, and isolated unskipping.
-  - Added `UnskipWorkoutDialog.tsx` modal allowing athletes to revert skipped workouts and undo `skip_and_reschedule` day shifts.
-  - Added interactive "Despular" button to skipped workout cards in `WeeklyCalendar.tsx`.
-- Completely restored and hardened Calendar Drag-and-Drop:
-  - Eliminated layout shift by repositioning quick cross-week drop targets below the 7-day columns, preventing Chromium from canceling drag sessions.
-  - Added synchronous `draggedEventRef` tracking and dual MIME type support (`text/plain` + `application/json`).
-  - Added `!e.currentTarget.contains(e.relatedTarget)` boundary check to prevent `dragleave` bubbling across child elements.
-  - Added `pointer-events-none` to inner card elements ensuring smooth, glitch-free dragging.
+- Strava / Running Plan Linking & Reconciliation:
+  - Created `/api/running/session/link` endpoint supporting candidate retrieval, manual/Strava execution linking, unlinking, and calendar event deduplication.
+  - Built `LinkRunningSessionModal.tsx` modal for linking any executed run to planned mesocycle sessions.
+  - Added interactive `🔗 Link` buttons to completed and planned running cards in `WeeklyCalendar.tsx`.
+  - Added `🔗 Vincular` buttons to session cards and unlinked activities alert banner in `/running`.
+  - Enhanced Strava auto-match in `lib/strava/client.ts` with +/- 1 day tolerance and duplicate event cleanup.
+- Strength Hub (`/strength`) Dynamic Alignment & AI Split Rebalancing:
+  - Updated `/api/workout/today` to prioritize workouts scheduled in `CalendarEvent` for the requested date, immediately presenting the day's scheduled workout.
+  - Implemented `applyWorkoutTemplateSelectionAndRebalance` in `lib/scheduling/strength-scheduler.ts` to fix the selected workout to the date and deterministically rebalance the remaining days of the week following the AI split order while avoiding collisions with running long runs and CrossFit.
+  - Created `POST /api/workout/select-template` endpoint.
+  - Updated `HypertrophyDailyTracker.tsx` so changing templates instantly updates the calendar and reorganizes the week.
 
 ### Architectural Decisions Confirmed
 - Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
@@ -35,11 +35,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Verify production database migration via `prisma db push` on first Vercel deployment.
 
 ### Verification Notes (This Iteration)
-- Rebuilt Prisma Client types: `npx prisma generate` -> 0 errors.
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 37/37 tests passing (100% assertions green).
-- Production build: `npx next build` -> 0 errors, all 25 routes compiled.
-- Resolved React Error #185 by removing dynamic snapshot generators and ensuring purity compliance in React 19 / Next.js.
+- Unit tests: `npx tsx --test` -> 38/38 tests passing (100% assertions green).
+- Production build: `npx next build` -> 0 errors, all 27 routes compiled.
 
 

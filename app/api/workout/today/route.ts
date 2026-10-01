@@ -79,22 +79,33 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ active: true, workoutToday: null, templates: [] });
     }
 
-    // 3. Find completed workouts to predict next template
-    const completedWorkouts = await prisma.workoutExecution.findMany({
+    // 3. Check if there is a strength workout scheduled on the calendar for this date!
+    const calendarStrengthEvent = await prisma.calendarEvent.findFirst({
       where: {
         athleteProfileId: 'singleton',
-        mesocyclePlanId: activePlan.id,
-        status: 'completed',
+        date: date,
+        eventType: 'strength',
       },
-      orderBy: {
-        date: 'desc',
-      },
+      orderBy: { sortOrder: 'asc' },
     });
 
-    let predictedDayOrder = 1;
-    if (completedWorkouts.length > 0) {
-      // Find the last completed workout execution details
-      const lastWorkout = await prisma.workoutExecution.findFirst({
+    let workoutToday: (typeof dayTemplates)[0] | null = null;
+
+    if (calendarStrengthEvent) {
+      if (calendarStrengthEvent.referenceId) {
+        workoutToday = dayTemplates.find((t) => t.id === calendarStrengthEvent.referenceId) || null;
+      }
+      if (!workoutToday && calendarStrengthEvent.title) {
+        workoutToday =
+          dayTemplates.find(
+            (t) => t.label.trim().toLowerCase() === calendarStrengthEvent.title.trim().toLowerCase()
+          ) || null;
+      }
+    }
+
+    // If not found on calendar for this date, predict next template from completed workouts
+    if (!workoutToday) {
+      const completedWorkouts = await prisma.workoutExecution.findMany({
         where: {
           athleteProfileId: 'singleton',
           mesocyclePlanId: activePlan.id,
@@ -103,26 +114,40 @@ export async function GET(request: NextRequest) {
         orderBy: {
           date: 'desc',
         },
-        include: {
-          exerciseExecutions: {
-            take: 1,
-            include: {
-              exercisePrescription: true,
-            },
-          },
-        },
       });
 
-      const templateId = lastWorkout?.exerciseExecutions[0]?.exercisePrescription?.workoutDayTemplateId;
-      if (templateId) {
-        const lastTemplate = dayTemplates.find((t) => t.id === templateId);
-        if (lastTemplate) {
-          predictedDayOrder = (lastTemplate.dayOrder % dayTemplates.length) + 1;
+      let predictedDayOrder = 1;
+      if (completedWorkouts.length > 0) {
+        const lastWorkout = await prisma.workoutExecution.findFirst({
+          where: {
+            athleteProfileId: 'singleton',
+            mesocyclePlanId: activePlan.id,
+            status: 'completed',
+          },
+          orderBy: {
+            date: 'desc',
+          },
+          include: {
+            exerciseExecutions: {
+              take: 1,
+              include: {
+                exercisePrescription: true,
+              },
+            },
+          },
+        });
+
+        const templateId = lastWorkout?.exerciseExecutions[0]?.exercisePrescription?.workoutDayTemplateId;
+        if (templateId) {
+          const lastTemplate = dayTemplates.find((t) => t.id === templateId);
+          if (lastTemplate) {
+            predictedDayOrder = (lastTemplate.dayOrder % dayTemplates.length) + 1;
+          }
         }
       }
-    }
 
-    const workoutToday = dayTemplates.find((t) => t.dayOrder === predictedDayOrder) || dayTemplates[0];
+      workoutToday = dayTemplates.find((t) => t.dayOrder === predictedDayOrder) || dayTemplates[0];
+    }
 
     // 4. Fetch previous performances for workoutToday prescriptions and compute progressive overload
     const previousPerformances: Record<string, string> = {};
@@ -240,6 +265,14 @@ export async function GET(request: NextRequest) {
       previousPerformance: progressionData,
       isDeload,
       currentWeekNumber,
+      scheduledCalendarEvent: calendarStrengthEvent
+        ? {
+            id: calendarStrengthEvent.id,
+            title: calendarStrengthEvent.title,
+            status: calendarStrengthEvent.status,
+            referenceId: calendarStrengthEvent.referenceId,
+          }
+        : null,
     });
   } catch (error) {
     console.error('Falha ao obter treino do dia.', error);
