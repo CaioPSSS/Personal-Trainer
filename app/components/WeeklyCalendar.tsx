@@ -20,6 +20,8 @@ import SkipWorkoutDialog from './SkipWorkoutDialog';
 import UnskipWorkoutDialog from './UnskipWorkoutDialog';
 import CrossTrainingModal from './CrossTrainingModal';
 import LinkRunningSessionModal from './LinkRunningSessionModal';
+import RunningDebriefModal from './RunningDebriefModal';
+import { HrZoneDef } from '@/lib/running/performance-evaluator';
 
 export interface CalendarEventDTO {
   id: string;
@@ -33,6 +35,44 @@ export interface CalendarEventDTO {
   colorCode?: string | null;
   sortOrder: number;
   originalDate?: string | null;
+}
+
+interface RunningExecutionCandidate {
+  id: string;
+  runningSessionId?: string | null;
+  distanceKm: number;
+  durationSeconds: number;
+  avgPaceSec?: number | null;
+  avgHeartRate?: number | null;
+  maxHeartRate?: number | null;
+  elevationGainM?: number | null;
+  cadenceAvg?: number | null;
+  temperature?: number | null;
+  splits?: Array<{
+    km: number;
+    paceSec?: number;
+    distanceM?: number;
+    movingTimeSec?: number;
+    avgHr?: number | null;
+  }> | null;
+  sessionRpe?: number | null;
+  notes?: string | null;
+  source?: string;
+  stravaActivityId?: string | null;
+  date: string;
+}
+
+interface RunningSessionCandidate {
+  id: string;
+  title: string;
+  sessionType: string;
+  totalDistanceKm?: number | null;
+  totalDurationMin?: number | null;
+  targetPaceSec?: number | null;
+  targetHrZone?: string | null;
+  scheduledDate: string;
+  notes?: string | null;
+  linkedExecutions?: RunningExecutionCandidate[];
 }
 
 interface WeeklyCalendarProps {
@@ -85,6 +125,13 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   } | null>(null);
   const [isLinkOpen, setIsLinkOpen] = useState(false);
 
+  // Running Debrief Modal state
+  const [debriefSession, setDebriefSession] = useState<RunningSessionCandidate | null>(null);
+  const [debriefExecution, setDebriefExecution] = useState<RunningExecutionCandidate | null>(null);
+  const [debriefHrZones, setDebriefHrZones] = useState<Record<string, HrZoneDef> | null>(null);
+  const [isDebriefOpen, setIsDebriefOpen] = useState(false);
+  const [loadingDebriefEventId, setLoadingDebriefEventId] = useState<string | null>(null);
+
   const todayStr = formatDateISO(new Date());
 
   // Generate 7 days for current week
@@ -113,6 +160,70 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       }
     } catch (err) {
       console.error('Falha ao carregar eventos:', err);
+    }
+  };
+
+  const handleOpenRunningDebrief = async (event: CalendarEventDTO) => {
+    try {
+      setLoadingDebriefEventId(event.id);
+      const res = await fetch(`/api/running/session/link?date=${event.date}`);
+      if (!res.ok) throw new Error('Falha ao buscar dados');
+      const data = await res.json();
+      setDebriefHrZones(data.hrZones || null);
+
+      let foundSession: RunningSessionCandidate | null = null;
+      let foundExecution: RunningExecutionCandidate | null = null;
+
+      // Priority 1: Match by referenceModel & referenceId
+      if (event.referenceModel === 'RunningSession') {
+        const s = (data.sessions as RunningSessionCandidate[] | undefined)?.find((item) => item.id === event.referenceId);
+        if (s) {
+          foundSession = s;
+          foundExecution = s.linkedExecutions?.[0] || null;
+        }
+      } else if (event.referenceModel === 'RunningExecution') {
+        const unlinked = (data.unlinkedExecutions as RunningExecutionCandidate[] | undefined)?.find((item) => item.id === event.referenceId);
+        const linked = (data.sessions as RunningSessionCandidate[] | undefined)
+          ?.flatMap((s) => s.linkedExecutions || [])
+          .find((item) => item.id === event.referenceId);
+
+        const e = unlinked || linked;
+        if (e) {
+          foundExecution = e;
+          if (e.runningSessionId) {
+            foundSession = (data.sessions as RunningSessionCandidate[] | undefined)?.find((s) => s.id === e.runningSessionId) || null;
+          }
+        }
+      }
+
+      // Priority 2: Match by date
+      if (!foundExecution) {
+        const s = (data.sessions as RunningSessionCandidate[] | undefined)?.find(
+          (item) => item.scheduledDate === event.date && item.linkedExecutions && item.linkedExecutions.length > 0
+        );
+        if (s) {
+          foundSession = s;
+          foundExecution = s.linkedExecutions![0];
+        } else {
+          const e = (data.unlinkedExecutions as RunningExecutionCandidate[] | undefined)?.find((item) => item.date === event.date);
+          if (e) {
+            foundExecution = e;
+          }
+        }
+      }
+
+      if (foundExecution) {
+        setDebriefSession(foundSession);
+        setDebriefExecution(foundExecution);
+        setIsDebriefOpen(true);
+      } else {
+        info('Sem Telemetria', 'Esta corrida não possui telemetria de execução vinculada.');
+      }
+    } catch (err) {
+      console.error('Erro ao abrir estatísticas da corrida:', err);
+      error('Erro', 'Não foi possível carregar as estatísticas da corrida.');
+    } finally {
+      setLoadingDebriefEventId(null);
     }
   };
 
@@ -634,21 +745,32 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                                   <span>Feito</span>
                                 </span>
                                 {event.eventType === 'running' && (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setLinkTarget({
-                                        executionId: event.referenceModel === 'RunningExecution' ? event.referenceId : null,
-                                        sessionId: event.referenceModel === 'RunningSession' ? event.referenceId : null,
-                                        date: event.date,
-                                      });
-                                      setIsLinkOpen(true);
-                                    }}
-                                    className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold transition px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 cursor-pointer"
-                                    title="Vincular ou alterar vínculo desta corrida no plano"
-                                  >
-                                    🔗 Link
-                                  </button>
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenRunningDebrief(event)}
+                                      disabled={loadingDebriefEventId === event.id}
+                                      className="text-[10px] text-emerald-300 hover:text-white font-bold transition px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                                      title="Ver estatísticas e debriefing da corrida contra a meta"
+                                    >
+                                      {loadingDebriefEventId === event.id ? '...' : '📊 Stats'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setLinkTarget({
+                                          executionId: event.referenceModel === 'RunningExecution' ? event.referenceId : null,
+                                          sessionId: event.referenceModel === 'RunningSession' ? event.referenceId : null,
+                                          date: event.date,
+                                        });
+                                        setIsLinkOpen(true);
+                                      }}
+                                      className="text-[10px] text-emerald-400 hover:text-emerald-300 font-bold transition px-1.5 py-0.5 rounded bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 cursor-pointer"
+                                      title="Vincular ou alterar vínculo desta corrida no plano"
+                                    >
+                                      🔗 Link
+                                    </button>
+                                  </>
                                 )}
                               </div>
                             )}
@@ -814,6 +936,15 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
         initialSessionId={linkTarget?.sessionId}
         initialDate={linkTarget?.date}
         onSuccess={refreshCalendar}
+      />
+
+      {/* Running Performance Debrief Modal */}
+      <RunningDebriefModal
+        isOpen={isDebriefOpen}
+        onClose={() => setIsDebriefOpen(false)}
+        session={debriefSession}
+        execution={debriefExecution}
+        hrZones={debriefHrZones}
       />
     </div>
   );

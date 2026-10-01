@@ -39,6 +39,11 @@ export async function GET() {
                 { weekNumber: 'asc' },
                 { scheduledDate: 'asc' },
               ],
+              include: {
+                executions: {
+                  orderBy: { date: 'desc' },
+                },
+              },
             },
           },
           take: 1,

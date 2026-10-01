@@ -22,6 +22,14 @@ This version has breaking changes — APIs, conventions, and file structure may 
   - Created `POST /api/workout/select-template` endpoint.
   - Updated `HypertrophyDailyTracker.tsx` so changing templates instantly updates the calendar and reorganizes the week.
 
+- Running Performance Debrief & Planned Target Conformity Evaluation:
+  - Created `lib/running/performance-evaluator.ts` comparing planned session targets (distance, target pace, Karvonen heart rate zones) against execution telemetry (distance, duration, average pace, HR, cadence, kilometer splits, elevation, RPE).
+  - Implemented Adherence Score (0-100) and factual Coach Feedback generation.
+  - Built `RunningDebriefModal.tsx` displaying comparative targets, delta indicators, cadence economy, kilometer splits (identifying fastest/slowest splits and negative/positive pacing), and AI coach debriefing.
+  - Added mini-telemetry summary chip and `"📊 Ver Estatísticas"` button to completed cards in `/running`.
+  - Added `"📊 Stats"` button to completed running cards in `WeeklyCalendar.tsx`.
+  - Enriched `/api/running/profile`, `/api/running/generate`, and `/api/running/session/link` to include executions and HR zones.
+
 ### Architectural Decisions Confirmed
 - Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
 - Master Coach & Running Coach use separate OpenRouter cascades:
@@ -37,7 +45,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 ### Verification Notes (This Iteration)
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 38/38 tests passing (100% assertions green).
+- Unit tests: `npx tsx --test` -> 41/41 tests passing (100% assertions green).
 - Production build: `npx next build` -> 0 errors, all 27 routes compiled.
 
 

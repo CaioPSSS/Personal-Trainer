@@ -27,6 +27,7 @@ import RunningOnboardingForm from '@/app/components/RunningOnboardingForm';
 import PaceEvolutionChart from '@/app/components/charts/PaceEvolutionChart';
 import WeeklyVolumeChart from '@/app/components/charts/WeeklyVolumeChart';
 import LinkRunningSessionModal from '@/app/components/LinkRunningSessionModal';
+import RunningDebriefModal from '@/app/components/RunningDebriefModal';
 
 interface RunningSegmentData {
   type: string;
@@ -38,6 +39,30 @@ interface RunningSegmentData {
   restSec?: number;
   hrZone?: string;
   notes?: string;
+}
+
+export interface RunningExecutionData {
+  id: string;
+  distanceKm: number;
+  durationSeconds: number;
+  avgPaceSec?: number | null;
+  avgHeartRate?: number | null;
+  maxHeartRate?: number | null;
+  elevationGainM?: number | null;
+  cadenceAvg?: number | null;
+  temperature?: number | null;
+  splits?: Array<{
+    km: number;
+    paceSec?: number;
+    distanceM?: number;
+    movingTimeSec?: number;
+    avgHr?: number | null;
+  }> | null;
+  sessionRpe?: number | null;
+  notes?: string | null;
+  source?: string;
+  stravaActivityId?: string | null;
+  date: string;
 }
 
 interface RunningSessionData {
@@ -54,6 +79,7 @@ interface RunningSessionData {
   status: string;
   notes?: string | null;
   segments?: RunningSegmentData[] | null;
+  executions?: RunningExecutionData[];
 }
 
 interface RunningPlanData {
@@ -194,6 +220,11 @@ export default function RunningPage() {
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [linkTargetSessionId, setLinkTargetSessionId] = useState<string | null>(null);
   const [unlinkedCount, setUnlinkedCount] = useState(0);
+
+  // Debrief modal state for compliance & statistics
+  const [isDebriefOpen, setIsDebriefOpen] = useState(false);
+  const [debriefSession, setDebriefSession] = useState<RunningSessionData | null>(null);
+  const [debriefExecution, setDebriefExecution] = useState<RunningExecutionData | null>(null);
 
   const configuredDays = useMemo(() => {
     return normalizeProfileDays(profile?.availableDays);
@@ -1234,21 +1265,63 @@ export default function RunningPage() {
                   </div>
                 )}
 
-                {/* Quick link manager for completed session */}
+                {/* Statistics and link manager for completed session */}
                 {isCompleted && (
-                  <div className="flex items-center justify-between pt-2 border-t border-emerald-900/40 text-[11px]">
-                    <span className="text-emerald-400 font-medium">✓ Sessão contabilizada no ciclo</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLinkTargetSessionId(session.id);
-                        setShowLinkModal(true);
-                      }}
-                      className="text-slate-400 hover:text-emerald-300 transition text-[10px] font-semibold flex items-center gap-1 cursor-pointer px-1.5 py-0.5 rounded hover:bg-slate-800/60"
-                      title="Gerenciar atividade Strava vinculada a esta sessão"
-                    >
-                      <span>🔗 Gerenciar Vínculo</span>
-                    </button>
+                  <div className="pt-2 border-t border-emerald-900/40 space-y-2 text-xs">
+                    {session.executions && session.executions[0] ? (
+                      <div className="flex items-center justify-between text-[11px] bg-emerald-950/40 px-2.5 py-1.5 rounded-xl border border-emerald-500/20">
+                        <span className="font-bold text-emerald-300">
+                          {session.executions[0].distanceKm.toFixed(1)} km rodados
+                        </span>
+                        <span className="font-mono text-slate-300">
+                          {formatPaceSec(session.executions[0].avgPaceSec)}
+                        </span>
+                        {session.executions[0].avgHeartRate && (
+                          <span className="text-rose-300 font-semibold">
+                            {session.executions[0].avgHeartRate} bpm
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-[11px] text-emerald-400 font-medium">
+                        ✓ Sessão concluída no ciclo
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const exec = session.executions?.[0] || {
+                            id: session.id,
+                            distanceKm: session.totalDistanceKm || 0,
+                            durationSeconds: (session.totalDurationMin || 0) * 60,
+                            avgPaceSec: session.targetPaceSec,
+                            date: session.scheduledDate,
+                          };
+                          setDebriefSession(session);
+                          setDebriefExecution(exec as RunningExecutionData);
+                          setIsDebriefOpen(true);
+                        }}
+                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-xl bg-gradient-to-r from-emerald-500/20 to-teal-500/20 hover:from-emerald-500/30 hover:to-teal-500/30 border border-emerald-500/40 text-emerald-300 text-xs font-bold transition shadow-sm cursor-pointer"
+                        title="Ver estatísticas completas e conformidade com a meta planejada"
+                      >
+                        <Activity className="w-3.5 h-3.5" />
+                        <span>Ver Estatísticas</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setLinkTargetSessionId(session.id);
+                          setShowLinkModal(true);
+                        }}
+                        className="text-slate-400 hover:text-emerald-300 transition text-[11px] font-semibold flex items-center gap-1 cursor-pointer px-2 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-800"
+                        title="Gerenciar atividade vinculada"
+                      >
+                        <span>🔗 Vínculo</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1386,6 +1459,19 @@ export default function RunningPage() {
         onSuccess={async () => {
           await reloadRunningData();
         }}
+      />
+
+      {/* Running Performance Debrief Modal */}
+      <RunningDebriefModal
+        isOpen={isDebriefOpen}
+        onClose={() => {
+          setIsDebriefOpen(false);
+          setDebriefSession(null);
+          setDebriefExecution(null);
+        }}
+        session={debriefSession}
+        execution={debriefExecution}
+        hrZones={profile?.hrZones}
       />
     </div>
   );

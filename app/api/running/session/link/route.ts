@@ -20,20 +20,16 @@ export async function GET(req: NextRequest) {
         status: 'active',
       },
       include: {
+        runningProfile: {
+          select: {
+            hrZones: true,
+          },
+        },
         sessions: {
           orderBy: [{ weekNumber: 'asc' }, { scheduledDate: 'asc' }],
           include: {
             executions: {
-              select: {
-                id: true,
-                stravaActivityId: true,
-                distanceKm: true,
-                avgPaceSec: true,
-                durationSeconds: true,
-                notes: true,
-                source: true,
-                date: true,
-              },
+              orderBy: { date: 'desc' },
             },
           },
         },
@@ -70,6 +66,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       success: true,
       activePlanId: activePlan?.id || null,
+      hrZones: (activePlan?.runningProfile?.hrZones as Record<string, unknown>) || null,
       unlinkedExecutions,
       sessions,
       queriedDate: date || null,
