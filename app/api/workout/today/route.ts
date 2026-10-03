@@ -12,7 +12,10 @@ import {
   resolveAthleteWeightKg,
   StrengthCalorieResult,
 } from '@/lib/calories';
-import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
+import {
+  syncActivityToMetabolicTracker,
+  fetchDailyNutrition,
+} from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -241,9 +244,21 @@ export async function GET(request: NextRequest) {
     const isDeload = currentWeekData?.isDeload || false;
 
     // 6. Fetch existing logs for this date (if already executed or wellness captured)
-    const existingWellness = await prisma.wellnessDaily.findUnique({
+    let existingWellness = await prisma.wellnessDaily.findUnique({
       where: { date },
     });
+
+    // Se o wellness local não tiver sono, peso ou estresse, tenta buscar do Meu Rastreador Metabólico
+    if (!existingWellness || existingWellness.sleepHours == null || existingWellness.bodyWeightKg == null || existingWellness.stressLevel == null) {
+      try {
+        const liveNutrition = await fetchDailyNutrition(date);
+        if (liveNutrition && (liveNutrition.weight != null || liveNutrition.sleepHours != null || liveNutrition.stressLevel != null)) {
+          existingWellness = await prisma.wellnessDaily.findUnique({ where: { date } });
+        }
+      } catch {
+        // Silently continue
+      }
+    }
 
     const existingWorkout = await prisma.workoutExecution.findFirst({
       where: {
@@ -299,7 +314,17 @@ export async function POST(request: NextRequest) {
     let createdWorkoutExecutionId: string | null = null;
     let calculatedCalories: StrengthCalorieResult | null = null;
 
-    if (workout) {
+    const hasCompletedExercises = Boolean(
+      workout &&
+      Array.isArray(workout.exercises) &&
+      workout.exercises.length > 0 &&
+      workout.exercises.some((ex: WorkoutExercisePayload) =>
+        Array.isArray(ex.sets) &&
+        ex.sets.some((set: WorkoutSetPayload) => set.reps != null && Number(set.reps) > 0)
+      )
+    );
+
+    if (hasCompletedExercises && workout) {
       // Resolve athlete weight for the workout date
       const athleteWeightKg = await resolveAthleteWeightKg('singleton', date);
 
@@ -349,8 +374,8 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      // 2. Overwrite Workout execution if provided
-      if (workout) {
+      // 2. Overwrite Workout execution if provided and has completed exercises
+      if (hasCompletedExercises && workout) {
         // Delete any existing workout executions on the same date
         await tx.workoutExecution.deleteMany({
           where: {
@@ -474,7 +499,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 3. Sincroniza atividade com o Meu Rastreador Metabólico de forma não-bloqueante
-    if (workout && calculatedCalories) {
+    if (hasCompletedExercises && workout && calculatedCalories) {
       syncActivityToMetabolicTracker({
         date,
         caloriesBurned: calculatedCalories.totalCalories,
@@ -484,11 +509,22 @@ export async function POST(request: NextRequest) {
         sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : undefined,
         sleepHours: wellness?.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
         bodyWeightKg: wellness?.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
+        stressLevel: wellness?.stressLevel ? parseInt(String(wellness.stressLevel)) : undefined,
       }).catch((err) => console.warn('[MetabolicSync] Falha no sync com Rastreador:', err));
+    } else if (wellness && (wellness.sleepHours != null || wellness.bodyWeightKg != null || wellness.stressLevel != null)) {
+      syncActivityToMetabolicTracker({
+        date,
+        sleepHours: wellness.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
+        bodyWeightKg: wellness.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
+        stressLevel: wellness.stressLevel ? parseInt(String(wellness.stressLevel)) : undefined,
+      }).catch((err) => console.warn('[MetabolicSync] Falha no sync wellness com Rastreador:', err));
     }
 
-    if (!workout) {
-      return NextResponse.json({ success: true });
+    if (!hasCompletedExercises || !workout) {
+      return NextResponse.json({
+        success: true,
+        message: 'Métricas de recuperação salvas e sincronizadas com sucesso!',
+      });
     }
 
     // 4. Calculate session summary metrics

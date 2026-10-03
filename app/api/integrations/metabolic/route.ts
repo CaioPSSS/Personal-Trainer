@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import {
   fetchDailyNutrition,
   reconcileEcosystemRange,
+  getSyncConfig,
 } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
@@ -79,8 +80,7 @@ export async function POST(request: NextRequest) {
     const action = body.action || 'reconcile';
 
     if (action === 'test_connection') {
-      const url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '') || 'http://localhost:3001';
-      const secret = process.env.ECOSYSTEM_SYNC_SECRET || 'dev_sync_secret_metabolic';
+      const { url, secret } = await getSyncConfig();
 
       try {
         const controller = new AbortController();

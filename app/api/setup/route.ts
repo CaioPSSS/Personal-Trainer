@@ -25,6 +25,7 @@ export async function POST(request: Request) {
       birthDate,
       biologicalSex,
       bodyFatPercent,
+      metabolicTrackerUrl,
     } = body;
 
     // 1. Upsert AthleteProfile for hypertrophy coaching
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
         birthDate: birthDate !== undefined ? (birthDate ? String(birthDate) : null) : undefined,
         biologicalSex: biologicalSex !== undefined ? (biologicalSex ? String(biologicalSex) : null) : undefined,
         bodyFatPercent: bodyFatPercent !== undefined ? (bodyFatPercent ? parseFloat(String(bodyFatPercent)) : null) : undefined,
+        metabolicTrackerUrl: metabolicTrackerUrl !== undefined ? (metabolicTrackerUrl ? String(metabolicTrackerUrl) : null) : undefined,
       },
       create: {
         id: 'singleton',
@@ -60,6 +62,7 @@ export async function POST(request: Request) {
         birthDate: birthDate ? String(birthDate) : null,
         biologicalSex: biologicalSex ? String(biologicalSex) : null,
         bodyFatPercent: bodyFatPercent ? parseFloat(String(bodyFatPercent)) : null,
+        metabolicTrackerUrl: metabolicTrackerUrl ? String(metabolicTrackerUrl) : null,
       },
     });
 

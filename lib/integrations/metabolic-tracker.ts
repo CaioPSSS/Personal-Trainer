@@ -2,13 +2,14 @@ import { prisma } from '@/lib/prisma';
 
 export interface ActivitySyncPayload {
   date: string; // ISO "YYYY-MM-DD"
-  caloriesBurned: number;
-  trainingType: 'Musculação' | 'Corrida' | 'Híbrido' | 'Cross-Training' | 'Descanso';
+  caloriesBurned?: number;
+  trainingType?: 'Musculação' | 'Corrida' | 'Híbrido' | 'Cross-Training' | 'Descanso' | string;
   workoutTitle?: string;
   durationMinutes?: number;
   sessionRpe?: number;
   sleepHours?: number | null;
   bodyWeightKg?: number | null;
+  stressLevel?: number | null;
 }
 
 export interface DailyNutritionData {
@@ -18,6 +19,10 @@ export interface DailyNutritionData {
   currentCalorieTarget: number | null;
   dietGoal: 'loss' | 'maintenance' | 'gain' | string | null;
   weight: number | null;
+  sleepHours?: number | null;
+  stressLevel?: number | null;
+  trainingType?: string | null;
+  caloriesBurned?: number | null;
 }
 
 export interface SyncResult {
@@ -27,8 +32,24 @@ export interface SyncResult {
   nutrition?: DailyNutritionData | null;
 }
 
-function getSyncConfig() {
-  const url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '') || 'http://localhost:3001';
+export const DEFAULT_METABOLIC_URL = 'https://meu-rastreador-metabolico-p7xl.vercel.app';
+
+export async function getSyncConfig() {
+  let url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '');
+  if (!url) {
+    try {
+      const profile = await prisma.athleteProfile.findUnique({
+        where: { id: 'singleton' },
+        select: { metabolicTrackerUrl: true },
+      });
+      if (profile?.metabolicTrackerUrl) {
+        url = profile.metabolicTrackerUrl.replace(/\/$/, '');
+      }
+    } catch {
+      // ignore
+    }
+  }
+  url = url || DEFAULT_METABOLIC_URL;
   const secret = process.env.ECOSYSTEM_SYNC_SECRET || 'dev_sync_secret_metabolic';
   return { url, secret };
 }
@@ -40,7 +61,7 @@ function getSyncConfig() {
 export async function syncActivityToMetabolicTracker(
   payload: ActivitySyncPayload
 ): Promise<SyncResult> {
-  const { url, secret } = getSyncConfig();
+  const { url, secret } = await getSyncConfig();
 
   try {
     const controller = new AbortController();
@@ -66,7 +87,7 @@ export async function syncActivityToMetabolicTracker(
 
     const data = await response.json();
 
-    // Se o Rastreador devolveu dados de nutrição do dia, atualiza o cache local
+    // Se o Rastreador devolveu dados de nutrição e recuperação do dia, atualiza o cache local
     if (data.nutrition) {
       const n: DailyNutritionData = data.nutrition;
       try {
@@ -78,6 +99,8 @@ export async function syncActivityToMetabolicTracker(
             calorieTarget: n.currentCalorieTarget,
             dietGoal: n.dietGoal,
             bodyWeightKg: n.weight ?? undefined,
+            sleepHours: n.sleepHours ?? undefined,
+            stressLevel: n.stressLevel ?? undefined,
           },
           create: {
             date: payload.date,
@@ -87,10 +110,12 @@ export async function syncActivityToMetabolicTracker(
             calorieTarget: n.currentCalorieTarget,
             dietGoal: n.dietGoal,
             bodyWeightKg: n.weight,
+            sleepHours: n.sleepHours,
+            stressLevel: n.stressLevel,
           },
         });
       } catch (cacheErr) {
-        console.warn('[MetabolicSync] Falha ao atualizar cache local de nutrição:', cacheErr);
+        console.warn('[MetabolicSync] Falha ao atualizar cache local de nutrição/wellness:', cacheErr);
       }
     }
 
@@ -109,12 +134,12 @@ export async function syncActivityToMetabolicTracker(
 }
 
 /**
- * Consulta os dados de nutrição de um dia específico no Rastreador Metabólico.
+ * Consulta os dados de nutrição e recuperação de um dia específico no Rastreador Metabólico.
  */
 export async function fetchDailyNutrition(
   date: string
 ): Promise<DailyNutritionData | null> {
-  const { url, secret } = getSyncConfig();
+  const { url, secret } = await getSyncConfig();
 
   try {
     const controller = new AbortController();
@@ -136,7 +161,7 @@ export async function fetchDailyNutrition(
     const data = await response.json();
     if (data.nutrition) {
       const n: DailyNutritionData = data.nutrition;
-      // Atualiza cache local
+      // Atualiza cache local com nutrição e métricas de recuperação
       await prisma.wellnessDaily.upsert({
         where: { date },
         update: {
@@ -144,6 +169,9 @@ export async function fetchDailyNutrition(
           proteinConsumed: n.proteinConsumed,
           calorieTarget: n.currentCalorieTarget,
           dietGoal: n.dietGoal,
+          bodyWeightKg: n.weight ?? undefined,
+          sleepHours: n.sleepHours ?? undefined,
+          stressLevel: n.stressLevel ?? undefined,
         },
         create: {
           date,
@@ -152,6 +180,9 @@ export async function fetchDailyNutrition(
           proteinConsumed: n.proteinConsumed,
           calorieTarget: n.currentCalorieTarget,
           dietGoal: n.dietGoal,
+          bodyWeightKg: n.weight,
+          sleepHours: n.sleepHours,
+          stressLevel: n.stressLevel,
         },
       });
       return n;
@@ -162,7 +193,7 @@ export async function fetchDailyNutrition(
     const cached = await prisma.wellnessDaily.findUnique({
       where: { date },
     });
-    if (cached && (cached.caloriesConsumed != null || cached.calorieTarget != null)) {
+    if (cached) {
       return {
         date,
         caloriesConsumed: cached.caloriesConsumed,
@@ -170,6 +201,8 @@ export async function fetchDailyNutrition(
         currentCalorieTarget: cached.calorieTarget,
         dietGoal: cached.dietGoal,
         weight: cached.bodyWeightKg,
+        sleepHours: cached.sleepHours,
+        stressLevel: cached.stressLevel,
       };
     }
     return null;
@@ -188,7 +221,7 @@ export async function reconcileEcosystemRange(
   nutritionDaysImported: number;
   errors: string[];
 }> {
-  const { url, secret } = getSyncConfig();
+  const { url, secret } = await getSyncConfig();
   const errors: string[] = [];
   let nutritionDaysImported = 0;
   let syncedDaysCount = 0;
@@ -246,6 +279,7 @@ export async function reconcileEcosystemRange(
       workoutTitle: info.title,
       sleepHours: w?.sleepHours,
       bodyWeightKg: w?.bodyWeightKg,
+      stressLevel: w?.stressLevel,
     });
 
     if (result.success) {
@@ -283,6 +317,8 @@ export async function reconcileEcosystemRange(
               calorieTarget: item.currentCalorieTarget,
               dietGoal: item.dietGoal,
               bodyWeightKg: item.weight ?? undefined,
+              sleepHours: item.sleepHours ?? undefined,
+              stressLevel: item.stressLevel ?? undefined,
             },
             create: {
               date: item.date,
@@ -292,6 +328,8 @@ export async function reconcileEcosystemRange(
               calorieTarget: item.currentCalorieTarget,
               dietGoal: item.dietGoal,
               bodyWeightKg: item.weight,
+              sleepHours: item.sleepHours,
+              stressLevel: item.stressLevel,
             },
           });
           nutritionDaysImported++;

@@ -24,6 +24,7 @@ model AthleteProfile {
   birthDate           String?  // data de nascimento "YYYY-MM-DD"
   biologicalSex       String?  // "male" | "female"
   bodyFatPercent      Float?   // gordura corporal estimada (%)
+  metabolicTrackerUrl String?  // URL de produção do Meu Rastreador Metabólico na Vercel
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 

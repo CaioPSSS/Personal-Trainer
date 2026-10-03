@@ -98,6 +98,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [stressLevel, setStressLevel] = useState('3');
   const [bodyWeightKg, setBodyWeightKg] = useState('');
   const [wellnessNotes, setWellnessNotes] = useState('');
+  const [savingWellness, setSavingWellness] = useState(false);
+  const [wellnessSynced, setWellnessSynced] = useState(false);
   const [exercises, setExercises] = useState<ExerciseInput[]>([]);
   const [restoredFromDraft, setRestoredFromDraft] = useState(false);
   const [hasExistingWorkout, setHasExistingWorkout] = useState(false);
@@ -181,6 +183,12 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setStressLevel(data.existingWellness.stressLevel?.toString() || '3');
           setBodyWeightKg(data.existingWellness.bodyWeightKg?.toString() || '');
           setWellnessNotes(data.existingWellness.notes || '');
+          setWellnessSynced(
+            data.existingWellness.bodyWeightKg != null ||
+            data.existingWellness.sleepHours != null ||
+            data.existingWellness.stressLevel != null ||
+            data.existingWellness.caloriesConsumed != null
+          );
         } else {
           setSleepHours('');
           setFatigueLevel('3');
@@ -189,6 +197,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setStressLevel('3');
           setBodyWeightKg('');
           setWellnessNotes('');
+          setWellnessSynced(false);
         }
 
         // Prepopulate Session RPE
@@ -480,10 +489,54 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     });
   };
 
+  const handleSaveWellnessOnly = async () => {
+    setSavingWellness(true);
+    setMessage(null);
+    try {
+      const res = await fetch('/api/workout/today', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          mesocyclePlanId: activeMesocycleId,
+          wellness: {
+            sleepHours: sleepHours || null,
+            fatigueLevel,
+            sorenessLevel,
+            energyLevel,
+            stressLevel,
+            bodyWeightKg: bodyWeightKg || null,
+            notes: wellnessNotes,
+          },
+        }),
+      });
+
+      if (!res.ok) throw new Error('Falha ao salvar métricas de recuperação.');
+      const data = await res.json();
+      setWellnessSynced(true);
+      setMessage({
+        type: 'success',
+        text: data.message || 'Métricas de recuperação salvas e sincronizadas com o Rastreador Metabólico com sucesso!',
+      });
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([30, 40]);
+    } catch (err) {
+      setMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Falha ao salvar métricas de recuperação.',
+      });
+    } finally {
+      setSavingWellness(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setMessage(null);
+
+    const hasLoggedSets = exercises.some((ex) =>
+      ex.sets.some((s) => s.reps !== '' || s.loadKg !== '')
+    );
 
     // Payload construction
     const payload = {
@@ -498,7 +551,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         bodyWeightKg,
         notes: wellnessNotes,
       },
-      workout: selectedTemplate
+      workout: selectedTemplate && hasLoggedSets
         ? {
             workoutDayTemplateId: selectedTemplate.id,
             sessionRpe: sessionRpe ? parseFloat(sessionRpe) : null,
@@ -715,10 +768,23 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       <div className="grid grid-cols-1 xl:grid-cols-[380px_1fr] gap-6">
         {/* Left column: Wellness inputs */}
         <div className="bg-slate-800 border border-slate-700/80 p-5 rounded-2xl shadow-sm space-y-5 h-fit">
-          <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider border-b border-slate-700 pb-2 flex items-center gap-2">
-            <Smile className="h-4 w-4 text-emerald-400" />
-            <span>Métricas de Recuperação</span>
-          </h3>
+          <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+            <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2">
+              <Smile className="h-4 w-4 text-emerald-400" />
+              <span>Métricas de Recuperação</span>
+            </h3>
+            {wellnessSynced ? (
+              <span
+                className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full"
+                title="Integrado ao Meu Rastreador Metabólico"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                🔗 Rastreador
+              </span>
+            ) : (
+              <span className="text-[11px] text-slate-400 font-medium">Check-in Diário</span>
+            )}
+          </div>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -824,6 +890,25 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
               className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-200 outline-none focus:border-indigo-400 resize-none"
             />
           </div>
+
+          <button
+            type="button"
+            onClick={handleSaveWellnessOnly}
+            disabled={savingWellness}
+            className="w-full py-2.5 px-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-60 shadow-sm"
+          >
+            {savingWellness ? (
+              <>
+                <span className="h-3.5 w-3.5 border-2 border-emerald-300 border-t-transparent rounded-full animate-spin" />
+                <span>Sincronizando com Rastreador...</span>
+              </>
+            ) : (
+              <>
+                <Save className="h-3.5 w-3.5" />
+                <span>Salvar Check-in de Recuperação</span>
+              </>
+            )}
+          </button>
         </div>
 
         {/* Right column: Target exercises tracking */}
