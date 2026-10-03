@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
 
 export const STRAVA_CONFIG = {
   clientId: process.env.STRAVA_CLIENT_ID || '282597',
@@ -61,6 +62,7 @@ export interface MappedRunningExecution {
   cadenceAvg: number | null;
   elevationGainM: number | null;
   temperature: number | null;
+  caloriesBurned: number | null;
   splits: Array<{
     km: number;
     distanceM: number;
@@ -272,6 +274,14 @@ export function mapStravaActivityToExecution(activity: StravaActivity): MappedRu
     activity.total_elevation_gain != null ? Number(activity.total_elevation_gain) : null;
   const temperature = activity.average_temp != null ? Number(activity.average_temp) : null;
 
+  // Calories extraction: Strava provides calories or kilojoules
+  let caloriesBurned: number | null = null;
+  if (activity.calories != null && Number(activity.calories) > 0) {
+    caloriesBurned = Math.round(Number(activity.calories));
+  } else if (activity.kilojoules != null && Number(activity.kilojoules) > 0) {
+    caloriesBurned = Math.round(Number(activity.kilojoules));
+  }
+
   // Splits extraction
   let splits: MappedRunningExecution['splits'] = null;
   if (activity.splits_metric && activity.splits_metric.length > 0) {
@@ -312,6 +322,7 @@ export function mapStravaActivityToExecution(activity: StravaActivity): MappedRu
     cadenceAvg,
     elevationGainM,
     temperature,
+    caloriesBurned,
     splits,
     title: activity.name || 'Corrida (Strava)',
   };
@@ -376,6 +387,19 @@ export async function syncActivityRecord(activity: StravaActivity) {
     });
   }
 
+  let finalCaloriesBurned = mapped.caloriesBurned;
+  if (!finalCaloriesBurned || finalCaloriesBurned <= 0) {
+    const athleteWeight = await resolveAthleteWeightKg('singleton', mapped.date);
+    const runCal = calculateRunningCalories({
+      athleteWeightKg: athleteWeight,
+      distanceKm: mapped.distanceKm,
+      elevationGainM: mapped.elevationGainM,
+      durationSeconds: mapped.durationSeconds,
+      avgHeartRate: mapped.avgHeartRate,
+    });
+    finalCaloriesBurned = runCal.totalCalories;
+  }
+
   const execution = await prisma.runningExecution.upsert({
     where: { stravaActivityId: mapped.stravaActivityId },
     update: {
@@ -387,6 +411,7 @@ export async function syncActivityRecord(activity: StravaActivity) {
       elevationGainM: mapped.elevationGainM,
       cadenceAvg: mapped.cadenceAvg,
       temperature: mapped.temperature,
+      caloriesBurned: finalCaloriesBurned,
       splits: mapped.splits ?? undefined,
       date: mapped.date,
       runningSessionId: matchedSession ? matchedSession.id : undefined,
@@ -405,6 +430,7 @@ export async function syncActivityRecord(activity: StravaActivity) {
       elevationGainM: mapped.elevationGainM,
       cadenceAvg: mapped.cadenceAvg,
       temperature: mapped.temperature,
+      caloriesBurned: finalCaloriesBurned,
       splits: mapped.splits ?? undefined,
       notes: activity.description || activity.name || null,
     },
@@ -446,6 +472,7 @@ export async function syncActivityRecord(activity: StravaActivity) {
         title: eventTitle,
         status: 'completed',
         colorCode: '#10b981',
+        caloriesBurned: finalCaloriesBurned,
         date: mapped.date,
       },
     });
@@ -472,6 +499,7 @@ export async function syncActivityRecord(activity: StravaActivity) {
         title: eventTitle,
         status: 'completed',
         colorCode: '#10b981',
+        caloriesBurned: finalCaloriesBurned,
         sortOrder: 1,
       },
     });

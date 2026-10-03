@@ -7,6 +7,11 @@ import {
   ExercisePreviousPerformanceData,
   PreviousExercisePerformance,
 } from '@/lib/progression/load-calculator';
+import {
+  calculateStrengthCalories,
+  resolveAthleteWeightKg,
+  StrengthCalorieResult,
+} from '@/lib/calories';
 
 export const dynamic = 'force-dynamic';
 
@@ -291,6 +296,29 @@ export async function POST(request: NextRequest) {
     }
 
     let createdWorkoutExecutionId: string | null = null;
+    let calculatedCalories: StrengthCalorieResult | null = null;
+
+    if (workout) {
+      // Resolve athlete weight for the workout date
+      const athleteWeightKg = await resolveAthleteWeightKg('singleton', date);
+
+      // Calculate strength training caloric expenditure
+      calculatedCalories = calculateStrengthCalories({
+        athleteWeightKg,
+        durationMinutes: workout.durationMinutes ? parseInt(String(workout.durationMinutes)) : 60,
+        sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : 7.5,
+        exercises: workout.exercises.map((ex: WorkoutExercisePayload) => ({
+          exerciseName: ex.exerciseName,
+          movementPattern: ex.movementPattern,
+          sets: ex.sets.map((set: WorkoutSetPayload) => ({
+            setNumber: parseInt(String(set.setNumber)),
+            reps: parseInt(String(set.reps)) || 0,
+            loadKg: set.loadKg != null ? parseFloat(String(set.loadKg)) : null,
+            rpe: set.rpe != null ? parseFloat(String(set.rpe)) : null,
+          })),
+        })),
+      });
+    }
 
     await prisma.$transaction(async (tx) => {
       // 1. Upsert Wellness log if provided
@@ -330,7 +358,7 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        // Create the new WorkoutExecution with its exercises and sets
+        // Create the new WorkoutExecution with its exercises, sets, and calories
         const workoutExecution = await tx.workoutExecution.create({
           data: {
             athleteProfileId: 'singleton',
@@ -339,6 +367,7 @@ export async function POST(request: NextRequest) {
             status: 'completed',
             sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : null,
             durationMinutes: workout.durationMinutes ? parseInt(String(workout.durationMinutes)) : null,
+            caloriesBurned: calculatedCalories?.totalCalories ?? null,
             notes: workout.notes || null,
             exerciseExecutions: {
               create: workout.exercises.map((ex: WorkoutExercisePayload) => ({
@@ -400,6 +429,7 @@ export async function POST(request: NextRequest) {
             referenceModel: 'WorkoutExecution',
             referenceId: workoutExecution.id,
             title: workoutTitle,
+            caloriesBurned: calculatedCalories?.totalCalories ?? null,
           },
         });
 
@@ -421,6 +451,7 @@ export async function POST(request: NextRequest) {
                 referenceModel: 'WorkoutExecution',
                 referenceId: workoutExecution.id,
                 title: workoutTitle,
+                caloriesBurned: calculatedCalories?.totalCalories ?? null,
               },
             });
           } else {
@@ -433,6 +464,7 @@ export async function POST(request: NextRequest) {
                 referenceId: workoutExecution.id,
                 title: workoutTitle,
                 status: 'completed',
+                caloriesBurned: calculatedCalories?.totalCalories ?? null,
               },
             });
           }
@@ -720,6 +752,16 @@ export async function POST(request: NextRequest) {
         durationMinutes,
         validSetsCount,
         completedSetsCount: validSetsCount,
+        caloriesBurned: calculatedCalories?.totalCalories ?? null,
+        calorieBreakdown: calculatedCalories
+          ? {
+              mechanicalWorkCalories: calculatedCalories.mechanicalWorkCalories,
+              interSetCalories: calculatedCalories.interSetCalories,
+              epocCalories: calculatedCalories.epocCalories,
+              epocFactor: calculatedCalories.epocFactor,
+              perExercise: calculatedCalories.perExercise,
+            }
+          : null,
         recoveryGuidance: recovery.guidanceText,
         recovery,
       },

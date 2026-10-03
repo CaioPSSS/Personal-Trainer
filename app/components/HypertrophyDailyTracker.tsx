@@ -566,6 +566,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           personalRecords: data.summary.personalRecords,
           recovery: data.summary.recovery,
           recoveryGuidance: data.summary.recoveryGuidance,
+          caloriesBurned: data.summary.caloriesBurned,
+          calorieBreakdown: data.summary.calorieBreakdown,
         });
         setIsSummaryModalOpen(true);
       } else {

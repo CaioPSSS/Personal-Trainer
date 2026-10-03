@@ -34,6 +34,17 @@ export interface PostWorkoutSummaryModalProps {
   personalRecords?: PersonalRecordItem[];
   recovery?: RecoveryGuidance | null;
   recoveryGuidance?: string | null;
+  caloriesBurned?: number | null;
+  calorieBreakdown?: {
+    mechanicalWorkCalories?: number;
+    interSetCalories?: number;
+    epocCalories?: number;
+    epocFactor?: number;
+    perExercise?: Array<{
+      exerciseName: string;
+      caloriesBurned: number;
+    }>;
+  } | null;
 }
 
 export default function PostWorkoutSummaryModal({
@@ -53,6 +64,8 @@ export default function PostWorkoutSummaryModal({
   personalRecords = [],
   recovery,
   recoveryGuidance,
+  caloriesBurned,
+  calorieBreakdown,
 }: PostWorkoutSummaryModalProps) {
   useEffect(() => {
     if (!isOpen) return;
@@ -173,6 +186,45 @@ export default function PostWorkoutSummaryModal({
             </p>
           )}
         </div>
+
+        {/* Estimated Caloric Expenditure */}
+        {caloriesBurned != null && caloriesBurned > 0 && (
+          <div className="bg-gradient-to-br from-amber-950/40 to-orange-950/20 border border-amber-500/30 rounded-2xl p-4 sm:p-5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Flame className="w-4 h-4 text-amber-400" />
+                Gasto Calórico Estimado
+              </span>
+              <span className="text-[10px] text-amber-300/80 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full font-medium">
+                Modelo Fisiológico Lytle & Scott
+              </span>
+            </div>
+
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl sm:text-4xl font-black text-amber-300 font-mono tracking-tight">
+                {caloriesBurned}
+              </span>
+              <span className="text-sm font-bold text-amber-200/80">kcal queimadas</span>
+            </div>
+
+            {calorieBreakdown && (
+              <div className="pt-2 border-t border-amber-500/20 grid grid-cols-3 gap-2 text-center text-[10px]">
+                <div className="bg-slate-900/60 rounded-lg p-1.5 border border-amber-500/10">
+                  <span className="text-slate-400 block">Trabalho</span>
+                  <strong className="text-amber-200 text-xs">{calorieBreakdown.mechanicalWorkCalories || 0} kcal</strong>
+                </div>
+                <div className="bg-slate-900/60 rounded-lg p-1.5 border border-amber-500/10">
+                  <span className="text-slate-400 block">Inter-séries</span>
+                  <strong className="text-amber-200 text-xs">{calorieBreakdown.interSetCalories || 0} kcal</strong>
+                </div>
+                <div className="bg-slate-900/60 rounded-lg p-1.5 border border-amber-500/10">
+                  <span className="text-slate-400 block">EPOC (Afterburn)</span>
+                  <strong className="text-amber-200 text-xs">{calorieBreakdown.epocCalories || 0} kcal</strong>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Secondary Metrics Grid: RPE & Sets */}
         <div className="grid grid-cols-2 gap-3 text-center">

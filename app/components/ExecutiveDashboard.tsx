@@ -78,6 +78,8 @@ export default function ExecutiveDashboard({
       ? (athleteProfile.availableEquipment as string[])
       : ['barbell', 'dumbbells', 'cables'],
     movementRestrictions: (athleteProfile?.movementRestrictions as string) || '',
+    bodyWeightKg: athleteProfile?.bodyWeightKg ? String(athleteProfile.bodyWeightKg) : '',
+    heightCm: athleteProfile?.heightCm ? String(athleteProfile.heightCm) : '',
   });
 
   const handleSetupSubmit = async (e: React.FormEvent<HTMLFormElement>) => {

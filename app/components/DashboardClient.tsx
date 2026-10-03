@@ -32,6 +32,8 @@ export default function DashboardClient({ initialAthleteProfile }: DashboardClie
       ? (initialAthleteProfile.availableEquipment as string[]) 
       : ['barbell', 'dumbbells', 'cables'],
     movementRestrictions: (initialAthleteProfile?.movementRestrictions as string) || '',
+    bodyWeightKg: initialAthleteProfile?.bodyWeightKg ? String(initialAthleteProfile.bodyWeightKg) : '',
+    heightCm: initialAthleteProfile?.heightCm ? String(initialAthleteProfile.heightCm) : '',
   });
 
   const [clientMessage, setClientMessage] = useState({ type: '', text: '' });

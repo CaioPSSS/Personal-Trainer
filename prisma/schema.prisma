@@ -19,6 +19,11 @@ model AthleteProfile {
   movementRestrictions Json?
   availableDays       Json?    // ["Seg", "Ter", "Qua", "Sex", "Sáb"] ou [0, 1, 2, 4, 5]
   weeklyWorkoutsTarget Int?    // ex: 3 treinos por semana
+  bodyWeightKg        Float?   // peso base de referência (kg)
+  heightCm            Int?     // altura (cm)
+  birthDate           String?  // data de nascimento "YYYY-MM-DD"
+  biologicalSex       String?  // "male" | "female"
+  bodyFatPercent      Float?   // gordura corporal estimada (%)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -119,6 +124,7 @@ model WorkoutExecution {
   status             String   @default("completed")
   sessionRpe         Float?
   durationMinutes    Int?
+  caloriesBurned     Int?     // gasto calórico estimado em kcal
   notes              String?  @db.Text
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
@@ -343,6 +349,7 @@ model RunningExecution {
   temperature          Float?   // celsius
   splits               Json?    // [{ km: 1, paceSec: 320 }, { km: 2, paceSec: 315 }]
   sessionRpe           Float?   // 1-10
+  caloriesBurned       Int?     // gasto calórico em kcal (Strava ou fórmula Margaria)
   notes                String?  @db.Text
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -385,6 +392,7 @@ model CrossTrainingActivity {
   durationMinutes      Int
   sessionRpe           Float?   // 1-10
   muscleGroups         Json?    // ["legs", "back", "shoulders", "core"]
+  caloriesBurned       Int?     // gasto calórico estimado em kcal
   notes                String?  @db.Text
   status               String   @default("completed") // "planned", "completed", "skipped"
   createdAt            DateTime @default(now())
@@ -427,6 +435,7 @@ model CalendarEvent {
   status               String   @default("planned") // "planned", "completed", "skipped"
   colorCode            String?  // hex color para override
   sortOrder            Int      @default(0) // para múltiplos eventos no mesmo dia
+  caloriesBurned       Int?     // cache de calorias gastas para exibição instantânea no calendário
   originalDate         String?  // data original antes de drag-and-drop
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt

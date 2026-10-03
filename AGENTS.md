@@ -30,8 +30,20 @@ This version has breaking changes — APIs, conventions, and file structure may 
   - Added `"📊 Stats"` button to completed running cards in `WeeklyCalendar.tsx`.
   - Enriched `/api/running/profile`, `/api/running/generate`, and `/api/running/session/link` to include executions and HR zones.
 
+- Multi-Sport Caloric Expenditure Engine & Metabolic Balancing:
+  - Implemented 3-layer hybrid scientific energy model for strength training in `lib/calories/strength-calories.ts` (Mechanical work + Movement multiplier + Allometric scaling $(W/75)^{0.75}$ + Inter-set recovery + EPOC).
+  - Implemented Margaria constant + ACSM elevation formula in `lib/calories/running-calories.ts` with Strava native telemetry prioritization.
+  - Implemented MET + RPE modifier + EPOC model for cross-training in `lib/calories/crosstraining-calories.ts`.
+  - Added dynamic weight resolution hierarchy in `lib/calories/athlete-weight.ts` (`WellnessDaily` on workout date -> recent `WellnessDaily` -> `AthleteProfile` baseline -> 75kg default).
+  - Integrated caloric persistence in `WorkoutExecution`, `RunningExecution`, `CrossTrainingActivity`, and `CalendarEvent`.
+  - Expanded `AthleteProfile` schema with anthropometric and metabolic fields (`bodyWeightKg`, `heightCm`, `birthDate`, `biologicalSex`, `bodyFatPercent`).
+  - Added Anthropometrics & Basal Metabolic Rate (Mifflin-St Jeor) settings in `SettingsClient.tsx` and onboarding inputs in `OnboardingForm.tsx`.
+  - Added caloric display in `WeeklyCalendar.tsx` (event flames & weekly summary aggregate), `PostWorkoutSummaryModal.tsx` (mechanical, recovery, EPOC breakdown), and `RunningDebriefModal.tsx`.
+  - Embedded energy expenditure awareness into `DataAnalystAI` (framework item 6) and `MasterCoachAI` (directive 8) in `lib/ai/prompts.ts`.
+
 ### Architectural Decisions Confirmed
 - Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
+- Calorie computation is deterministic, evidence-based, and decoupled from AI generation to ensure instant, reproducible calculations.
 - Master Coach & Running Coach use separate OpenRouter cascades:
   - Master Coach & Running Coach: `deepseek/deepseek-v4-pro` -> `qwen/qwen3.7-plus` -> `deepseek/deepseek-v4-flash-0731`.
 - SSR client guard pattern: Reusable `useIsClient` hook using `useSyncExternalStore` avoids cascading re-renders and strictly complies with Next.js / React 19 ESLint rules.
@@ -40,12 +52,13 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 ### Pending Work
 - Set production Strava environment variables in Vercel (`STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_WEBHOOK_VERIFY_TOKEN`, `NEXT_PUBLIC_APP_URL`).
-- Verify production database migration via `prisma db push` on first Vercel deployment.
+- Run `npx prisma db push` on production deployment to migrate anthropometric and caloric columns.
+- Optional: Run `npx tsx scripts/backfill-calories.ts` with production database connection to retroactively estimate historical workouts.
 
 ### Verification Notes (This Iteration)
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
 - Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 41/41 tests passing (100% assertions green).
+- Unit tests: `npx tsx --test` -> 46/46 tests passing (100% assertions green).
 - Production build: `npx next build` -> 0 errors, all 27 routes compiled.
 
 

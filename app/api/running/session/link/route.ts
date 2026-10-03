@@ -271,6 +271,7 @@ export async function POST(req: NextRequest) {
           status: 'completed',
           colorCode: '#10b981',
           date: execution.date,
+          caloriesBurned: execution.caloriesBurned,
         },
       });
       await prisma.calendarEvent.delete({
@@ -287,6 +288,7 @@ export async function POST(req: NextRequest) {
           status: 'completed',
           colorCode: '#10b981',
           date: execution.date,
+          caloriesBurned: execution.caloriesBurned,
         },
       });
     } else if (executionEvent) {
@@ -297,6 +299,7 @@ export async function POST(req: NextRequest) {
           title: displayTitle,
           status: 'completed',
           colorCode: '#10b981',
+          caloriesBurned: execution.caloriesBurned,
         },
       });
     } else {
@@ -311,6 +314,7 @@ export async function POST(req: NextRequest) {
           title: displayTitle,
           status: 'completed',
           colorCode: '#10b981',
+          caloriesBurned: execution.caloriesBurned,
         },
       });
     }

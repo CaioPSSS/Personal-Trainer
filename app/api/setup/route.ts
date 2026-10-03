@@ -20,6 +20,11 @@ export async function POST(request: Request) {
       movementRestrictions,
       availableDays,
       weeklyWorkoutsTarget,
+      bodyWeightKg,
+      heightCm,
+      birthDate,
+      biologicalSex,
+      bodyFatPercent,
     } = body;
 
     // 1. Upsert AthleteProfile for hypertrophy coaching
@@ -34,6 +39,11 @@ export async function POST(request: Request) {
         movementRestrictions: movementRestrictions !== undefined ? movementRestrictions : undefined,
         availableDays: availableDays !== undefined ? (availableDays as unknown as Prisma.InputJsonValue) : undefined,
         weeklyWorkoutsTarget: weeklyWorkoutsTarget !== undefined ? parseInt(String(weeklyWorkoutsTarget), 10) : undefined,
+        bodyWeightKg: bodyWeightKg !== undefined ? (bodyWeightKg ? parseFloat(String(bodyWeightKg)) : null) : undefined,
+        heightCm: heightCm !== undefined ? (heightCm ? parseInt(String(heightCm), 10) : null) : undefined,
+        birthDate: birthDate !== undefined ? (birthDate ? String(birthDate) : null) : undefined,
+        biologicalSex: biologicalSex !== undefined ? (biologicalSex ? String(biologicalSex) : null) : undefined,
+        bodyFatPercent: bodyFatPercent !== undefined ? (bodyFatPercent ? parseFloat(String(bodyFatPercent)) : null) : undefined,
       },
       create: {
         id: 'singleton',
@@ -45,6 +55,11 @@ export async function POST(request: Request) {
         movementRestrictions: movementRestrictions || null,
         availableDays: availableDays !== undefined ? (availableDays as unknown as Prisma.InputJsonValue) : undefined,
         weeklyWorkoutsTarget: weeklyWorkoutsTarget !== undefined ? parseInt(String(weeklyWorkoutsTarget), 10) : undefined,
+        bodyWeightKg: bodyWeightKg ? parseFloat(String(bodyWeightKg)) : null,
+        heightCm: heightCm ? parseInt(String(heightCm), 10) : null,
+        birthDate: birthDate ? String(birthDate) : null,
+        biologicalSex: biologicalSex ? String(biologicalSex) : null,
+        bodyFatPercent: bodyFatPercent ? parseFloat(String(bodyFatPercent)) : null,
       },
     });
 

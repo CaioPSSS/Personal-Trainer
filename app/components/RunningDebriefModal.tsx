@@ -44,6 +44,7 @@ export interface RunningDebriefModalProps {
     elevationGainM?: number | null;
     cadenceAvg?: number | null;
     temperature?: number | null;
+    caloriesBurned?: number | null;
     splits?: Array<{
       km: number;
       paceSec?: number;
@@ -240,11 +241,11 @@ export default function RunningDebriefModal({
           </div>
 
           {/* Additional Telemetry Details */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 text-xs">
             <div className="p-3 rounded-xl bg-slate-950/40 border border-slate-800/60 space-y-0.5">
               <span className="text-slate-500 text-[10px] uppercase font-semibold flex items-center gap-1">
                 <Zap className="w-3 h-3 text-amber-400" />
-                Cadência Média
+                Cadência
               </span>
               <div className="font-bold text-slate-200">
                 {execution.cadenceAvg ? `${execution.cadenceAvg} spm` : '-- spm'}
@@ -260,24 +261,35 @@ export default function RunningDebriefModal({
               <div className="font-bold text-slate-200">
                 {execution.elevationGainM != null ? `+${Math.round(execution.elevationGainM)} m` : '--'}
               </div>
-              <div className="text-[10px] text-slate-500">Ganho de elevação</div>
+              <div className="text-[10px] text-slate-500">Ganho elevação</div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/40 border border-slate-800/60 space-y-0.5">
               <span className="text-slate-500 text-[10px] uppercase font-semibold flex items-center gap-1">
                 <Flame className="w-3 h-3 text-rose-400" />
-                Esforço Percebido
+                Esforço (RPE)
               </span>
               <div className="font-bold text-slate-200">
                 {execution.sessionRpe ? `RPE ${execution.sessionRpe} / 10` : 'RPE 7 / 10'}
               </div>
-              <div className="text-[10px] text-slate-500">Escala de Borg CR-10</div>
+              <div className="text-[10px] text-slate-500">Borg CR-10</div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/40 border border-slate-800/60 space-y-0.5">
               <span className="text-slate-500 text-[10px] uppercase font-semibold flex items-center gap-1">
+                <Flame className="w-3 h-3 text-amber-400" />
+                Gasto Calórico
+              </span>
+              <div className="font-bold text-amber-300">
+                {execution.caloriesBurned ? `${execution.caloriesBurned} kcal` : '--'}
+              </div>
+              <div className="text-[10px] text-slate-500">{isStrava ? 'Strava/HR' : 'Margaria'}</div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-950/40 border border-slate-800/60 space-y-0.5 col-span-2 sm:col-span-1">
+              <span className="text-slate-500 text-[10px] uppercase font-semibold flex items-center gap-1">
                 <TrendingUp className="w-3 h-3 text-indigo-400" />
-                Estratégia de Pace
+                Pacing
               </span>
               <div className="font-bold text-slate-200 truncate">
                 {evaluation.splits.fastestKm ? `Km ${evaluation.splits.fastestKm.km} mais rápido` : 'Constante'}

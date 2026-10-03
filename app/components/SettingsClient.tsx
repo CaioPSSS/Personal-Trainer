@@ -18,6 +18,7 @@ import {
   Calendar,
   Sparkles,
   Check,
+  Flame,
 } from 'lucide-react';
 import { useToast } from '@/app/components/ToastProvider';
 
@@ -48,6 +49,11 @@ interface SettingsClientProps {
     movementRestrictions?: unknown;
     availableDays?: unknown;
     weeklyWorkoutsTarget?: number | null;
+    bodyWeightKg?: number | null;
+    heightCm?: number | null;
+    birthDate?: string | null;
+    biologicalSex?: string | null;
+    bodyFatPercent?: number | null;
   } | null;
   runningProfile?: RunningProfileInfo | null;
   stravaConnected: boolean;
@@ -134,6 +140,72 @@ export default function SettingsClient({
   const [selectedDays, setSelectedDays] = useState<number[]>(initialDays);
   const [weeklyTarget, setWeeklyTarget] = useState<number>(athleteProfile?.weeklyWorkoutsTarget ?? 3);
   const [isSavingSchedule, setIsSavingSchedule] = useState(false);
+
+  // Anthropometrics & Metabolism state
+  const [bodyWeight, setBodyWeight] = useState<string>(
+    athleteProfile?.bodyWeightKg != null ? String(athleteProfile.bodyWeightKg) : '75.0'
+  );
+  const [heightCm, setHeightCm] = useState<string>(
+    athleteProfile?.heightCm != null ? String(athleteProfile.heightCm) : '178'
+  );
+  const [birthDate, setBirthDate] = useState<string>(
+    athleteProfile?.birthDate || '1995-06-15'
+  );
+  const [biologicalSex, setBiologicalSex] = useState<string>(
+    athleteProfile?.biologicalSex || 'male'
+  );
+  const [bodyFat, setBodyFat] = useState<string>(
+    athleteProfile?.bodyFatPercent != null ? String(athleteProfile.bodyFatPercent) : ''
+  );
+  const [isSavingPhysical, setIsSavingPhysical] = useState(false);
+
+  // Estimated Basal Metabolic Rate (Mifflin-St Jeor)
+  const estimatedBmr = useMemo(() => {
+    const w = parseFloat(bodyWeight);
+    const h = parseInt(heightCm, 10);
+    if (!w || !h) return null;
+    let age = 30;
+    if (birthDate) {
+      const birthYear = parseInt(birthDate.slice(0, 4), 10);
+      if (!isNaN(birthYear) && birthYear >= 1920 && birthYear <= 2026) {
+        age = Math.max(16, 2026 - birthYear);
+      }
+    }
+    // Mifflin-St Jeor
+    if (biologicalSex === 'female') {
+      return Math.round(10 * w + 6.25 * h - 5 * age - 161);
+    }
+    return Math.round(10 * w + 6.25 * h - 5 * age + 5);
+  }, [bodyWeight, heightCm, birthDate, biologicalSex]);
+
+  const handleSavePhysicalData = async () => {
+    setIsSavingPhysical(true);
+    info('Salvando dados antropométricos e metabólicos...', 'Perfil Físico');
+    try {
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          bodyWeightKg: bodyWeight ? parseFloat(bodyWeight) : null,
+          heightCm: heightCm ? parseInt(heightCm, 10) : null,
+          birthDate: birthDate || null,
+          biologicalSex: biologicalSex || null,
+          bodyFatPercent: bodyFat ? parseFloat(bodyFat) : null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toastError(data.error || 'Falha ao salvar dados físicos.');
+        return;
+      }
+      success('Dados antropométricos e metabólicos salvos com sucesso!', 'Metabolismo Atualizado');
+    } catch (err) {
+      console.error(err);
+      toastError('Erro ao salvar dados físicos.');
+    } finally {
+      setIsSavingPhysical(false);
+    }
+  };
 
   const handleToggleDay = (dayId: number) => {
     setSelectedDays((prev) => {
@@ -342,6 +414,134 @@ export default function SettingsClient({
           <p className="text-slate-400">
             Catálogo SmartFit: Crossover, Halteres monobloco, Máquinas articuladas, Smith Machine, Leg Press 45°, Cadeira Extensora, Mesa Flexora.
           </p>
+        </div>
+      </div>
+
+      {/* Anthropometrics & Metabolic Profile Card */}
+      <div className="glass-card p-6 space-y-5 border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+              <Flame className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
+                Dados Antropométricos & Metabolismo
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  Base Calórica
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Utilizado para o cálculo determinístico de gasto energético em musculação, corrida e cross-training.
+              </p>
+            </div>
+          </div>
+
+          {estimatedBmr && (
+            <div className="bg-amber-500/10 border border-amber-500/25 px-3 py-1.5 rounded-xl text-xs">
+              <span className="text-slate-400">Taxa Metabólica Basal (BMR): </span>
+              <strong className="text-amber-300 font-mono font-bold">{estimatedBmr} kcal/dia</strong>
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5 text-xs">
+          {/* Peso Base */}
+          <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-weight" className="text-slate-400 font-medium block">
+              Peso Base (kg) *
+            </label>
+            <input
+              id="settings-weight"
+              type="number"
+              step="0.1"
+              value={bodyWeight}
+              onChange={(e) => setBodyWeight(e.target.value)}
+              placeholder="75.0"
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-amber-500"
+            />
+            <span className="text-[10px] text-slate-500 block">Fallback se não houver peso diário</span>
+          </div>
+
+          {/* Altura */}
+          <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-height" className="text-slate-400 font-medium block">
+              Altura (cm) *
+            </label>
+            <input
+              id="settings-height"
+              type="number"
+              value={heightCm}
+              onChange={(e) => setHeightCm(e.target.value)}
+              placeholder="178"
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-amber-500"
+            />
+            <span className="text-[10px] text-slate-500 block">Cálculo de alometria</span>
+          </div>
+
+          {/* Data de Nascimento */}
+          <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-birth" className="text-slate-400 font-medium block">
+              Data de Nascimento
+            </label>
+            <input
+              id="settings-birth"
+              type="date"
+              value={birthDate}
+              onChange={(e) => setBirthDate(e.target.value)}
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-slate-100 text-xs focus:outline-none focus:border-amber-500"
+            />
+            <span className="text-[10px] text-slate-500 block">Idade para Mifflin-St Jeor</span>
+          </div>
+
+          {/* Sexo Biológico */}
+          <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-sex" className="text-slate-400 font-medium block">
+              Sexo Biológico
+            </label>
+            <select
+              id="settings-sex"
+              value={biologicalSex}
+              onChange={(e) => setBiologicalSex(e.target.value)}
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-slate-100 text-xs focus:outline-none focus:border-amber-500"
+            >
+              <option value="male">Masculino</option>
+              <option value="female">Feminino</option>
+            </select>
+            <span className="text-[10px] text-slate-500 block">Fórmula de BMR</span>
+          </div>
+
+          {/* Gordura Corporal */}
+          <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-bf" className="text-slate-400 font-medium block">
+              Gordura Corporal (%)
+            </label>
+            <input
+              id="settings-bf"
+              type="number"
+              step="0.5"
+              value={bodyFat}
+              onChange={(e) => setBodyFat(e.target.value)}
+              placeholder="Ex: 14.5"
+              className="w-full bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-amber-500"
+            />
+            <span className="text-[10px] text-slate-500 block">Opcional</span>
+          </div>
+        </div>
+
+        {/* Save button */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleSavePhysicalData}
+            disabled={isSavingPhysical}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white text-xs font-bold shadow-md shadow-amber-600/25 transition disabled:opacity-50 cursor-pointer"
+          >
+            <Flame className={`w-3.5 h-3.5 ${isSavingPhysical ? 'animate-spin' : ''}`} />
+            <span>
+              {isSavingPhysical ? 'Salvando Dados...' : 'Salvar Dados Físicos & Metabolismo'}
+            </span>
+          </button>
         </div>
       </div>
 

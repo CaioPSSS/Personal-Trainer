@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +78,17 @@ export async function POST(req: NextRequest) {
       create: { id: 'singleton' },
     });
 
+    // Resolve athlete weight and compute running calories
+    const athleteWeightKg = await resolveAthleteWeightKg('singleton', date);
+    const runCal = calculateRunningCalories({
+      athleteWeightKg,
+      distanceKm,
+      elevationGainM: body.elevationGainM != null ? Number(body.elevationGainM) : null,
+      durationSeconds,
+      avgHeartRate,
+    });
+    const caloriesBurned = runCal.totalCalories;
+
     const executionResult = await prisma.$transaction(async (tx) => {
       // 1. Identify matching planned session
       let matchedSession = null;
@@ -106,6 +118,7 @@ export async function POST(req: NextRequest) {
           avgPaceSec,
           avgHeartRate,
           maxHeartRate,
+          caloriesBurned,
           sessionRpe,
           notes,
         },
@@ -133,6 +146,7 @@ export async function POST(req: NextRequest) {
               referenceId: execution.id,
               referenceModel: 'RunningExecution',
               title: `${matchedSession.title} (${distanceKm.toFixed(1)} km)`,
+              caloriesBurned,
             },
           });
         } else {
@@ -146,6 +160,7 @@ export async function POST(req: NextRequest) {
               title: `${matchedSession.title} (${distanceKm.toFixed(1)} km)`,
               status: 'completed',
               colorCode: '#10b981',
+              caloriesBurned,
               sortOrder: 1,
             },
           });
@@ -162,6 +177,7 @@ export async function POST(req: NextRequest) {
             title: `Corrida Manual (${distanceKm.toFixed(1)} km)`,
             status: 'completed',
             colorCode: '#10b981',
+            caloriesBurned,
             sortOrder: 1,
           },
         });

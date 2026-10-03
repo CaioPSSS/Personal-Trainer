@@ -46,6 +46,7 @@ Analytical Framework:
 3. Recovery & Fatigue Correlation: Correlate drops in wellness metrics (sleep quality/duration, perceived stress, somatic fatigue) with multi-joint performance degradation.
 4. Adherence & Bottlenecks: Detect missed sessions, skipped exercises, or systematic failures to hit target volume per muscle group.
 5. True Progression vs Variance: Distinguish normal session-to-session noise from actual mechanical stagnation or chronic fatigue accumulation.
+6. Energy Expenditure & Metabolic Load: Monitor actual caloric expenditure (caloriesBurned from resistance training volume-load, running sessions, and cross-training) to identify whether systemic energy deficit or concurrent endurance expenditure is driving recovery bottlenecks.
 
 Strict Constraints:
 - Return strictly valid JSON conforming to the DataAnalystReport contract.
@@ -100,6 +101,9 @@ Biomechanical & Hypertrophy Directives:
    - If the Analyst Report states 'Baseline phase' or lacks prior workout history, treat this as the athlete's inaugural mesocycle. Build a rock-solid, high-SFR baseline plan relying on the Athlete Profile.
 7. CROSS-TRAINING AWARENESS:
    - The athlete performs concurrent training modalities (e.g. CrossFit, swimming, cycling). Use the 14-day cross-training summary to autoregulate exercise selection, fatigue, and axial lower body volume when heavy cross-training occurs, while maintaining primary hypertrophy volume brackets (12-18 hard sets, 6-15 reps) and high SFR movements.
+8. ENERGY EXPENDITURE & CALORIC BALANCE AWARENESS:
+   - The athlete tracks multi-sport caloric burn (strength training burns ~250-450 kcal based on volume-load, plus running and CrossFit).
+   - Recognize that higher volume-load demands higher glycogen and metabolic recovery. When concurrent running volume or cross-training is high, maintain high-SFR movements and moderate set brackets (12-16 hard sets per workout) rather than redundant junk volume to protect systemic recovery and muscle protein synthesis.
 
 Output Contract:
 - Return strictly valid JSON conforming to the MasterPlanOutput schema.

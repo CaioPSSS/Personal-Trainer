@@ -51,6 +51,7 @@ export interface RunningExecutionData {
   elevationGainM?: number | null;
   cadenceAvg?: number | null;
   temperature?: number | null;
+  caloriesBurned?: number | null;
   splits?: Array<{
     km: number;
     paceSec?: number;
@@ -1269,13 +1270,18 @@ export default function RunningPage() {
                 {isCompleted && (
                   <div className="pt-2 border-t border-emerald-900/40 space-y-2 text-xs">
                     {session.executions && session.executions[0] ? (
-                      <div className="flex items-center justify-between text-[11px] bg-emerald-950/40 px-2.5 py-1.5 rounded-xl border border-emerald-500/20">
+                      <div className="flex items-center justify-between text-[11px] bg-emerald-950/40 px-2.5 py-1.5 rounded-xl border border-emerald-500/20 flex-wrap gap-1">
                         <span className="font-bold text-emerald-300">
                           {session.executions[0].distanceKm.toFixed(1)} km rodados
                         </span>
                         <span className="font-mono text-slate-300">
                           {formatPaceSec(session.executions[0].avgPaceSec)}
                         </span>
+                        {session.executions[0].caloriesBurned != null && session.executions[0].caloriesBurned > 0 && (
+                          <span className="text-amber-300 font-semibold flex items-center gap-0.5">
+                            🔥 {session.executions[0].caloriesBurned} kcal
+                          </span>
+                        )}
                         {session.executions[0].avgHeartRate && (
                           <span className="text-rose-300 font-semibold">
                             {session.executions[0].avgHeartRate} bpm

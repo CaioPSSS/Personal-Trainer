@@ -1,7 +1,7 @@
 'use client';
 
 import { Dispatch, FormEvent, SetStateAction } from 'react';
-import { Dumbbell, Clock, ShieldAlert, CheckCircle2, Brain } from 'lucide-react';
+import { Dumbbell, Clock, ShieldAlert, CheckCircle2, Brain, Scale, Ruler } from 'lucide-react';
 
 export interface AthleteProfileFormState {
   displayName: string;
@@ -10,6 +10,8 @@ export interface AthleteProfileFormState {
   athleteContext: string;
   availableEquipment: string[];
   movementRestrictions: string;
+  bodyWeightKg?: string;
+  heightCm?: string;
 }
 
 interface OnboardingFormProps {
@@ -44,7 +46,7 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit, isSu
         </div>
         <h1 className="text-2xl font-bold text-slate-100">Perfil do Atleta</h1>
         <p className="text-slate-400 text-sm mt-1">
-          Calibre seu perfil de hipertrofia para que o Master Coach IA projete seu mesociclo sob medida.
+          Calibre seu perfil de hipertrofia e metabolismo para que o Master Coach IA projete seu plano sob medida.
         </p>
       </div>
 
@@ -95,6 +97,44 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit, isSu
               <option value="75">75 minutos</option>
               <option value="90">90 minutos</option>
             </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs uppercase text-slate-400 font-bold mb-1.5 flex items-center gap-1.5">
+              <Scale className="h-3.5 w-3.5 text-amber-400" />
+              <span>Peso Corporal Base (kg)</span>
+            </label>
+            <input
+              type="number"
+              step="0.1"
+              min="30"
+              max="250"
+              placeholder="Ex: 78.5"
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none"
+              value={setupForm.bodyWeightKg ?? ''}
+              onChange={(e) => setSetupForm({ ...setupForm, bodyWeightKg: e.target.value })}
+            />
+            <p className="text-[10px] text-slate-500 mt-1">Usado no cálculo de gasto calórico (kcal) dos treinos.</p>
+          </div>
+
+          <div>
+            <label className="block text-xs uppercase text-slate-400 font-bold mb-1.5 flex items-center gap-1.5">
+              <Ruler className="h-3.5 w-3.5 text-sky-400" />
+              <span>Altura (cm)</span>
+            </label>
+            <input
+              type="number"
+              step="1"
+              min="100"
+              max="250"
+              placeholder="Ex: 178"
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none"
+              value={setupForm.heightCm ?? ''}
+              onChange={(e) => setSetupForm({ ...setupForm, heightCm: e.target.value })}
+            />
+            <p className="text-[10px] text-slate-500 mt-1">Opcional. Usado no cálculo da Taxa Metabólica Basal (TMB).</p>
           </div>
         </div>
 

@@ -34,6 +34,7 @@ export interface CalendarEventDTO {
   status: 'planned' | 'completed' | 'skipped' | string;
   colorCode?: string | null;
   sortOrder: number;
+  caloriesBurned?: number | null;
   originalDate?: string | null;
 }
 
@@ -48,6 +49,7 @@ interface RunningExecutionCandidate {
   elevationGainM?: number | null;
   cadenceAvg?: number | null;
   temperature?: number | null;
+  caloriesBurned?: number | null;
   splits?: Array<{
     km: number;
     paceSec?: number;
@@ -552,6 +554,9 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   const strengthCount = events.filter((e) => e.eventType === 'strength').length;
   const runningCount = events.filter((e) => e.eventType === 'running').length;
   const crossCount = events.filter((e) => ['crossfit', 'swimming', 'cycling'].includes(e.eventType)).length;
+  const weeklyTotalCalories = events
+    .filter((e) => e.status === 'completed' && e.caloriesBurned)
+    .reduce((sum, e) => sum + (e.caloriesBurned || 0), 0);
 
   return (
     <div className="glass-card p-5 space-y-5">
@@ -733,9 +738,20 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
                         {/* Status Footer */}
                         <div className="mt-2 flex items-center justify-between text-[10px]">
-                          <span className={`px-1.5 py-0.5 rounded-md font-medium ${visuals.badgeClass}`}>
-                            {visuals.tag}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`px-1.5 py-0.5 rounded-md font-medium ${visuals.badgeClass}`}>
+                              {visuals.tag}
+                            </span>
+                            {isCompleted && event.caloriesBurned != null && event.caloriesBurned > 0 && (
+                              <span
+                                className="px-1.5 py-0.5 rounded-md font-semibold text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-0.5"
+                                title={`Gasto estimado: ${event.caloriesBurned} kcal`}
+                              >
+                                <span>🔥</span>
+                                <span>{event.caloriesBurned} kcal</span>
+                              </span>
+                            )}
+                          </div>
 
                           <div className="flex items-center gap-1">
                             {isCompleted && (
@@ -890,6 +906,15 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
             <Flame className="w-3.5 h-3.5 text-amber-400" />
             <strong className="text-amber-300">{crossCount}</strong> cross-training
           </span>
+          {weeklyTotalCalories > 0 && (
+            <span
+              className="flex items-center gap-1.5 text-amber-300 font-semibold bg-amber-500/10 px-2 py-0.5 rounded-lg border border-amber-500/20"
+              title="Gasto calórico total dos treinos completados nesta semana"
+            >
+              <Flame className="w-3.5 h-3.5 text-amber-400" />
+              <span>{weeklyTotalCalories.toLocaleString('pt-BR')} kcal queimadas</span>
+            </span>
+          )}
         </div>
         <div className="text-[11px] text-slate-500 italic">
           💡 Dica: Arraste os treinos planejados entre os dias para reagendar.

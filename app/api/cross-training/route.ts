@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
+import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
 
 export const dynamic = 'force-dynamic';
 
@@ -88,6 +89,16 @@ export async function POST(req: NextRequest) {
     const activityLabel = ACTIVITY_LABELS[activityType] || 'Cross-Training';
     const finalTitle = title?.trim() || activityLabel;
 
+    // Resolve athlete weight and compute cross-training calories
+    const athleteWeightKg = await resolveAthleteWeightKg(athlete.id, date);
+    const crossCal = calculateCrossTrainingCalories({
+      athleteWeightKg,
+      durationMinutes: parseInt(String(durationMinutes), 10),
+      activityType,
+      sessionRpe: sessionRpe ? parseFloat(String(sessionRpe)) : 7.5,
+    });
+    const caloriesBurned = crossCal.totalCalories;
+
     const result = await prisma.$transaction(async (tx) => {
       // 1. Create CrossTrainingActivity
       const activity = await tx.crossTrainingActivity.create({
@@ -98,6 +109,7 @@ export async function POST(req: NextRequest) {
           title: finalTitle,
           durationMinutes: parseInt(String(durationMinutes), 10),
           sessionRpe: sessionRpe ? parseFloat(String(sessionRpe)) : null,
+          caloriesBurned,
           muscleGroups: muscleGroups as unknown as Prisma.InputJsonValue,
           notes: notes?.trim() || null,
           status: 'completed',
@@ -114,6 +126,7 @@ export async function POST(req: NextRequest) {
           referenceModel: 'CrossTrainingActivity',
           referenceId: activity.id,
           title: finalTitle,
+          caloriesBurned,
           sortOrder: 1,
         },
       });
