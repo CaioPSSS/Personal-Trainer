@@ -36,13 +36,19 @@ export const DEFAULT_METABOLIC_URL = 'https://meu-rastreador-metabolico-p7xl.ver
 
 export async function getSyncConfig() {
   let url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '');
+
+  // Se a env var foi configurada com o próprio domínio do Personal Trainer, descarta para evitar loop/404
+  if (url && (url.includes('personal-trainer') || url.includes('localhost:3000'))) {
+    url = undefined;
+  }
+
   if (!url) {
     try {
       const profile = await prisma.athleteProfile.findUnique({
         where: { id: 'singleton' },
         select: { metabolicTrackerUrl: true },
       });
-      if (profile?.metabolicTrackerUrl) {
+      if (profile?.metabolicTrackerUrl && !profile.metabolicTrackerUrl.includes('personal-trainer')) {
         url = profile.metabolicTrackerUrl.replace(/\/$/, '');
       }
     } catch {
