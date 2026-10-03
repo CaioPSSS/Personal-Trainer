@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
+import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const STRAVA_CONFIG = {
   clientId: process.env.STRAVA_CLIENT_ID || '282597',
@@ -504,6 +505,15 @@ export async function syncActivityRecord(activity: StravaActivity) {
       },
     });
   }
+
+  // Sincroniza atividade Strava com o Meu Rastreador Metabólico de forma não-bloqueante
+  syncActivityToMetabolicTracker({
+    date: mapped.date,
+    caloriesBurned: finalCaloriesBurned,
+    trainingType: 'Corrida',
+    workoutTitle: eventTitle,
+    durationMinutes: Math.round(mapped.durationSeconds / 60),
+  }).catch((err) => console.warn('[MetabolicSync] Falha no sync Strava com Rastreador:', err));
 
   return execution;
 }

@@ -29,14 +29,31 @@ export async function GET(req: NextRequest) {
       where.date = { lte: endDate };
     }
 
-    const events = await prisma.calendarEvent.findMany({
-      where,
-      orderBy: [
-        { date: 'asc' },
-        { sortOrder: 'asc' },
-        { createdAt: 'asc' },
-      ],
-    });
+    const wellnessWhere: Prisma.WellnessDailyWhereInput = {
+      athleteProfileId: 'singleton',
+    };
+
+    if (startDate && endDate) {
+      wellnessWhere.date = { gte: startDate, lte: endDate };
+    } else if (startDate) {
+      wellnessWhere.date = { gte: startDate };
+    } else if (endDate) {
+      wellnessWhere.date = { lte: endDate };
+    }
+
+    const [events, wellness] = await Promise.all([
+      prisma.calendarEvent.findMany({
+        where,
+        orderBy: [
+          { date: 'asc' },
+          { sortOrder: 'asc' },
+          { createdAt: 'asc' },
+        ],
+      }),
+      prisma.wellnessDaily.findMany({
+        where: wellnessWhere,
+      }),
+    ]);
 
     // In-memory safety deduplication for planned events on the same date with the same title and type
     const seen = new Set<string>();
@@ -48,7 +65,7 @@ export async function GET(req: NextRequest) {
       return true;
     });
 
-    return NextResponse.json({ events: deduplicatedEvents });
+    return NextResponse.json({ events: deduplicatedEvents, wellness });
   } catch (error) {
     console.error('Erro ao buscar eventos do calendário:', error);
     return NextResponse.json(

@@ -159,6 +159,66 @@ export default function SettingsClient({
   );
   const [isSavingPhysical, setIsSavingPhysical] = useState(false);
 
+  // Metabolic Tracker integration state
+  const [isTestingMetabolic, setIsTestingMetabolic] = useState(false);
+  const [isReconcilingMetabolic, setIsReconcilingMetabolic] = useState(false);
+  const [metabolicStatus, setMetabolicStatus] = useState<'unknown' | 'connected' | 'offline'>('unknown');
+  const [metabolicReconcileResult, setMetabolicReconcileResult] = useState<string | null>(null);
+
+  const handleTestMetabolicConnection = async () => {
+    setIsTestingMetabolic(true);
+    info('Testando conexão com Meu Rastreador Metabólico...', 'Integração');
+    try {
+      const res = await fetch('/api/integrations/metabolic', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'test_connection' }),
+      });
+      const data = await res.json();
+      if (data.status === 'connected') {
+        setMetabolicStatus('connected');
+        success('Conexão estabelecida com sucesso com o Rastreador Metabólico!', 'Conectado');
+      } else {
+        setMetabolicStatus('offline');
+        toastError('Não foi possível conectar. Verifique se o app irmão está rodando.', 'Offline');
+      }
+    } catch {
+      setMetabolicStatus('offline');
+      toastError('Erro de rede ao testar conexão com o Rastreador.', 'Erro');
+    } finally {
+      setIsTestingMetabolic(false);
+    }
+  };
+
+  const handleReconcileMetabolic = async () => {
+    setIsReconcilingMetabolic(true);
+    info('Sincronizando treinos e nutrição dos últimos 14 dias...', 'Sincronização');
+    try {
+      const res = await fetch('/api/integrations/metabolic', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reconcile' }),
+      });
+      const data = await res.json();
+      if (data.success && data.result) {
+        const { syncedDaysCount, nutritionDaysImported } = data.result;
+        success(
+          `Sincronização concluída: ${syncedDaysCount} treinos enviados, ${nutritionDaysImported} dias de nutrição importados!`,
+          'Sincronizado'
+        );
+        setMetabolicReconcileResult(
+          `${syncedDaysCount} treinos enviados • ${nutritionDaysImported} dias de nutrição importados`
+        );
+      } else {
+        toastError('Falha durante a reconciliação com o Rastreador.', 'Erro');
+      }
+    } catch {
+      toastError('Erro de rede ao sincronizar ecossistema.', 'Erro');
+    } finally {
+      setIsReconcilingMetabolic(false);
+    }
+  };
+
   // Estimated Basal Metabolic Rate (Mifflin-St Jeor)
   const estimatedBmr = useMemo(() => {
     const w = parseFloat(bodyWeight);
@@ -945,6 +1005,90 @@ export default function SettingsClient({
           >
             <span>{stravaConnected ? 'Reconectar Strava' : 'Conectar Strava'}</span>
             <ExternalLink className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Meu Rastreador Metabólico Ecosystem Integration */}
+      <div className="glass-card p-6 space-y-5 border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800 flex-wrap gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+              <RefreshCw className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
+                Integração: Meu Rastreador Metabólico
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                    metabolicStatus === 'connected'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                      : metabolicStatus === 'offline'
+                      ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                      : 'bg-slate-800 text-slate-400 border-slate-750'
+                  }`}
+                >
+                  {metabolicStatus === 'connected'
+                    ? 'Conectado'
+                    : metabolicStatus === 'offline'
+                    ? 'Offline'
+                    : 'Pronto para Sincronizar'}
+                </span>
+              </h2>
+              <p className="text-xs text-slate-400">
+                Sincronização bidirecional de treinos e gastos calóricos reais com ingestão de alimentos e metas nutricionais.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-3 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
+              <span className="text-slate-400 block mb-1">Destino dos Treinos</span>
+              <span className="text-slate-200 font-medium">
+                Envia gasto calórico real (musculação, corrida e cross-training) direto para o diário do Rastreador.
+              </span>
+            </div>
+            <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
+              <span className="text-slate-400 block mb-1">Origem da Nutrição</span>
+              <span className="text-slate-200 font-medium">
+                Puxa calorias consumidas, proteínas e meta calórica diária para exibição no calendário e balanço diário.
+              </span>
+            </div>
+          </div>
+
+          {metabolicReconcileResult && (
+            <p className="text-[11px] text-emerald-400 font-mono bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/20">
+              ✅ Último resultado: {metabolicReconcileResult}
+            </p>
+          )}
+
+          <p className="text-slate-400 leading-relaxed">
+            Ao concluir treinos no Personal Trainer, as calorias são enviadas automaticamente em segundo plano. Você também pode reconciliar dados retroativos dos últimos 14 dias a qualquer momento.
+          </p>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-3 pt-2 flex-wrap">
+          <button
+            type="button"
+            onClick={handleReconcileMetabolic}
+            disabled={isReconcilingMetabolic}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold shadow-md shadow-emerald-500/20 transition cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isReconcilingMetabolic ? 'animate-spin' : ''}`} />
+            <span>{isReconcilingMetabolic ? 'Reconciliando...' : '🔄 Sincronizar Últimos 14 Dias'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleTestMetabolicConnection}
+            disabled={isTestingMetabolic}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-750 text-slate-200 text-xs font-semibold transition cursor-pointer disabled:opacity-50"
+          >
+            <Activity className={`w-3.5 h-3.5 ${isTestingMetabolic ? 'animate-spin text-emerald-400' : 'text-slate-400'}`} />
+            <span>{isTestingMetabolic ? 'Testando...' : 'Testar Conexão'}</span>
           </button>
         </div>
       </div>

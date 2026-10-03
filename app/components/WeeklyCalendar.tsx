@@ -127,12 +127,23 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
   } | null>(null);
   const [isLinkOpen, setIsLinkOpen] = useState(false);
 
-  // Running Debrief Modal state
+  // Debrief state
   const [debriefSession, setDebriefSession] = useState<RunningSessionCandidate | null>(null);
   const [debriefExecution, setDebriefExecution] = useState<RunningExecutionCandidate | null>(null);
   const [debriefHrZones, setDebriefHrZones] = useState<Record<string, HrZoneDef> | null>(null);
   const [isDebriefOpen, setIsDebriefOpen] = useState(false);
   const [loadingDebriefEventId, setLoadingDebriefEventId] = useState<string | null>(null);
+
+  // Nutrition snapshot list from Meu Rastreador Metabólico
+  const [wellnessList, setWellnessList] = useState<
+    Array<{
+      date: string;
+      caloriesConsumed?: number | null;
+      proteinConsumed?: number | null;
+      calorieTarget?: number | null;
+      dietGoal?: string | null;
+    }>
+  >([]);
 
   const todayStr = formatDateISO(new Date());
 
@@ -159,6 +170,9 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       if (res.ok) {
         const data = await res.json();
         setEvents(data.events || []);
+        if (Array.isArray(data.wellness)) {
+          setWellnessList(data.wellness);
+        }
       }
     } catch (err) {
       console.error('Falha ao carregar eventos:', err);
@@ -686,6 +700,33 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                 </span>
               </div>
 
+              {/* Nutrition Snapshot (Meu Rastreador Metabólico) */}
+              {(() => {
+                const dayNutrition = wellnessList.find((w) => w.date === day.dateStr);
+                if (!dayNutrition || (dayNutrition.caloriesConsumed == null && dayNutrition.calorieTarget == null)) {
+                  return null;
+                }
+                const consumed = dayNutrition.caloriesConsumed ?? 0;
+                const target = dayNutrition.calorieTarget ?? 0;
+                const protein = dayNutrition.proteinConsumed;
+                return (
+                  <div
+                    className="mb-2 px-2 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-[10px] text-emerald-300 flex items-center justify-between shadow-xs select-none"
+                    title={`Rastreador Metabólico: ${consumed} kcal consumidas de ${target} kcal meta${protein ? ` • ${protein}g proteína` : ''}`}
+                  >
+                    <span className="flex items-center gap-1 font-mono font-medium">
+                      <span className="text-[11px]">🍽️</span>
+                      <span>{consumed}{target > 0 ? `/${target}` : ''} kcal</span>
+                    </span>
+                    {protein != null && protein > 0 && (
+                      <span className="font-semibold text-emerald-400 font-mono">
+                        {protein}g P
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Day Events Stack */}
               <div className="flex-1 space-y-2">
                 {dayEvents.length === 0 ? (
@@ -915,6 +956,19 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
               <span>{weeklyTotalCalories.toLocaleString('pt-BR')} kcal queimadas</span>
             </span>
           )}
+          {(() => {
+            const weeklyConsumed = wellnessList.reduce((acc, curr) => acc + (curr.caloriesConsumed || 0), 0);
+            if (weeklyConsumed === 0) return null;
+            return (
+              <span
+                className="flex items-center gap-1.5 text-emerald-300 font-semibold bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/20"
+                title="Calorias totais consumidas nesta semana sincronizadas do Meu Rastreador Metabólico"
+              >
+                <span>🍽️</span>
+                <span>{weeklyConsumed.toLocaleString('pt-BR')} kcal ingeridas</span>
+              </span>
+            );
+          })()}
         </div>
         <div className="text-[11px] text-slate-500 italic">
           💡 Dica: Arraste os treinos planejados entre os dias para reagendar.

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
+import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -133,6 +134,16 @@ export async function POST(req: NextRequest) {
 
       return { activity, calendarEvent };
     });
+
+    // Sincroniza atividade de cross-training com o Meu Rastreador Metabólico de forma não-bloqueante
+    syncActivityToMetabolicTracker({
+      date,
+      caloriesBurned,
+      trainingType: 'Cross-Training',
+      workoutTitle: finalTitle,
+      durationMinutes: parseInt(String(durationMinutes), 10),
+      sessionRpe: sessionRpe ? parseFloat(String(sessionRpe)) : undefined,
+    }).catch((err) => console.warn('[MetabolicSync] Falha no sync Cross-Training com Rastreador:', err));
 
     // Reactive rescheduling: dynamically rebalance the week's strength workouts
     // to steer leg workouts away from CrossFit fatigue

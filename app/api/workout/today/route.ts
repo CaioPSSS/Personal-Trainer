@@ -12,6 +12,7 @@ import {
   resolveAthleteWeightKg,
   StrengthCalorieResult,
 } from '@/lib/calories';
+import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -471,6 +472,20 @@ export async function POST(request: NextRequest) {
         }
       }
     });
+
+    // 3. Sincroniza atividade com o Meu Rastreador Metabólico de forma não-bloqueante
+    if (workout && calculatedCalories) {
+      syncActivityToMetabolicTracker({
+        date,
+        caloriesBurned: calculatedCalories.totalCalories,
+        trainingType: 'Musculação',
+        workoutTitle: workout.name || 'Treino de Musculação',
+        durationMinutes: workout.durationMinutes ? parseInt(String(workout.durationMinutes)) : undefined,
+        sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : undefined,
+        sleepHours: wellness?.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
+        bodyWeightKg: wellness?.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
+      }).catch((err) => console.warn('[MetabolicSync] Falha no sync com Rastreador:', err));
+    }
 
     if (!workout) {
       return NextResponse.json({ success: true });

@@ -183,6 +183,10 @@ model WellnessDaily {
   energyLevel        Int?
   stressLevel        Int?
   bodyWeightKg       Float?
+  caloriesConsumed   Int?     // calorias ingeridas sincronizadas do Meu Rastreador Metabólico
+  proteinConsumed    Int?     // proteínas ingeridas em gramas (g)
+  calorieTarget      Int?     // meta calórica do dia do Meu Rastreador Metabólico (kcal)
+  dietGoal           String?  // meta dietética ("loss" | "maintenance" | "gain")
   notes              String?  @db.Text
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt

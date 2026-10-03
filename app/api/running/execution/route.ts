@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
+import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -185,6 +186,18 @@ export async function POST(req: NextRequest) {
 
       return execution;
     });
+
+    // Sincroniza atividade com o Meu Rastreador Metabólico de forma não-bloqueante
+    if (executionResult) {
+      syncActivityToMetabolicTracker({
+        date,
+        caloriesBurned: executionResult.caloriesBurned || 0,
+        trainingType: 'Corrida',
+        workoutTitle: `Corrida (${distanceKm.toFixed(1)} km)`,
+        durationMinutes: Math.round(durationSeconds / 60),
+        sessionRpe: sessionRpe ?? undefined,
+      }).catch((err) => console.warn('[MetabolicSync] Falha no sync com Rastreador:', err));
+    }
 
     return NextResponse.json({
       success: true,
