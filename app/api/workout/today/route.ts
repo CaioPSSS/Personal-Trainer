@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
   calculateProgressiveOverload,
@@ -13,7 +13,7 @@ import {
   StrengthCalorieResult,
 } from '@/lib/calories';
 import {
-  syncActivityToMetabolicTracker,
+  syncDayToMetabolicTracker,
   fetchDailyNutrition,
 } from '@/lib/integrations/metabolic-tracker';
 
@@ -498,27 +498,18 @@ export async function POST(request: NextRequest) {
       }
     });
 
-    // 3. Sincroniza atividade com o Meu Rastreador Metabólico de forma não-bloqueante
-    if (hasCompletedExercises && workout && calculatedCalories) {
-      syncActivityToMetabolicTracker({
-        date,
-        caloriesBurned: calculatedCalories.totalCalories,
-        trainingType: 'Musculação',
-        workoutTitle: workout.name || 'Treino de Musculação',
-        durationMinutes: workout.durationMinutes ? parseInt(String(workout.durationMinutes)) : undefined,
-        sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : undefined,
-        sleepHours: wellness?.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
-        bodyWeightKg: wellness?.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
-        stressLevel: wellness?.stressLevel ? parseInt(String(wellness.stressLevel)) : undefined,
-      }).catch((err) => console.warn('[MetabolicSync] Falha no sync com Rastreador:', err));
-    } else if (wellness && (wellness.sleepHours != null || wellness.bodyWeightKg != null || wellness.stressLevel != null)) {
-      syncActivityToMetabolicTracker({
-        date,
-        sleepHours: wellness.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
-        bodyWeightKg: wellness.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
-        stressLevel: wellness.stressLevel ? parseInt(String(wellness.stressLevel)) : undefined,
-      }).catch((err) => console.warn('[MetabolicSync] Falha no sync wellness com Rastreador:', err));
-    }
+    // 3. Sincroniza o dia consolidado (soma de todas as atividades) com o Meu Rastreador Metabólico via after()
+    after(async () => {
+      try {
+        await syncDayToMetabolicTracker(date, {
+          sleepHours: wellness?.sleepHours ? parseFloat(String(wellness.sleepHours)) : undefined,
+          bodyWeightKg: wellness?.bodyWeightKg ? parseFloat(String(wellness.bodyWeightKg)) : undefined,
+          stressLevel: wellness?.stressLevel ? parseInt(String(wellness.stressLevel)) : undefined,
+        });
+      } catch (err) {
+        console.warn('[MetabolicSync] Falha no sync consolidado com Rastreador:', err);
+      }
+    });
 
     if (!hasCompletedExercises || !workout) {
       return NextResponse.json({

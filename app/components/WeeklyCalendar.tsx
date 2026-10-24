@@ -19,6 +19,7 @@ import { useToast } from './ToastProvider';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
 import UnskipWorkoutDialog from './UnskipWorkoutDialog';
 import CrossTrainingModal from './CrossTrainingModal';
+import RecurringCrossTrainingModal from './RecurringCrossTrainingModal';
 import LinkRunningSessionModal from './LinkRunningSessionModal';
 import RunningDebriefModal from './RunningDebriefModal';
 import { HrZoneDef } from '@/lib/running/performance-evaluator';
@@ -118,6 +119,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
   // Cross-training modal state
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
+  const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
 
   // Running session link modal state
   const [linkTarget, setLinkTarget] = useState<{
@@ -642,6 +644,16 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
           <button
             type="button"
+            onClick={() => setIsRecurringModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 transition cursor-pointer"
+            title="Pré-programar CrossFit ou treinos recorrentes em dias fixos da semana"
+          >
+            <Flame className="w-3.5 h-3.5 text-amber-400" />
+            <span>CrossFit Recorrente</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setIsCrossModalOpen(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 hover:border-amber-400 transition"
           >
@@ -1001,6 +1013,13 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       <CrossTrainingModal
         isOpen={isCrossModalOpen}
         onClose={() => setIsCrossModalOpen(false)}
+        onSuccess={refreshCalendar}
+      />
+
+      {/* Recurring Cross-Training Modal */}
+      <RecurringCrossTrainingModal
+        isOpen={isRecurringModalOpen}
+        onClose={() => setIsRecurringModalOpen(false)}
         onSuccess={refreshCalendar}
       />
 

@@ -389,6 +389,35 @@ export default function RunningPage() {
     }
   }, []);
 
+  const [reschedulingSessionId, setReschedulingSessionId] = useState<string | null>(null);
+  const [rescheduleDate, setRescheduleDate] = useState<string>('');
+  const [isRescheduling, setIsRescheduling] = useState<boolean>(false);
+
+  const handleRescheduleSession = async (sessionId: string, newDate: string) => {
+    if (!newDate) return;
+    try {
+      setIsRescheduling(true);
+      const res = await fetch('/api/calendar', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, newDate }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Falha ao reagendar corrida');
+      }
+      success(`Corrida reagendada para ${newDate}`, 'Reagendado');
+      setReschedulingSessionId(null);
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      await reloadRunningData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Não foi possível reagendar.';
+      toastError(msg, 'Erro ao Reagendar');
+    } finally {
+      setIsRescheduling(false);
+    }
+  };
+
   const reloadRunningData = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -472,10 +501,16 @@ export default function RunningPage() {
 
     initData();
 
+    const handleCalendarRefresh = () => {
+      reloadRunningData();
+    };
+    window.addEventListener('calendar-refresh', handleCalendarRefresh);
+
     return () => {
       active = false;
+      window.removeEventListener('calendar-refresh', handleCalendarRefresh);
     };
-  }, [success, toastError]);
+  }, [success, toastError, reloadRunningData]);
 
   const handleSyncStrava = async () => {
     setIsSyncing(true);
@@ -485,10 +520,17 @@ export default function RunningPage() {
       const data = await res.json();
 
       if (res.ok && data.success) {
+        const parts: string[] = [];
+        if (data.createdCount > 0) parts.push(`${data.createdCount} nova(s)`);
+        if (data.updatedCount > 0) parts.push(`${data.updatedCount} atualizada(s)`);
+        if (data.mergedCount > 0) parts.push(`${data.mergedCount} unificada(s)`);
+        if (data.duplicatesRemoved > 0) parts.push(`${data.duplicatesRemoved} duplicada(s) limpa(s)`);
+        const msg = parts.length > 0 ? parts.join(', ') : 'Todas as atividades já estavam em dia';
         success(
-          `Sincronização concluída! ${data.count ?? 0} corridas importadas do Strava.`,
+          `Sincronização concluída! ${msg}.`,
           'Strava Sincronizado'
         );
+        window.dispatchEvent(new CustomEvent('calendar-refresh'));
         await reloadRunningData();
       } else if (data.requiresReauth) {
         toastError(data.error ?? 'Reautorização necessária com o Strava.');
@@ -1234,35 +1276,78 @@ export default function RunningPage() {
 
                 {/* Quick actions for planned session */}
                 {isPlanned && (
-                  <div className="flex items-center gap-1.5 pt-3 border-t border-slate-800/80">
-                    <button
-                      type="button"
-                      onClick={() => openManualModalForSession(session)}
-                      className="flex-1 py-1.5 px-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition text-center cursor-pointer"
-                    >
-                      Registrar
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setLinkTargetSessionId(session.id);
-                        setShowLinkModal(true);
-                      }}
-                      className="flex items-center gap-1 py-1.5 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold transition cursor-pointer"
-                      title="Vincular corrida do Strava a esta sessão"
-                    >
-                      <span>🔗 Vincular</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => handleSkipSession(session.id, e)}
-                      disabled={skippingSessionId === session.id}
-                      className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
-                      title="Marcar treino como pulado"
-                    >
-                      <SkipForward className="w-3 h-3" />
-                      <span>{skippingSessionId === session.id ? '...' : 'Pular'}</span>
-                    </button>
+                  <div className="pt-3 border-t border-slate-800/80">
+                    {reschedulingSessionId === session.id ? (
+                      <div className="flex items-center gap-1.5 bg-slate-950/70 p-2 rounded-xl border border-emerald-500/40">
+                        <input
+                          type="date"
+                          min={new Date().toISOString().split('T')[0]}
+                          value={rescheduleDate || session.scheduledDate}
+                          onChange={(e) => setRescheduleDate(e.target.value)}
+                          className="bg-slate-900 border border-slate-700 text-xs text-slate-100 rounded-lg px-2 py-1 flex-1 focus:outline-none focus:border-emerald-500"
+                        />
+                        <button
+                          type="button"
+                          disabled={isRescheduling}
+                          onClick={() =>
+                            handleRescheduleSession(session.id, rescheduleDate || session.scheduledDate)
+                          }
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition cursor-pointer"
+                        >
+                          {isRescheduling ? '...' : 'Salvar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReschedulingSessionId(null)}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs rounded-lg transition cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => openManualModalForSession(session)}
+                          className="flex-1 min-w-[70px] py-1.5 px-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-semibold transition text-center cursor-pointer"
+                        >
+                          Registrar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReschedulingSessionId(session.id);
+                            setRescheduleDate(session.scheduledDate);
+                          }}
+                          className="flex items-center gap-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 text-xs font-semibold transition cursor-pointer"
+                          title="Reagendar data desta sessão"
+                        >
+                          <Calendar className="w-3 h-3" />
+                          <span>Mover</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLinkTargetSessionId(session.id);
+                            setShowLinkModal(true);
+                          }}
+                          className="flex items-center gap-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 text-xs font-semibold transition cursor-pointer"
+                          title="Vincular corrida do Strava a esta sessão"
+                        >
+                          <span>🔗 Link</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleSkipSession(session.id, e)}
+                          disabled={skippingSessionId === session.id}
+                          className="flex items-center justify-center gap-1 py-1.5 px-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs font-semibold transition disabled:opacity-50 cursor-pointer"
+                          title="Marcar treino como pulado"
+                        >
+                          <SkipForward className="w-3 h-3" />
+                          <span>{skippingSessionId === session.id ? '...' : 'Pular'}</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 

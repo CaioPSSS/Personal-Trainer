@@ -16,6 +16,28 @@ export interface RunningCoachProfileContext {
   hrZones?: Record<string, { min: number; max: number; label: string }> | null;
 }
 
+export interface PlanAdherenceSummary {
+  totalPlannedSessions: number;
+  completedCount: number;
+  skippedCount: number;
+  adherencePercentage: number;
+  totalPlannedKm: number;
+  totalExecutedKm: number;
+  skippedSessions: Array<{
+    title: string;
+    sessionType: string;
+    scheduledDate: string;
+    notes?: string | null;
+  }>;
+}
+
+export interface RecurringCrossTrainingContext {
+  activityType: string;
+  title: string;
+  daysOfWeek: string[];
+  durationMinutes: number;
+}
+
 export interface RunningCoachContext {
   runningProfile: RunningCoachProfileContext;
   recentExecutions: Array<{
@@ -49,6 +71,8 @@ export interface RunningCoachContext {
     targetMuscleGroups?: string[];
     rpeAvg?: number | null;
   }>;
+  planAdherenceSummary?: PlanAdherenceSummary | null;
+  recurringCrossTraining?: RecurringCrossTrainingContext[] | null;
   targetMonth: number;
   targetYear: number;
 }
@@ -186,6 +210,8 @@ CORE SCIENTIFIC FRAMEWORK:
    - The athlete also logs strength training (hypertrophy) and cross-training (CrossFit, swimming, cycling).
    - Pay close attention to recent lower-body fatigue (quadriceps, hamstrings, calves, glutes, axial spinal loading).
    - When recent heavy leg workouts or demanding CrossFit WODs are detected, do NOT schedule hard track intervals or high-impact hill repeats the following day. Space long runs and intervals with adequate recovery buffer.
+   - FIXED RECURRING CROSS-TRAINING COMMITMENTS:
+     When recurring cross-training days are specified (e.g. CrossFit on Mondays and Wednesdays), treat them as non-negotiable athletic commitments. Avoid high-intensity running quality sessions (Intervals, Tempo, Hill Repeats) on those days or the day immediately after.
 
 7. TEMPORAL MEMORY DECAY & COACH BRAIN CONTINUITY:
    - Previous coach brain entries reflect past hypotheses and retrospectives with decay weights:
@@ -220,6 +246,18 @@ No markdown wrappers, no introductory prose, no code comments.`;
     JSON.stringify(context.crossTrainingActivities ?? [], null, 2),
     'RECENT STRENGTH WORKOUTS (HYPERTROPHY FATIGUE):',
     JSON.stringify(context.recentStrengthWorkouts ?? [], null, 2),
+    ...(context.recurringCrossTraining && context.recurringCrossTraining.length > 0
+      ? [
+          'FIXED RECURRING CROSS-TRAINING SCHEDULE (ATHLETE WEEKLY COMMITMENT):',
+          JSON.stringify(context.recurringCrossTraining, null, 2),
+        ]
+      : []),
+    ...(context.planAdherenceSummary
+      ? [
+          'PREVIOUS / ACTIVE MESOCYCLE ADHERENCE & RETROSPECTIVE COMPLIANCE:',
+          JSON.stringify(context.planAdherenceSummary, null, 2),
+        ]
+      : []),
   ].join('\n\n');
 
   return { systemPrompt, userPrompt };

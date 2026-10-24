@@ -1,6 +1,13 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getAthleteActivities, syncActivityRecord } from '@/lib/strava/client';
+import {
+  fetchDetailedActivity,
+  getAthleteActivities,
+  isRunActivity,
+  syncActivityRecord,
+} from '@/lib/strava/client';
+import { repairRunningRecords } from '@/lib/running/reconcile';
+import { syncDaysToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,10 +36,17 @@ export async function GET() {
 }
 
 /**
- * Manually fetches and synchronizes running activities from the past 30 days.
+ * Synchronizes running activities from Strava.
+ * Fetches detailed telemetry (including native calories and kilometer splits),
+ * prevents duplicate cards/sessions on past days, runs self-healing repair,
+ * and pushes consolidated daily totals to Meu Rastreador Metabólico.
  */
-export async function POST() {
+export async function POST(req: NextRequest) {
   try {
+    const body = await req.json().catch(() => ({}));
+    const fullResync = Boolean(body?.fullResync);
+    const customDays = body?.days ? Number(body.days) : undefined;
+
     const integration = await prisma.stravaIntegration.findUnique({
       where: { id: 'singleton' },
     });
@@ -48,7 +62,6 @@ export async function POST() {
       );
     }
 
-    // Check scope if known
     if (integration.scope && !integration.scope.includes('activity:read')) {
       return NextResponse.json(
         {
@@ -61,12 +74,23 @@ export async function POST() {
       );
     }
 
-    // 30 days ago in epoch seconds
-    const thirtyDaysAgo = Math.floor((Date.now() - 30 * 24 * 3600 * 1000) / 1000);
+    // Determine sync time window:
+    // If fullResync or no lastSyncAt, look back 30 days (or custom days).
+    // Otherwise look back from lastSyncAt with a 2-day buffer for delayed GPS uploads.
+    let afterTimestamp: number;
+    if (customDays && customDays > 0) {
+      afterTimestamp = Math.floor((Date.now() - customDays * 24 * 3600 * 1000) / 1000);
+    } else if (fullResync || !integration.lastSyncAt) {
+      afterTimestamp = Math.floor((Date.now() - 30 * 24 * 3600 * 1000) / 1000);
+    } else {
+      const lastSyncMs = integration.lastSyncAt.getTime();
+      const twoDaysMs = 2 * 24 * 3600 * 1000;
+      afterTimestamp = Math.floor((lastSyncMs - twoDaysMs) / 1000);
+    }
 
     let activities;
     try {
-      activities = await getAthleteActivities(thirtyDaysAgo, undefined, 100);
+      activities = await getAthleteActivities(afterTimestamp, undefined, 100);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       if (
@@ -87,18 +111,49 @@ export async function POST() {
       throw err;
     }
 
+    const runActivities = activities.filter(isRunActivity);
+    const affectedDates = new Set<string>();
     const syncedRuns = [];
-    for (const activity of activities) {
-      const execution = await syncActivityRecord(activity);
-      if (execution) {
+    let createdCount = 0;
+    let updatedCount = 0;
+    let mergedCount = 0;
+
+    // Process each running activity
+    for (const act of runActivities) {
+      // Fetch detailed activity to obtain real calories and splits (omitted from the summary endpoint)
+      const detailed = await fetchDetailedActivity(act);
+      const outcome = await syncActivityRecord(detailed, { syncMetabolic: false });
+      if (outcome) {
+        if (outcome.status === 'created') createdCount++;
+        else if (outcome.status === 'updated') updatedCount++;
+        else if (outcome.status === 'merged') mergedCount++;
+
+        for (const d of outcome.affectedDates) {
+          affectedDates.add(d);
+        }
+
         syncedRuns.push({
-          id: execution.id,
-          stravaActivityId: execution.stravaActivityId,
-          date: execution.date,
-          distanceKm: execution.distanceKm,
-          avgPaceSec: execution.avgPaceSec,
+          id: outcome.execution.id,
+          stravaActivityId: outcome.execution.stravaActivityId,
+          date: outcome.execution.date,
+          distanceKm: outcome.execution.distanceKm,
+          avgPaceSec: outcome.execution.avgPaceSec,
+          caloriesBurned: outcome.execution.caloriesBurned,
+          caloriesSource: outcome.execution.caloriesSource,
+          status: outcome.status,
         });
       }
+    }
+
+    // Run self-healing deduplication and calendar card harmonization
+    const repairReport = await repairRunningRecords(60);
+    for (const d of repairReport.affectedDates) {
+      affectedDates.add(d);
+    }
+
+    // Consolidated daily sync to Meu Rastreador Metabólico (sends sum of all sports per date)
+    if (affectedDates.size > 0) {
+      await syncDaysToMetabolicTracker(affectedDates, { clearIfEmpty: true });
     }
 
     const now = new Date();
@@ -110,11 +165,17 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       count: syncedRuns.length,
+      createdCount,
+      updatedCount,
+      mergedCount,
+      duplicatesRemoved: repairReport.duplicatesMerged,
+      cardsHarmonized: repairReport.cardsHarmonized,
+      sessionsRestored: repairReport.sessionsRestored,
       syncedRuns,
       lastSyncAt: now.toISOString(),
     });
   } catch (error) {
-    console.error('[Strava Sync] Erro durante sincronização manual:', error);
+    console.error('[Strava Sync] Erro durante sincronização:', error);
     return NextResponse.json(
       {
         success: false,

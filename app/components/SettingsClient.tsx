@@ -403,10 +403,17 @@ export default function SettingsClient({
 
       const syncDate = data.lastSyncAt ? new Date(data.lastSyncAt).toISOString() : new Date().toISOString();
       setLastSync(syncDate);
+      const parts: string[] = [];
+      if (data.createdCount > 0) parts.push(`${data.createdCount} nova(s)`);
+      if (data.updatedCount > 0) parts.push(`${data.updatedCount} atualizada(s)`);
+      if (data.mergedCount > 0) parts.push(`${data.mergedCount} unificada(s)`);
+      if (data.duplicatesRemoved > 0) parts.push(`${data.duplicatesRemoved} duplicada(s) limpa(s)`);
+      const msg = parts.length > 0 ? parts.join(', ') : 'Todas as atividades já estavam em dia';
       success(
-        `Sincronização concluída! ${data.count ?? 0} corridas processadas.`,
+        `Sincronização concluída! ${msg}.`,
         'Strava Atualizado'
       );
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
     } catch (err) {
       toastError(err instanceof Error ? err.message : 'Erro na comunicação com Strava.');
     } finally {

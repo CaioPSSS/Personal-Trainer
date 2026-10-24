@@ -11,6 +11,7 @@ import {
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
+import { todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -235,42 +236,63 @@ export async function POST(req: NextRequest) {
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const thirtyDaysAgoStr = formatISODate(thirtyDaysAgo);
 
-    // 2. Query recent running executions, brain entries, cross-training and strength workouts
-    const [recentExecutions, rawBrainEntries, recentCrossTraining, recentWorkouts] =
-      await Promise.all([
-        prisma.runningExecution.findMany({
-          where: {
-            runningProfileId: 'singleton',
-            date: { gte: sixtyDaysAgoStr },
+    // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence & recurring cross-training
+    const [
+      recentExecutions,
+      rawBrainEntries,
+      recentCrossTraining,
+      recentWorkouts,
+      activePlan,
+      athleteRecord,
+    ] = await Promise.all([
+      prisma.runningExecution.findMany({
+        where: {
+          runningProfileId: 'singleton',
+          date: { gte: sixtyDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 30,
+      }),
+      prisma.runningBrainEntry.findMany({
+        where: { runningProfileId: 'singleton' },
+        orderBy: { createdAt: 'desc' },
+        take: 3,
+      }),
+      prisma.crossTrainingActivity.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: thirtyDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 14,
+      }),
+      prisma.workoutExecution.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: thirtyDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 14,
+        include: {
+          exerciseExecutions: true,
+        },
+      }),
+      prisma.runningPlan.findFirst({
+        where: {
+          runningProfileId: 'singleton',
+          status: 'active',
+        },
+        include: {
+          sessions: {
+            include: { executions: true },
           },
-          orderBy: { date: 'desc' },
-          take: 30,
-        }),
-        prisma.runningBrainEntry.findMany({
-          where: { runningProfileId: 'singleton' },
-          orderBy: { createdAt: 'desc' },
-          take: 3,
-        }),
-        prisma.crossTrainingActivity.findMany({
-          where: {
-            athleteProfileId: 'singleton',
-            date: { gte: thirtyDaysAgoStr },
-          },
-          orderBy: { date: 'desc' },
-          take: 14,
-        }),
-        prisma.workoutExecution.findMany({
-          where: {
-            athleteProfileId: 'singleton',
-            date: { gte: thirtyDaysAgoStr },
-          },
-          orderBy: { date: 'desc' },
-          take: 14,
-          include: {
-            exerciseExecutions: true,
-          },
-        }),
-      ]);
+        },
+      }),
+      prisma.athleteProfile.findUnique({
+        where: { id: 'singleton' },
+        select: { recurringCrossTraining: true },
+      }),
+    ]);
 
     // 3. Apply temporal memory decay: 1.0 (current), 0.7 (month -1), 0.4 (month -2)
     const decaySchedule = [1.0, 0.7, 0.4];
@@ -304,6 +326,46 @@ export async function POST(req: NextRequest) {
     // 4. Build prompt context
     const athleteAvailableDays = Array.isArray(runningProfile.availableDays)
       ? (runningProfile.availableDays as string[])
+      : null;
+
+    // 4. Calculate active plan adherence summary & extract recurring cross-training
+    let planAdherenceSummary = null;
+    if (activePlan && activePlan.sessions.length > 0) {
+      const totalPlannedSessions = activePlan.sessions.length;
+      const completedSessions = activePlan.sessions.filter((s) => s.status === 'completed');
+      const skippedSessions = activePlan.sessions.filter((s) => s.status === 'skipped');
+      const totalPlannedKm = activePlan.sessions.reduce((acc, s) => acc + (s.totalDistanceKm || 0), 0);
+      const totalExecutedKm = completedSessions.reduce((acc, s) => {
+        const execKm = s.executions.reduce((eAcc, e) => eAcc + e.distanceKm, 0);
+        return acc + (execKm > 0 ? execKm : (s.totalDistanceKm || 0));
+      }, 0);
+
+      const adherencePercentage = Math.round((completedSessions.length / totalPlannedSessions) * 100);
+
+      planAdherenceSummary = {
+        totalPlannedSessions,
+        completedCount: completedSessions.length,
+        skippedCount: skippedSessions.length,
+        adherencePercentage,
+        totalPlannedKm: Math.round(totalPlannedKm * 10) / 10,
+        totalExecutedKm: Math.round(totalExecutedKm * 10) / 10,
+        skippedSessions: skippedSessions.map((s) => ({
+          title: s.title,
+          sessionType: s.sessionType,
+          scheduledDate: s.scheduledDate,
+          notes: s.notes,
+        })),
+      };
+    }
+
+    const rawRecurring = athleteRecord?.recurringCrossTraining;
+    const recurringCrossTraining = Array.isArray(rawRecurring)
+      ? (rawRecurring as Array<{
+          activityType: string;
+          title: string;
+          daysOfWeek: string[];
+          durationMinutes: number;
+        }>)
       : null;
 
     const { systemPrompt, userPrompt } = buildRunningCoachPrompts({
@@ -344,6 +406,8 @@ export async function POST(req: NextRequest) {
         notes: ct.notes,
       })),
       recentStrengthWorkouts,
+      planAdherenceSummary,
+      recurringCrossTraining,
       targetMonth,
       targetYear,
     });
@@ -399,18 +463,26 @@ export async function POST(req: NextRequest) {
         include: { sessions: true },
       });
 
+      const today = todayISO();
+
       if (existingPlan) {
-        const sessionIds = existingPlan.sessions.map((s) => s.id);
-        if (sessionIds.length > 0) {
+        // STRICT FORWARD-ONLY RULE:
+        // Do NOT delete completed sessions, sessions with executions, or sessions in the past (< todayISO())!
+        // Only delete FUTURE PLANNED sessions (scheduledDate >= today and status === 'planned')!
+        const futurePlannedSessions = existingPlan.sessions.filter(
+          (s) => s.status === 'planned' && s.scheduledDate >= today
+        );
+        const sessionIdsToDelete = futurePlannedSessions.map((s) => s.id);
+        if (sessionIdsToDelete.length > 0) {
           await tx.calendarEvent.deleteMany({
             where: {
-              referenceId: { in: sessionIds },
+              referenceId: { in: sessionIdsToDelete },
               referenceModel: 'RunningSession',
               status: 'planned',
             },
           });
           await tx.runningSession.deleteMany({
-            where: { runningPlanId: existingPlan.id },
+            where: { id: { in: sessionIdsToDelete } },
           });
         }
       }
@@ -479,6 +551,12 @@ export async function POST(req: NextRequest) {
         );
         weekSet.add(resolvedDay);
         usedDaysPerWeek.set(session.weekNumber, weekSet);
+
+        // STRICT FORWARD-ONLY RULE:
+        // Never schedule planned sessions or calendar events in the past (< today)
+        if (scheduledDate < today) {
+          continue;
+        }
 
         const createdSession = await tx.runningSession.create({
           data: {

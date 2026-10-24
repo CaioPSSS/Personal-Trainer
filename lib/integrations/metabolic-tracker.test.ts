@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { syncActivityToMetabolicTracker } from './metabolic-tracker';
+import {
+  syncActivityToMetabolicTracker,
+  deriveDailyTrainingType,
+} from './metabolic-tracker';
 
 test('Metabolic Tracker Client: handles offline / unreachable service gracefully without throwing', async () => {
   // Test with invalid port to ensure offline/connection refused is caught safely
@@ -16,4 +19,15 @@ test('Metabolic Tracker Client: handles offline / unreachable service gracefully
 
   assert.strictEqual(result.success, false);
   assert.strictEqual(result.offline, true);
+});
+
+test('Metabolic Tracker: deriveDailyTrainingType correctly combines multi-sport kinds', () => {
+  assert.strictEqual(deriveDailyTrainingType([]), 'Descanso');
+  assert.strictEqual(deriveDailyTrainingType(['strength']), 'Musculação');
+  assert.strictEqual(deriveDailyTrainingType(['running']), 'Corrida');
+  assert.strictEqual(deriveDailyTrainingType(['cross']), 'Cross-Training');
+  // Mixed sports collapse into Híbrido
+  assert.strictEqual(deriveDailyTrainingType(['strength', 'running']), 'Híbrido');
+  assert.strictEqual(deriveDailyTrainingType(['strength', 'cross']), 'Híbrido');
+  assert.strictEqual(deriveDailyTrainingType(['running', 'cross']), 'Híbrido');
 });

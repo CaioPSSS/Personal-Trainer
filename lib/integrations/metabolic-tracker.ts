@@ -139,6 +139,194 @@ export async function syncActivityToMetabolicTracker(
   }
 }
 
+// ============================================
+// DAILY AGGREGATE SYNC
+// ============================================
+//
+// O endpoint /api/integrations/trainer/activity do Rastreador faz UPSERT por data e
+// SOBRESCREVE `caloriesBurned` e `trainingType`. Portanto, nunca devemos enviar o gasto de
+// uma única sessão: cada sync precisa carregar o TOTAL consolidado do dia (musculação +
+// corrida + cross-training), senão a última atividade salva apaga as anteriores.
+
+export type DailyActivityKind = 'strength' | 'running' | 'cross';
+
+export interface DailyActivityAggregate {
+  date: string;
+  caloriesBurned: number;
+  trainingType: ActivitySyncPayload['trainingType'];
+  workoutTitle: string;
+  durationMinutes?: number;
+  sessionRpe?: number;
+  activityCount: number;
+}
+
+/**
+ * Pure helper: derives the tracker training type label from the set of activity kinds of the day.
+ */
+export function deriveDailyTrainingType(kinds: Iterable<DailyActivityKind>): string {
+  const set = new Set(kinds);
+  if (set.size === 0) return 'Descanso';
+  if (set.size > 1) return 'Híbrido';
+  const [only] = Array.from(set);
+  if (only === 'strength') return 'Musculação';
+  if (only === 'running') return 'Corrida';
+  return 'Cross-Training';
+}
+
+/**
+ * Builds the consolidated activity summary for a single day from the source-of-truth tables
+ * (WorkoutExecution, RunningExecution, CrossTrainingActivity). Returns null if no activity.
+ */
+export async function buildDailyActivityAggregate(
+  date: string
+): Promise<DailyActivityAggregate | null> {
+  const [workouts, runs, crossActivities] = await Promise.all([
+    prisma.workoutExecution.findMany({
+      where: { athleteProfileId: 'singleton', date, status: 'completed' },
+      select: { caloriesBurned: true, durationMinutes: true, sessionRpe: true },
+    }),
+    prisma.runningExecution.findMany({
+      where: { runningProfileId: 'singleton', date },
+      select: {
+        caloriesBurned: true,
+        durationSeconds: true,
+        sessionRpe: true,
+        distanceKm: true,
+      },
+    }),
+    prisma.crossTrainingActivity.findMany({
+      where: { athleteProfileId: 'singleton', date, status: 'completed' },
+      select: { caloriesBurned: true, durationMinutes: true, sessionRpe: true, title: true },
+    }),
+  ]);
+
+  const activityCount = workouts.length + runs.length + crossActivities.length;
+  if (activityCount === 0) return null;
+
+  const kinds: DailyActivityKind[] = [];
+  const titles: string[] = [];
+  let calories = 0;
+  let duration = 0;
+  let rpeWeighted = 0;
+  let rpeWeight = 0;
+
+  for (const w of workouts) {
+    kinds.push('strength');
+    titles.push('Musculação');
+    calories += w.caloriesBurned ?? 0;
+    duration += w.durationMinutes ?? 0;
+    if (w.sessionRpe != null && w.durationMinutes) {
+      rpeWeighted += w.sessionRpe * w.durationMinutes;
+      rpeWeight += w.durationMinutes;
+    }
+  }
+
+  for (const r of runs) {
+    kinds.push('running');
+    titles.push(`Corrida ${r.distanceKm.toFixed(1)} km`);
+    calories += r.caloriesBurned ?? 0;
+    const min = Math.round(r.durationSeconds / 60);
+    duration += min;
+    if (r.sessionRpe != null && min > 0) {
+      rpeWeighted += r.sessionRpe * min;
+      rpeWeight += min;
+    }
+  }
+
+  for (const c of crossActivities) {
+    kinds.push('cross');
+    titles.push(c.title || 'Cross-Training');
+    calories += c.caloriesBurned ?? 0;
+    duration += c.durationMinutes ?? 0;
+    if (c.sessionRpe != null && c.durationMinutes) {
+      rpeWeighted += c.sessionRpe * c.durationMinutes;
+      rpeWeight += c.durationMinutes;
+    }
+  }
+
+  return {
+    date,
+    caloriesBurned: Math.round(calories),
+    trainingType: deriveDailyTrainingType(kinds),
+    workoutTitle: titles.join(' + '),
+    durationMinutes: duration > 0 ? duration : undefined,
+    sessionRpe: rpeWeight > 0 ? Number((rpeWeighted / rpeWeight).toFixed(1)) : undefined,
+    activityCount,
+  };
+}
+
+export interface DaySyncExtras {
+  sleepHours?: number | null;
+  bodyWeightKg?: number | null;
+  stressLevel?: number | null;
+  /**
+   * When true and the day has no activity left (e.g. a duplicated run was removed),
+   * sends caloriesBurned=0 / 'Descanso' to clear stale values in the tracker.
+   */
+  clearIfEmpty?: boolean;
+}
+
+/**
+ * Sends the consolidated (summed) activity of a day to the Metabolic Tracker.
+ * Safe to call after any activity is created/updated/deleted. Never throws.
+ */
+export async function syncDayToMetabolicTracker(
+  date: string,
+  extras: DaySyncExtras = {}
+): Promise<SyncResult> {
+  try {
+    const aggregate = await buildDailyActivityAggregate(date);
+    const recovery = {
+      ...(extras.sleepHours != null ? { sleepHours: extras.sleepHours } : {}),
+      ...(extras.bodyWeightKg != null ? { bodyWeightKg: extras.bodyWeightKg } : {}),
+      ...(extras.stressLevel != null ? { stressLevel: extras.stressLevel } : {}),
+    };
+
+    if (!aggregate) {
+      if (extras.clearIfEmpty) {
+        return await syncActivityToMetabolicTracker({
+          date,
+          caloriesBurned: 0,
+          trainingType: 'Descanso',
+          ...recovery,
+        });
+      }
+      if (Object.keys(recovery).length > 0) {
+        return await syncActivityToMetabolicTracker({ date, ...recovery });
+      }
+      return { success: true };
+    }
+
+    return await syncActivityToMetabolicTracker({
+      date,
+      caloriesBurned: aggregate.caloriesBurned,
+      trainingType: aggregate.trainingType,
+      workoutTitle: aggregate.workoutTitle,
+      durationMinutes: aggregate.durationMinutes,
+      sessionRpe: aggregate.sessionRpe,
+      ...recovery,
+    });
+  } catch (err) {
+    console.warn(`[MetabolicSync] Falha ao consolidar/sincronizar o dia ${date}:`, err);
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Sequentially syncs several days (deduplicated) to the Metabolic Tracker.
+ */
+export async function syncDaysToMetabolicTracker(
+  dates: Iterable<string>,
+  extras: Omit<DaySyncExtras, 'sleepHours' | 'bodyWeightKg' | 'stressLevel'> = {}
+): Promise<number> {
+  let ok = 0;
+  for (const date of Array.from(new Set(dates)).sort()) {
+    const res = await syncDayToMetabolicTracker(date, extras);
+    if (res.success) ok++;
+  }
+  return ok;
+}
+
 /**
  * Consulta os dados de nutrição e recuperação de um dia específico no Rastreador Metabólico.
  */
@@ -232,57 +420,39 @@ export async function reconcileEcosystemRange(
   let nutritionDaysImported = 0;
   let syncedDaysCount = 0;
 
-  // 1. Busca eventos e treinos do período no Personal-Trainer
-  const events = await prisma.calendarEvent.findMany({
-    where: {
-      athleteProfileId: 'singleton',
-      date: { gte: startDate, lte: endDate },
-      status: 'completed',
-    },
-  });
-
-  const wellnessList = await prisma.wellnessDaily.findMany({
-    where: {
-      athleteProfileId: 'singleton',
-      date: { gte: startDate, lte: endDate },
-    },
-  });
+  // 1. Descobre todos os dias com atividade no período (fontes de verdade, não o cache do calendário)
+  const [workoutDays, runDays, crossDays, wellnessList] = await Promise.all([
+    prisma.workoutExecution.findMany({
+      where: { athleteProfileId: 'singleton', date: { gte: startDate, lte: endDate }, status: 'completed' },
+      select: { date: true },
+    }),
+    prisma.runningExecution.findMany({
+      where: { runningProfileId: 'singleton', date: { gte: startDate, lte: endDate } },
+      select: { date: true },
+    }),
+    prisma.crossTrainingActivity.findMany({
+      where: { athleteProfileId: 'singleton', date: { gte: startDate, lte: endDate }, status: 'completed' },
+      select: { date: true },
+    }),
+    prisma.wellnessDaily.findMany({
+      where: {
+        athleteProfileId: 'singleton',
+        date: { gte: startDate, lte: endDate },
+      },
+    }),
+  ]);
 
   const wellnessMap = new Map(wellnessList.map((w) => [w.date, w]));
+  const activeDates = new Set<string>([
+    ...workoutDays.map((d) => d.date),
+    ...runDays.map((d) => d.date),
+    ...crossDays.map((d) => d.date),
+  ]);
 
-  // Agrupa calorias gastas e tipo de treino por data
-  const dateMap = new Map<string, { calories: number; types: Set<string>; title: string }>();
-
-  for (const ev of events) {
-    const existing = dateMap.get(ev.date) || {
-      calories: 0,
-      types: new Set<string>(),
-      title: ev.title,
-    };
-    existing.calories += ev.caloriesBurned || 0;
-    if (ev.eventType === 'strength') existing.types.add('Musculação');
-    else if (ev.eventType === 'running') existing.types.add('Corrida');
-    else if (ev.eventType === 'crosstraining') existing.types.add('Cross-Training');
-    dateMap.set(ev.date, existing);
-  }
-
-  // 2. Envia os dias com atividade para o Rastreador
-  for (const [date, info] of dateMap.entries()) {
-    let tType: ActivitySyncPayload['trainingType'] = 'Musculação';
-    if (info.types.has('Musculação') && info.types.has('Corrida')) {
-      tType = 'Híbrido';
-    } else if (info.types.has('Corrida')) {
-      tType = 'Corrida';
-    } else if (info.types.has('Cross-Training')) {
-      tType = 'Cross-Training';
-    }
-
+  // 2. Envia o total consolidado (soma de todas as atividades) de cada dia para o Rastreador
+  for (const date of Array.from(activeDates).sort()) {
     const w = wellnessMap.get(date);
-    const result = await syncActivityToMetabolicTracker({
-      date,
-      caloriesBurned: info.calories,
-      trainingType: tType,
-      workoutTitle: info.title,
+    const result = await syncDayToMetabolicTracker(date, {
       sleepHours: w?.sleepHours,
       bodyWeightKg: w?.bodyWeightKg,
       stressLevel: w?.stressLevel,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { calculateKarvonenZones } from '@/lib/ai/running-prompts';
+import { dayOfWeekName } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +51,65 @@ export async function GET() {
         },
       },
     });
+
+    if (profile?.runningPlans?.[0]?.sessions?.length) {
+      const activeSessions = profile.runningPlans[0].sessions;
+      const sessionIds = activeSessions.map((s) => s.id);
+
+      const calendarEvents = await prisma.calendarEvent.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          referenceModel: 'RunningSession',
+          referenceId: { in: sessionIds },
+        },
+      });
+
+      const eventBySessionId = new Map(calendarEvents.map((ev) => [ev.referenceId, ev]));
+      let hasUpdates = false;
+
+      for (const session of activeSessions) {
+        const calEvent = eventBySessionId.get(session.id);
+        // Expose calendarEventId for direct UI interactions
+        (session as unknown as Record<string, unknown>).calendarEventId = calEvent?.id || null;
+
+        if (calEvent && calEvent.date && calEvent.date !== session.scheduledDate) {
+          const newDayOfWeek = dayOfWeekName(calEvent.date);
+          await prisma.runningSession.update({
+            where: { id: session.id },
+            data: {
+              scheduledDate: calEvent.date,
+              dayOfWeek: newDayOfWeek,
+            },
+          });
+          session.scheduledDate = calEvent.date;
+          session.dayOfWeek = newDayOfWeek;
+          hasUpdates = true;
+        } else if (!calEvent && session.status === 'planned') {
+          // Restore missing planned CalendarEvent to keep models in lockstep
+          const restoredEvent = await prisma.calendarEvent.create({
+            data: {
+              athleteProfileId: 'singleton',
+              date: session.scheduledDate,
+              eventType: 'running',
+              referenceId: session.id,
+              referenceModel: 'RunningSession',
+              title: session.title,
+              status: 'planned',
+              colorCode: '#10b981',
+              sortOrder: 1,
+            },
+          });
+          (session as unknown as Record<string, unknown>).calendarEventId = restoredEvent.id;
+        }
+      }
+
+      if (hasUpdates) {
+        activeSessions.sort((a, b) => {
+          if (a.weekNumber !== b.weekNumber) return a.weekNumber - b.weekNumber;
+          return a.scheduledDate.localeCompare(b.scheduledDate);
+        });
+      }
+    }
 
     return NextResponse.json({ profile });
   } catch (error) {

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   mapStravaActivityToExecution,
   getAuthorizationUrl,
+  isLikelySameRun,
+  pickBestSessionMatch,
+  isRunActivity,
   StravaActivity,
 } from './client';
 
@@ -225,4 +228,44 @@ test('Strava Client: getAuthorizationUrl generates valid OAuth2 URL with proper 
   assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:3000/api/strava/callback');
   assert.equal(url.searchParams.get('scope'), 'read,activity:read_all');
   assert.equal(url.searchParams.get('approval_prompt'), 'auto');
+});
+
+test('Strava Client: isRunActivity identifies run sports correctly', () => {
+  assert.equal(isRunActivity({ type: 'Run' }), true);
+  assert.equal(isRunActivity({ type: 'VirtualRun' }), true);
+  assert.equal(isRunActivity({ sport_type: 'TrailRun' }), true);
+  assert.equal(isRunActivity({ type: 'Ride' }), false);
+  assert.equal(isRunActivity({ type: 'WeightTraining' }), false);
+  assert.equal(isRunActivity({}), false);
+});
+
+test('Strava Client: isLikelySameRun detects duplicate manual and Strava entries', () => {
+  const stravaRun = { date: '2026-10-03', distanceKm: 4.51, durationSeconds: 2675 };
+  const manualClose = { date: '2026-10-03', distanceKm: 4.5, durationSeconds: 2700 };
+  const manualDiffDist = { date: '2026-10-03', distanceKm: 8.0, durationSeconds: 4000 };
+  const manualDiffDate = { date: '2026-10-04', distanceKm: 4.51, durationSeconds: 2675 };
+
+  assert.equal(isLikelySameRun(stravaRun, manualClose), true);
+  assert.equal(isLikelySameRun(stravaRun, manualDiffDist), false);
+  assert.equal(isLikelySameRun(stravaRun, manualDiffDate), false);
+});
+
+test('Strava Client: pickBestSessionMatch prefers exact-date sessions and breaks ties by distance', () => {
+  const candidates = [
+    { id: 'session-wed', effectiveDate: '2026-10-01', totalDistanceKm: 5.0 },
+    { id: 'session-sat', effectiveDate: '2026-10-03', totalDistanceKm: 4.5 },
+    { id: 'session-sun', effectiveDate: '2026-10-04', totalDistanceKm: 10.0 },
+  ];
+
+  // Exact date match on Oct 3
+  const exact = pickBestSessionMatch('2026-10-03', 4.51, candidates, true);
+  assert.equal(exact, 'session-sat');
+
+  // Adjacent day (Oct 2 run -> matches Oct 1 or Oct 3)
+  const adjacent = pickBestSessionMatch('2026-10-02', 4.6, candidates, true);
+  assert.equal(adjacent, 'session-sat');
+
+  // When allowAdjacentDays is false, only exact date is accepted
+  const strict = pickBestSessionMatch('2026-10-02', 4.6, candidates, false);
+  assert.equal(strict, null);
 });

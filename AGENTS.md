@@ -4,61 +4,41 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-## Development State (2026-09-27)
+## Development State (2026-10-24)
 
 ### Current Milestone
-- Completed full multi-sport expansion (hypertrophy preservation + running coach AI + Strava integration + cross-training + unified interactive calendar + analytics & visual polish + smart multi-sport scheduler).
+- Running plan bi-directional live sync, strict past immutability (`date >= todayISO()`), AI Running Coach adherence & recurring cross-training intelligence, recurring CrossFit pre-scheduling on dashboard, and multi-sport repulsion solver.
 
 ### Implemented In This Iteration
-- Strava / Running Plan Linking & Reconciliation:
-  - Created `/api/running/session/link` endpoint supporting candidate retrieval, manual/Strava execution linking, unlinking, and calendar event deduplication.
-  - Built `LinkRunningSessionModal.tsx` modal for linking any executed run to planned mesocycle sessions.
-  - Added interactive `🔗 Link` buttons to completed and planned running cards in `WeeklyCalendar.tsx`.
-  - Added `🔗 Vincular` buttons to session cards and unlinked activities alert banner in `/running`.
-  - Enhanced Strava auto-match in `lib/strava/client.ts` with +/- 1 day tolerance and duplicate event cleanup.
-- Strength Hub (`/strength`) Dynamic Alignment & AI Split Rebalancing:
-  - Updated `/api/workout/today` to prioritize workouts scheduled in `CalendarEvent` for the requested date, immediately presenting the day's scheduled workout.
-  - Implemented `applyWorkoutTemplateSelectionAndRebalance` in `lib/scheduling/strength-scheduler.ts` to fix the selected workout to the date and deterministically rebalance the remaining days of the week following the AI split order while avoiding collisions with running long runs and CrossFit.
-  - Created `POST /api/workout/select-template` endpoint.
-  - Updated `HypertrophyDailyTracker.tsx` so changing templates instantly updates the calendar and reorganizes the week.
+1. **Running Page Bi-Directional Synchronization & Auto-Healing**:
+   - Implemented real-time auto-reconciliation in [`GET /api/running/profile`](file:///c:/Users/souza/Personal-Trainer/app/api/running/profile/route.ts): planned sessions are compared against their `CalendarEvent` counterpart, automatically updating `RunningSession.scheduledDate` and `dayOfWeek` on load.
+   - Added `calendar-refresh` event listener to [`app/(main)/running/page.tsx`](file:///c:/Users/souza/Personal-Trainer/app/(main)/running/page.tsx) so moving or rescheduling any workout on the dashboard calendar immediately refreshes the running page in real time.
+   - Added an inline date reschedule button on planned session cards in `/running` with an HTML5 date picker bounded by today (`min={today}`), allowing sessions to be moved seamlessly from either the dashboard or the running page.
 
-- Running Performance Debrief & Planned Target Conformity Evaluation:
-  - Created `lib/running/performance-evaluator.ts` comparing planned session targets (distance, target pace, Karvonen heart rate zones) against execution telemetry (distance, duration, average pace, HR, cadence, kilometer splits, elevation, RPE).
-  - Implemented Adherence Score (0-100) and factual Coach Feedback generation.
-  - Built `RunningDebriefModal.tsx` displaying comparative targets, delta indicators, cadence economy, kilometer splits (identifying fastest/slowest splits and negative/positive pacing), and AI coach debriefing.
-  - Added mini-telemetry summary chip and `"📊 Ver Estatísticas"` button to completed cards in `/running`.
-  - Added `"📊 Stats"` button to completed running cards in `WeeklyCalendar.tsx`.
-  - Enriched `/api/running/profile`, `/api/running/generate`, and `/api/running/session/link` to include executions and HR zones.
+2. **Strict Forward-Only Rule & Past Immutability (`date >= todayISO()`)**:
+   - Enforced across all scheduling entry points:
+     - [`PATCH /api/calendar`](file:///c:/Users/souza/Personal-Trainer/app/api/calendar/route.ts): Rejects moving workouts to past dates with HTTP 400.
+     - [`POST /api/calendar`](file:///c:/Users/souza/Personal-Trainer/app/api/calendar/route.ts): Rejects creating planned workouts on past dates.
+     - [`rebalanceWeekSchedule`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/strength-scheduler.ts): Locks past days (`< todayISO()`) as immutable fixed schedule contexts, allocating remaining workouts solely to available days on or after today.
+     - [`scheduleMesocycleWorkouts`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/strength-scheduler.ts): Skips creating planned strength events on past dates.
+     - [`POST /api/running/generate`](file:///c:/Users/souza/Personal-Trainer/app/api/running/generate/route.ts): Never deletes past sessions or completed runs (`< todayISO()`), and never creates planned running sessions on past dates.
 
-- Multi-Sport Caloric Expenditure Engine & Metabolic Balancing:
-  - Implemented 3-layer hybrid scientific energy model for strength training in `lib/calories/strength-calories.ts` (Mechanical work + Movement multiplier + Allometric scaling $(W/75)^{0.75}$ + Inter-set recovery + EPOC).
-  - Implemented Margaria constant + ACSM elevation formula in `lib/calories/running-calories.ts` with Strava native telemetry prioritization.
-  - Implemented MET + RPE modifier + EPOC model for cross-training in `lib/calories/crosstraining-calories.ts`.
-  - Added dynamic weight resolution hierarchy in `lib/calories/athlete-weight.ts` (`WellnessDaily` on workout date -> recent `WellnessDaily` -> `AthleteProfile` baseline -> 75kg default).
-  - Integrated caloric persistence in `WorkoutExecution`, `RunningExecution`, `CrossTrainingActivity`, and `CalendarEvent`.
-  - Expanded `AthleteProfile` schema with anthropometric and metabolic fields (`bodyWeightKg`, `heightCm`, `birthDate`, `biologicalSex`, `bodyFatPercent`).
-  - Added Anthropometrics & Basal Metabolic Rate (Mifflin-St Jeor) settings in `SettingsClient.tsx` and onboarding inputs in `OnboardingForm.tsx`.
-  - Added caloric display in `WeeklyCalendar.tsx` (event flames & weekly summary aggregate), `PostWorkoutSummaryModal.tsx` (mechanical, recovery, EPOC breakdown), and `RunningDebriefModal.tsx`.
-  - Embedded energy expenditure awareness into `DataAnalystAI` (framework item 6) and `MasterCoachAI` (directive 8) in `lib/ai/prompts.ts`.
+3. **Recurring CrossFit / Cross-Training Pre-Scheduling**:
+   - Added `recurringCrossTraining Json?` column to [`AthleteProfile`](file:///c:/Users/souza/Personal-Trainer/prisma/schema.prisma).
+   - Created [`lib/scheduling/cross-training-scheduler.ts`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/cross-training-scheduler.ts) (`syncPlannedCrossTraining`): projects recurring workouts (e.g. CrossFit every Monday & Wednesday, 60 min) forward for upcoming weeks strictly starting from today (`>= todayISO()`). Automatically prunes outdated planned future occurrences when rules change.
+   - Created [`/api/cross-training/recurring`](file:///c:/Users/souza/Personal-Trainer/app/api/cross-training/recurring/route.ts) endpoint (GET/POST) and integrated into [`GET /api/calendar`](file:///c:/Users/souza/Personal-Trainer/app/api/calendar/route.ts).
+   - Built [`RecurringCrossTrainingModal`](file:///c:/Users/souza/Personal-Trainer/app/components/RecurringCrossTrainingModal.tsx) and added a "CrossFit Recorrente" action button in [`WeeklyCalendar`](file:///c:/Users/souza/Personal-Trainer/app/components/WeeklyCalendar.tsx).
+   - Integrated with multi-sport strength solver: planned CrossFit events in the calendar automatically repel Leg Days (+9500 penalty on same day, +4500 on day after).
 
-### Architectural Decisions Confirmed
-- Multi-sport unified aggregation layer: `CalendarEvent` acts as polymorphic coordinator across strength, running, and cross-training.
-- Calorie computation is deterministic, evidence-based, and decoupled from AI generation to ensure instant, reproducible calculations.
-- Master Coach & Running Coach use separate OpenRouter cascades:
-  - Master Coach & Running Coach: `deepseek/deepseek-v4-pro` -> `qwen/qwen3.7-plus` -> `deepseek/deepseek-v4-flash-0731`.
-- SSR client guard pattern: Reusable `useIsClient` hook using `useSyncExternalStore` avoids cascading re-renders and strictly complies with Next.js / React 19 ESLint rules.
-- Contract-first output is mandatory for all model responses (Ajv validated).
-- ESLint checks must pass cleanly prior to any production deploy.
+4. **AI Running Coach Plan Adherence & Cross-Training Context Enrichment**:
+   - Updated [`buildRunningCoachPrompts`](file:///c:/Users/souza/Personal-Trainer/lib/ai/running-prompts.ts) and [`app/api/running/generate/route.ts`](file:///c:/Users/souza/Personal-Trainer/app/api/running/generate/route.ts):
+     - Calculates active mesocycle adherence summary (`totalPlannedSessions`, `completedCount`, `skippedCount`, `adherencePercentage`, `totalPlannedKm` vs `totalExecutedKm`, and skipped session notes).
+     - Feeds the AI with fixed recurring cross-training commitments, instructing the coach never to schedule high-intensity quality sessions (Intervals, Tempo, Hill Repeats) on CrossFit days or immediately following lower-body WODs.
 
-### Pending Work
-- Set production Strava environment variables in Vercel (`STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_WEBHOOK_VERIFY_TOKEN`, `NEXT_PUBLIC_APP_URL`).
-- Run `npx prisma db push` on production deployment to migrate anthropometric and caloric columns.
-- Optional: Run `npx tsx scripts/backfill-calories.ts` with production database connection to retroactively estimate historical workouts.
-
-### Verification Notes (This Iteration)
+### Verification Notes
 - Run typecheck: `npx tsc --noEmit` -> 0 errors.
-- Run linter: `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 46/46 tests passing (100% assertions green).
-- Production build: `npx next build` -> 0 errors, all 27 routes compiled.
+- Run linter: `npx eslint app/ lib/` -> 0 errors / 0 warnings.
+- Unit tests: `npx tsx --test` -> 58/58 tests passing (100% assertions green).
+- Production build: `npx next build` -> 0 errors, all 29 routes compiled successfully.
 
 

@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { todayISO, shiftISODate } from '@/lib/dates';
 
 // Lazy loader for PrismaClient to allow importing pure scheduler helpers in unit tests without Next.js path alias issues
 let prismaInstance: PrismaClient | null = null;
@@ -549,6 +550,8 @@ export async function rebalanceWeekSchedule(
     orderBy: { date: 'asc' },
   });
 
+  const today = todayISO();
+
   // Separate fixed events from planned strength events
   const fixedScheduleEvents: CalendarEventScheduleContext[] = [];
   const plannedStrengthEvents: typeof weekEvents = [];
@@ -558,20 +561,31 @@ export async function rebalanceWeekSchedule(
     const day = evDate.getDay();
     const dayIndex = day === 0 ? 6 : day - 1; // 0=Mon, 6=Sun
 
-    if (ev.eventType === 'strength' && ev.status === 'planned') {
+    // STRICT FORWARD-ONLY RULE:
+    // Only future planned events (date >= today) are candidates to be rescheduled.
+    // Past events (< today) are immutable and treated as fixed context.
+    if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
       plannedStrengthEvents.push(ev);
     } else {
-      // Completed strength, running, cross-training
+      // Completed strength, running, cross-training, or past planned events (< today)
       let runningSessionType: string | undefined;
       let muscleGroups: string[] | undefined;
       let sessionRpe: number | null | undefined;
 
       if (ev.eventType === 'running' && ev.referenceId) {
-        const runSession = await prisma.runningSession.findUnique({
-          where: { id: ev.referenceId },
-          select: { sessionType: true },
-        });
-        runningSessionType = runSession?.sessionType;
+        if (ev.referenceModel === 'RunningExecution') {
+          const runExec = await prisma.runningExecution.findUnique({
+            where: { id: ev.referenceId },
+            select: { runningSession: { select: { sessionType: true } } },
+          });
+          runningSessionType = runExec?.runningSession?.sessionType;
+        } else {
+          const runSession = await prisma.runningSession.findUnique({
+            where: { id: ev.referenceId },
+            select: { sessionType: true },
+          });
+          runningSessionType = runSession?.sessionType;
+        }
       }
 
       if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
@@ -600,7 +614,13 @@ export async function rebalanceWeekSchedule(
     }
   }
 
-  if (plannedStrengthEvents.length === 0) {
+  // Filter available days: only days >= today can receive workouts
+  const forwardAvailableDays = availableDays.filter((dIdx) => {
+    const dayDate = shiftISODate(startStr, dIdx);
+    return dayDate >= today;
+  });
+
+  if (plannedStrengthEvents.length === 0 || forwardAvailableDays.length === 0) {
     return {
       success: true,
       weekStart: startStr,
@@ -625,7 +645,7 @@ export async function rebalanceWeekSchedule(
 
   const { assignment } = solveOptimalWeeklyStrengthDistribution({
     weekMonday,
-    availableDays,
+    availableDays: forwardAvailableDays,
     workouts: workoutsToSchedule,
     fixedEvents: fixedScheduleEvents,
   });
@@ -633,6 +653,7 @@ export async function rebalanceWeekSchedule(
   const changes: Array<{ id: string; title: string; oldDate: string; newDate: string }> = [];
 
   for (const sol of assignment) {
+    if (sol.dateStr < today) continue; // Safety guard
     const originalEvent = plannedStrengthEvents.find((e) => e.id === sol.workoutId);
     if (originalEvent) {
       if (originalEvent.date !== sol.dateStr) {
@@ -725,6 +746,7 @@ export async function scheduleMesocycleWorkouts(
   const baseMonday = getMondayOfDate(baseDate);
   const dayTemplates = activePlan.workoutDays;
   const numWeeks = activePlan.durationWeeks || (activePlan.weeks.length > 0 ? activePlan.weeks.length : 4);
+  const today = todayISO();
 
   for (let weekIndex = 0; weekIndex < numWeeks; weekIndex++) {
     const weekStart = new Date(baseMonday);
@@ -781,6 +803,13 @@ export async function scheduleMesocycleWorkouts(
 
     for (let tIdx = 0; tIdx < assignment.length; tIdx++) {
       const sol = assignment[tIdx];
+
+      // STRICT FORWARD-ONLY RULE:
+      // Never schedule planned strength events in the past (< today)
+      if (sol.dateStr < today) {
+        continue;
+      }
+
       const template = templatesForWeek.find((t) => t.id === sol.workoutId) || templatesForWeek[tIdx];
 
       // Check if any strength event already exists for this date and template
@@ -1019,11 +1048,19 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
       let sessionRpe: number | null | undefined;
 
       if (ev.eventType === 'running' && ev.referenceId) {
-        const runSession = await prisma.runningSession.findUnique({
-          where: { id: ev.referenceId },
-          select: { sessionType: true },
-        });
-        runningSessionType = runSession?.sessionType;
+        if (ev.referenceModel === 'RunningExecution') {
+          const runExec = await prisma.runningExecution.findUnique({
+            where: { id: ev.referenceId },
+            select: { runningSession: { select: { sessionType: true } } },
+          });
+          runningSessionType = runExec?.runningSession?.sessionType;
+        } else {
+          const runSession = await prisma.runningSession.findUnique({
+            where: { id: ev.referenceId },
+            select: { sessionType: true },
+          });
+          runningSessionType = runSession?.sessionType;
+        }
       }
 
       if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {

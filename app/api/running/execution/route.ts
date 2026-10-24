@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
-import { syncActivityToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
+import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
 export const dynamic = 'force-dynamic';
 
@@ -120,6 +120,7 @@ export async function POST(req: NextRequest) {
           avgHeartRate,
           maxHeartRate,
           caloriesBurned,
+          caloriesSource: 'estimated',
           sessionRpe,
           notes,
         },
@@ -187,16 +188,15 @@ export async function POST(req: NextRequest) {
       return execution;
     });
 
-    // Sincroniza atividade com o Meu Rastreador Metabólico de forma não-bloqueante
+    // Sincroniza o dia consolidado com o Meu Rastreador Metabólico via after()
     if (executionResult) {
-      syncActivityToMetabolicTracker({
-        date,
-        caloriesBurned: executionResult.caloriesBurned || 0,
-        trainingType: 'Corrida',
-        workoutTitle: `Corrida (${distanceKm.toFixed(1)} km)`,
-        durationMinutes: Math.round(durationSeconds / 60),
-        sessionRpe: sessionRpe ?? undefined,
-      }).catch((err) => console.warn('[MetabolicSync] Falha no sync com Rastreador:', err));
+      after(async () => {
+        try {
+          await syncDayToMetabolicTracker(date);
+        } catch (err) {
+          console.warn('[MetabolicSync] Falha no sync consolidado de corrida:', err);
+        }
+      });
     }
 
     return NextResponse.json({

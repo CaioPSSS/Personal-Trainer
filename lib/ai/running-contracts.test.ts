@@ -249,6 +249,30 @@ test('Prompt Engine: buildRunningCoachPrompts generates comprehensive context', 
         rpeAvg: 8.5,
       },
     ],
+    recurringCrossTraining: [
+      {
+        activityType: 'crossfit',
+        title: 'CrossFit WOD',
+        daysOfWeek: ['monday', 'wednesday'],
+        durationMinutes: 60,
+      },
+    ],
+    planAdherenceSummary: {
+      totalPlannedSessions: 12,
+      completedCount: 10,
+      skippedCount: 2,
+      adherencePercentage: 83,
+      totalPlannedKm: 75.0,
+      totalExecutedKm: 68.5,
+      skippedSessions: [
+        {
+          title: 'Tiros 5x800m',
+          sessionType: 'intervals',
+          scheduledDate: '2026-09-18',
+          notes: 'Fadiga excessiva pós-CrossFit',
+        },
+      ],
+    },
     targetMonth: 10,
     targetYear: 2026,
   });
@@ -256,7 +280,11 @@ test('Prompt Engine: buildRunningCoachPrompts generates comprehensive context', 
   assert.ok(prompts.systemPrompt.includes('Pete Pfitzinger'));
   assert.ok(prompts.systemPrompt.includes('Jack Daniels VDOT'));
   assert.ok(prompts.systemPrompt.includes('80/20 POLARIZED'));
+  assert.ok(prompts.systemPrompt.includes('FIXED RECURRING CROSS-TRAINING COMMITMENTS:'));
   assert.ok(prompts.userPrompt.includes('ATHLETE RUNNING PROFILE:'));
   assert.ok(prompts.userPrompt.includes('PREVIOUS COACH BRAIN MEMORY WITH TEMPORAL DECAY:'));
   assert.ok(prompts.userPrompt.includes('CONCURRENT CROSS-TRAINING SESSIONS'));
+  assert.ok(prompts.userPrompt.includes('FIXED RECURRING CROSS-TRAINING SCHEDULE'));
+  assert.ok(prompts.userPrompt.includes('PREVIOUS / ACTIVE MESOCYCLE ADHERENCE'));
+  assert.ok(prompts.userPrompt.includes('Fadiga excessiva pós-CrossFit'));
 });

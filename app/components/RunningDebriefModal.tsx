@@ -45,6 +45,7 @@ export interface RunningDebriefModalProps {
     cadenceAvg?: number | null;
     temperature?: number | null;
     caloriesBurned?: number | null;
+    caloriesSource?: string | null;
     splits?: Array<{
       km: number;
       paceSec?: number;
@@ -283,7 +284,15 @@ export default function RunningDebriefModal({
               <div className="font-bold text-amber-300">
                 {execution.caloriesBurned ? `${execution.caloriesBurned} kcal` : '--'}
               </div>
-              <div className="text-[10px] text-slate-500">{isStrava ? 'Strava/HR' : 'Margaria'}</div>
+              <div className="text-[10px] text-slate-500">
+                {execution.caloriesSource === 'strava'
+                  ? 'Strava nativo'
+                  : execution.caloriesSource === 'estimated'
+                  ? 'Margaria / ACSM'
+                  : isStrava
+                  ? 'Strava/HR'
+                  : 'Margaria'}
+              </div>
             </div>
 
             <div className="p-3 rounded-xl bg-slate-950/40 border border-slate-800/60 space-y-0.5 col-span-2 sm:col-span-1">

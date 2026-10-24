@@ -25,6 +25,7 @@ model AthleteProfile {
   biologicalSex       String?  // "male" | "female"
   bodyFatPercent      Float?   // gordura corporal estimada (%)
   metabolicTrackerUrl String?  // URL de produção do Meu Rastreador Metabólico na Vercel
+  recurringCrossTraining Json? // Programação recorrente de cross-training (ex: CrossFit Seg/Qua)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -355,6 +356,7 @@ model RunningExecution {
   splits               Json?    // [{ km: 1, paceSec: 320 }, { km: 2, paceSec: 315 }]
   sessionRpe           Float?   // 1-10
   caloriesBurned       Int?     // gasto calórico em kcal (Strava ou fórmula Margaria)
+  caloriesSource       String?  // "strava" (valor do dispositivo) | "estimated" (fórmula Margaria/ACSM)
   notes                String?  @db.Text
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
