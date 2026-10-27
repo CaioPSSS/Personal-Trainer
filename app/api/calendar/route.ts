@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { syncPlannedCalendarEvents, rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
+import { syncPlannedCalendarEvents } from '@/lib/scheduling/strength-scheduler';
 import { syncPlannedCrossTraining } from '@/lib/scheduling/cross-training-scheduler';
 import { dayOfWeekName, todayISO } from '@/lib/dates';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
@@ -274,17 +274,6 @@ export async function PATCH(req: NextRequest) {
           await syncDayToMetabolicTracker(targetDate);
         } catch (err) {
           console.warn('[Calendar PATCH] Falha no sync com Rastreador:', err);
-        }
-      });
-    }
-
-    // 6. If a planned strength or cross-training activity was moved, dynamically rebalance the week
-    if (existing.status === 'planned' && (existing.eventType === 'strength' || existing.eventType === 'crossfit')) {
-      after(async () => {
-        try {
-          await rebalanceWeekSchedule(existing.athleteProfileId, targetDate);
-        } catch (rebErr) {
-          console.warn('[Calendar PATCH] Falha no rebalanceamento pós-movimentação:', rebErr);
         }
       });
     }

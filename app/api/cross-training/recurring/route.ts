@@ -6,8 +6,6 @@ import {
   RecurringCrossTrainingRule,
   normalizeDayOfWeek,
 } from '@/lib/scheduling/cross-training-scheduler';
-import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
-import { todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,13 +68,6 @@ export async function POST(req: NextRequest) {
 
     // Synchronize planned events into future calendar (strictly >= today)
     const syncResult = await syncPlannedCrossTraining('singleton');
-
-    // Automatically rebalance current week's strength workouts to repel legs from CrossFit
-    try {
-      await rebalanceWeekSchedule('singleton', todayISO());
-    } catch (schedErr) {
-      console.warn('[Recurring Cross-Training] Aviso: rebalanceamento automático ignorado:', schedErr);
-    }
 
     return NextResponse.json({
       success: true,

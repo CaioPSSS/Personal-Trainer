@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 
@@ -144,25 +143,11 @@ export async function POST(req: NextRequest) {
       }
     });
 
-    // Reactive rescheduling: dynamically rebalance the week's strength workouts
-    // to steer leg workouts away from CrossFit fatigue
-    let rebalanceResult: { rebalancedCount: number; events: Array<{ id: string; title: string; oldDate: string; newDate: string }> } | null = null;
-    try {
-      const res = await rebalanceWeekSchedule(athlete.id, date);
-      rebalanceResult = {
-        rebalancedCount: res.rebalancedCount,
-        events: res.events,
-      };
-    } catch (rebalanceError) {
-      console.warn('[Cross-Training] Aviso: falha ao rebalancear calendário:', rebalanceError);
-    }
-
     return NextResponse.json(
       {
         success: true,
         activity: result.activity,
         calendarEvent: result.calendarEvent,
-        rebalance: rebalanceResult,
       },
       { status: 201 }
     );
