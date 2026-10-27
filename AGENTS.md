@@ -23,9 +23,11 @@ This version has breaking changes — APIs, conventions, and file structure may 
      - [`scheduleMesocycleWorkouts`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/strength-scheduler.ts): Skips creating planned strength events on past dates.
      - [`POST /api/running/generate`](file:///c:/Users/souza/Personal-Trainer/app/api/running/generate/route.ts): Never deletes past sessions or completed runs (`< todayISO()`), and never creates planned running sessions on past dates.
 
-3. **Recurring CrossFit / Cross-Training Pre-Scheduling**:
+3. **Recurring CrossFit / Cross-Training Pre-Scheduling & Individual Reschedule Overrides**:
    - Added `recurringCrossTraining Json?` column to [`AthleteProfile`](file:///c:/Users/souza/Personal-Trainer/prisma/schema.prisma).
    - Created [`lib/scheduling/cross-training-scheduler.ts`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/cross-training-scheduler.ts) (`syncPlannedCrossTraining`): projects recurring workouts (e.g. CrossFit every Monday & Wednesday, 60 min) forward for upcoming weeks strictly starting from today (`>= todayISO()`). Automatically prunes outdated planned future occurrences when rules change.
+   - **Individual Reschedule Overrides**: When moving a single occurrence of a recurring workout (e.g. from Monday to Thursday), `originalDate` preserves the origin. `syncPlannedCrossTraining` (`shouldPruneRecurringEvent`) never deletes the moved workout, and `buildOccupiedScheduleSlots` marks the original day as satisfied so it never resurrects on the original day.
+   - Also synchronizes [`CrossTrainingActivity.date`](file:///c:/Users/souza/Personal-Trainer/app/api/calendar/route.ts) on PATCH and automatically triggers [`rebalanceWeekSchedule`](file:///c:/Users/souza/Personal-Trainer/lib/scheduling/strength-scheduler.ts) to repel leg workouts away from the new CrossFit date.
    - Created [`/api/cross-training/recurring`](file:///c:/Users/souza/Personal-Trainer/app/api/cross-training/recurring/route.ts) endpoint (GET/POST) and integrated into [`GET /api/calendar`](file:///c:/Users/souza/Personal-Trainer/app/api/calendar/route.ts).
    - Built [`RecurringCrossTrainingModal`](file:///c:/Users/souza/Personal-Trainer/app/components/RecurringCrossTrainingModal.tsx) and added a "CrossFit Recorrente" action button in [`WeeklyCalendar`](file:///c:/Users/souza/Personal-Trainer/app/components/WeeklyCalendar.tsx).
    - Integrated with multi-sport strength solver: planned CrossFit events in the calendar automatically repel Leg Days (+9500 penalty on same day, +4500 on day after).

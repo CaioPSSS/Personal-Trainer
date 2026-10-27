@@ -68,6 +68,53 @@ export const SPORT_COLOR_MAP: Record<string, string> = {
 };
 
 /**
+ * Determines whether a planned cross-training event should be pruned.
+ * If the event was individually moved to another date by the user (originalDate !== date),
+ * it is an intentional individual override and must NEVER be pruned.
+ */
+export function shouldPruneRecurringEvent(
+  event: { date: string; eventType: string; originalDate?: string | null },
+  rules: RecurringCrossTrainingRule[]
+): boolean {
+  // If the user individually moved this occurrence to another date, NEVER prune it!
+  if (event.originalDate && event.originalDate !== event.date) {
+    return false;
+  }
+
+  const weekday = dayOfWeekName(event.date);
+  return !rules.some((r) => {
+    const normDays = (r.daysOfWeek || []).map(normalizeDayOfWeek);
+    return (
+      normDays.includes(weekday) &&
+      r.activityType.toLowerCase() === event.eventType.toLowerCase()
+    );
+  });
+}
+
+/**
+ * Builds a set of occupied schedule slot keys ("YYYY-MM-DD::activityType" and "YYYY-MM-DD::title").
+ * For events that were moved from an originalDate, marks both the new date and the originalDate
+ * as occupied so that recurring generation will not resurrect the workout on the original day.
+ */
+export function buildOccupiedScheduleSlots(
+  events: Array<{ date: string; eventType: string; title: string; originalDate?: string | null }>
+): Set<string> {
+  const set = new Set<string>();
+  for (const ev of events) {
+    set.add(`${ev.date}::${ev.eventType.toLowerCase()}`);
+    set.add(`${ev.date}::${ev.title.trim().toLowerCase()}`);
+
+    // If this event was moved from originalDate, mark originalDate as also occupied/overridden
+    // so recurring sync will NOT recreate it on the original day!
+    if (ev.originalDate) {
+      set.add(`${ev.originalDate}::${ev.eventType.toLowerCase()}`);
+      set.add(`${ev.originalDate}::${ev.title.trim().toLowerCase()}`);
+    }
+  }
+  return set;
+}
+
+/**
  * Synchronizes planned recurring cross-training events (e.g. CrossFit every Mon & Wed)
  * into CalendarEvent and CrossTrainingActivity records for the upcoming weeks.
  *
@@ -109,7 +156,7 @@ export async function syncPlannedCrossTraining(
     return { createdCount: 0, cleanedCount: deletedFuture.count };
   }
 
-  // Prune any future planned events whose day or rule was removed
+  // Prune any future planned events whose day or rule was removed, UNLESS individually moved by user
   const existingFuturePlanned = await prisma.calendarEvent.findMany({
     where: {
       athleteProfileId,
@@ -117,20 +164,16 @@ export async function syncPlannedCrossTraining(
       status: 'planned',
       referenceModel: 'CrossTrainingActivity',
     },
-    select: { id: true, date: true, eventType: true, title: true },
+    select: { id: true, date: true, eventType: true, title: true, referenceId: true, originalDate: true },
   });
 
   for (const ev of existingFuturePlanned) {
-    const weekday = dayOfWeekName(ev.date);
-    const hasMatchingRule = rules.some((r) => {
-      const normDays = (r.daysOfWeek || []).map(normalizeDayOfWeek);
-      return (
-        normDays.includes(weekday) &&
-        r.activityType.toLowerCase() === ev.eventType.toLowerCase()
-      );
-    });
-
-    if (!hasMatchingRule) {
+    if (shouldPruneRecurringEvent(ev, rules)) {
+      if (ev.referenceId) {
+        await prisma.crossTrainingActivity.deleteMany({
+          where: { id: ev.referenceId, status: 'planned' },
+        });
+      }
       await prisma.calendarEvent.delete({ where: { id: ev.id } });
       cleanedCount++;
     }
@@ -143,7 +186,10 @@ export async function syncPlannedCrossTraining(
   const existingEvents = await prisma.calendarEvent.findMany({
     where: {
       athleteProfileId,
-      date: { gte: today, lte: maxHorizonDate },
+      OR: [
+        { date: { gte: today, lte: maxHorizonDate } },
+        { originalDate: { gte: today, lte: maxHorizonDate } },
+      ],
     },
     select: {
       id: true,
@@ -152,16 +198,12 @@ export async function syncPlannedCrossTraining(
       title: true,
       status: true,
       referenceModel: true,
+      originalDate: true,
     },
   });
 
-  // Map of existing events by "date::eventType"
-  const existingSet = new Set<string>();
-  for (const ev of existingEvents) {
-    existingSet.add(`${ev.date}::${ev.eventType.toLowerCase()}`);
-    // Also mark by title lowercase for extra safety
-    existingSet.add(`${ev.date}::${ev.title.trim().toLowerCase()}`);
-  }
+  // Map of existing and overridden event slots
+  const existingSet = buildOccupiedScheduleSlots(existingEvents);
 
   // Pre-fetch weight for calorie calculation
   const athleteWeightKg = await resolveAthleteWeightKg(athleteProfileId, today);

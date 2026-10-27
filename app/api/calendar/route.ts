@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { syncPlannedCalendarEvents } from '@/lib/scheduling/strength-scheduler';
+import { syncPlannedCalendarEvents, rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 import { syncPlannedCrossTraining } from '@/lib/scheduling/cross-training-scheduler';
 import { dayOfWeekName, todayISO } from '@/lib/dates';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
@@ -212,11 +212,16 @@ export async function PATCH(req: NextRequest) {
 
     const previousDate = existing.date;
 
+    const isMovingBackToOriginal = existing.originalDate && targetDate === existing.originalDate;
+    const newOriginalDate = isMovingBackToOriginal
+      ? null
+      : (existing.originalDate ?? existing.date);
+
     const updated = await prisma.calendarEvent.update({
       where: { id: existing.id },
       data: {
         date: targetDate,
-        originalDate: existing.originalDate ?? existing.date,
+        originalDate: newOriginalDate,
       },
     });
 
@@ -241,7 +246,27 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
-    // 3. If a completed activity was moved, update daily totals in Meu Rastreador Metabólico
+    // 3. If it's a cross-training activity (planned or completed), synchronize its date as well
+    if (existing.referenceModel === 'CrossTrainingActivity' && existing.referenceId) {
+      await prisma.crossTrainingActivity.updateMany({
+        where: { id: existing.referenceId },
+        data: {
+          date: targetDate,
+        },
+      });
+    }
+
+    // 4. If it's a strength workout execution, synchronize its date as well
+    if (existing.referenceModel === 'WorkoutExecution' && existing.referenceId) {
+      await prisma.workoutExecution.updateMany({
+        where: { id: existing.referenceId },
+        data: {
+          date: targetDate,
+        },
+      });
+    }
+
+    // 5. If a completed activity was moved, update daily totals in Meu Rastreador Metabólico
     if (existing.status === 'completed' && previousDate !== targetDate) {
       after(async () => {
         try {
@@ -249,6 +274,17 @@ export async function PATCH(req: NextRequest) {
           await syncDayToMetabolicTracker(targetDate);
         } catch (err) {
           console.warn('[Calendar PATCH] Falha no sync com Rastreador:', err);
+        }
+      });
+    }
+
+    // 6. If a planned strength or cross-training activity was moved, dynamically rebalance the week
+    if (existing.status === 'planned' && (existing.eventType === 'strength' || existing.eventType === 'crossfit')) {
+      after(async () => {
+        try {
+          await rebalanceWeekSchedule(existing.athleteProfileId, targetDate);
+        } catch (rebErr) {
+          console.warn('[Calendar PATCH] Falha no rebalanceamento pós-movimentação:', rebErr);
         }
       });
     }
