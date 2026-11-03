@@ -1,4 +1,5 @@
 import { DataAnalystReport } from '@/lib/ai/contracts';
+import { ExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 
 interface MasterPromptContext {
   athleteProfile: unknown;
@@ -7,6 +8,7 @@ interface MasterPromptContext {
   recentWorkouts: unknown[];
   recentWellness: unknown[];
   crossTrainingSummary?: unknown[];
+  exerciseSubstitutionSummary?: ExerciseSubstitutionSummary | null;
 }
 
 interface AnalystPromptContext {
@@ -14,12 +16,14 @@ interface AnalystPromptContext {
   activeMesocycle: unknown;
   recentWorkouts: unknown[];
   recentWellness: unknown[];
+  exerciseSubstitutionSummary?: ExerciseSubstitutionSummary | null;
 }
 
 interface AssistantPromptContext {
   mode: 'exercise_swap' | 'fatigue_alert';
   payload: Record<string, unknown>;
   athleteProfile: unknown;
+  objective?: string | null;
 }
 
 const SMARTFIT_EQUIPMENT_CATALOG = `
@@ -47,13 +51,17 @@ Analytical Framework:
 4. Adherence & Bottlenecks: Detect missed sessions, skipped exercises, or systematic failures to hit target volume per muscle group.
 5. True Progression vs Variance: Distinguish normal session-to-session noise from actual mechanical stagnation or chronic fatigue accumulation.
 6. Energy Expenditure & Metabolic Load: Monitor actual caloric expenditure (caloriesBurned from resistance training volume-load, running sessions, and cross-training) to identify whether systemic energy deficit or concurrent endurance expenditure is driving recovery bottlenecks.
+7. Exercise Substitutions & Equipment Preferences:
+   - Evaluate 'exerciseSubstitutionSummary' (permanent swaps marked as "Substituir sempre" and frequent in-session swaps via 'substitutedFrom').
+   - Do NOT penalize adherence when an athlete substitutes an exercise for a biomechanically equivalent movement.
+   - Explicitly include permanent swaps and frequently swapped exercises in 'recommendationsForMaster' so Master Coach prescribes the preferred replacement exercises directly in the next block.
 
 Strict Constraints:
 - Return strictly valid JSON conforming to the DataAnalystReport contract.
 - Never fabricate data. If data is sparse or missing, explicitly flag as 'insufficient_data'.
 - Be ruthlessly honest and clinical. If compliance or progressive overload is poor, state it directly.`;
 
-  const userPrompt = [
+  const promptSections = [
     'Analyze the athlete training and wellness cycle and return a valid JSON report conforming to the schema.',
     'Athlete profile JSON:',
     JSON.stringify(context.athleteProfile),
@@ -63,7 +71,16 @@ Strict Constraints:
     JSON.stringify(context.recentWorkouts),
     'Wellness logs JSON (up to 56 days):',
     JSON.stringify(context.recentWellness),
-  ].join('\n\n');
+  ];
+
+  if (context.exerciseSubstitutionSummary) {
+    promptSections.push(
+      'Exercise substitution history & permanent preferences JSON:',
+      JSON.stringify(context.exerciseSubstitutionSummary)
+    );
+  }
+
+  const userPrompt = promptSections.join('\n\n');
 
   return { systemPrompt, userPrompt };
 }
@@ -104,6 +121,10 @@ Biomechanical & Hypertrophy Directives:
 8. ENERGY EXPENDITURE & CALORIC BALANCE AWARENESS:
    - The athlete tracks multi-sport caloric burn (strength training burns ~250-450 kcal based on volume-load, plus running and CrossFit).
    - Recognize that higher volume-load demands higher glycogen and metabolic recovery. When concurrent running volume or cross-training is high, maintain high-SFR movements and moderate set brackets (12-16 hard sets per workout) rather than redundant junk volume to protect systemic recovery and muscle protein synthesis.
+9. EXERCISE SUBSTITUTIONS & PERMANENT ATHLETE PREFERENCES (CRITICAL):
+   - Review 'exerciseSubstitutionSummary' carefully:
+     * 'permanentSwaps' ("Substituir sempre"): Exercises the athlete explicitly replaced permanently for their objective. NEVER prescribe 'originalExercise' from 'permanentSwaps'; ALWAYS prescribe the athlete's chosen 'replacementExercise' directly instead.
+     * 'frequentSwaps': Exercises the athlete repeatedly swapped out during sessions (e.g. due to equipment crowding or biomechanical comfort). Strongly prefer prescribing 'preferredSubstitute' directly and note this adaptation in 'coachBrain.rationale'.
 
 Output Contract:
 - Return strictly valid JSON conforming to the MasterPlanOutput schema.
@@ -126,6 +147,18 @@ Output Contract:
     );
   }
 
+  if (
+    context.exerciseSubstitutionSummary &&
+    (context.exerciseSubstitutionSummary.permanentSwaps.length > 0 ||
+      context.exerciseSubstitutionSummary.frequentSwaps.length > 0 ||
+      context.exerciseSubstitutionSummary.recentOneOffSwaps.length > 0)
+  ) {
+    promptSections.push(
+      'Athlete exercise substitution history & permanent preferences JSON (MUST RESPECT permanentSwaps):',
+      JSON.stringify(context.exerciseSubstitutionSummary)
+    );
+  }
+
   if (context.analystReport?.executiveSummary?.includes('Baseline phase') && context.recentWorkouts.length > 0) {
     promptSections.push(
       'Raw workout execution context JSON (recent sample):',
@@ -144,27 +177,33 @@ export function buildAssistantCoachPrompts(context: AssistantPromptContext) {
   const systemPrompt = `You are Assistant Coach AI, an ultra-fast real-time tactical assistant for in-gym decisions.
 
 Core Tasks:
-1. 'exercise_swap': When a piece of equipment is occupied or unavailable in a crowded gym (SmartFit), suggest 3 immediate alternative exercises.
+1. 'exercise_swap': When a piece of equipment is occupied or unavailable in a crowded gym (SmartFit), suggest 3 immediate alternative exercises in Brazilian Portuguese (pt-BR).
 2. 'fatigue_alert': Provide real-time auto-regulation adjustments when acute fatigue or soreness is detected.
 
 ${SMARTFIT_EQUIPMENT_CATALOG}
 
 Tactical Rules for Exercise Substitution:
-1. Exact Biomechanical Equivalence: The 3 alternatives must replicate the exact movement pattern, prime mover, and anatomical vector of force (e.g. Horizontal Push -> Horizontal Push; Knee Flexion -> Knee Flexion).
+1. Exact Biomechanical Equivalence: The 3 alternatives must replicate the exact movement pattern, prime mover, and anatomical vector of force (e.g. Horizontal Push -> Horizontal Push; Knee Flexion -> Knee Flexion), aligned with the current mesocycle objective.
 2. Ultra-Fast Setup in Crowded Gyms: Prioritize machines, selectorized stacks, dumbbells, and cable attachments over heavily contested barbell squat racks or flat bench presses.
-3. Strict Constraints: Respect all explicit injuries and movement restrictions from the AthleteProfile unconditionally.
-4. Structured Output: For each of the 3 recommendations, provide clear 'title', 'reason' (explaining the biomechanical match and setup speed), and metadata if applicable.
+3. Strict Constraints: Respect all explicit injuries and movement restrictions from the AthleteProfile unconditionally. Never suggest the exact same exercise being replaced.
+4. Structured Output:
+   - Write 'title' and 'reason' in clear Brazilian Portuguese (pt-BR).
+   - Return exactly 3 recommendations in 'recommendations', each with 'title' and 'reason'.
+   - When mode is 'exercise_swap', omit 'alert' (or set 'alert': null).
 
 Output Contract:
 - Return strictly valid JSON conforming to the AssistantOutput schema. No prose outside JSON.`;
 
-  const userPrompt = [
+  const promptParts = [
     `Mode: ${context.mode}`,
+    `Active Mesocycle Objective: ${context.objective || 'Hipertrofia Geral'}`,
     'Athlete profile JSON:',
     JSON.stringify(context.athleteProfile),
     'Runtime payload JSON:',
     JSON.stringify(context.payload),
-  ].join('\n\n');
+  ];
+
+  const userPrompt = promptParts.join('\n\n');
 
   return { systemPrompt, userPrompt };
 }

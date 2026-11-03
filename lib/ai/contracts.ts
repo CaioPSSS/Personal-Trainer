@@ -67,19 +67,29 @@ export interface MasterPlanOutput {
   };
 }
 
+export interface AssistantRecommendationMetadata {
+  objective?: string;
+  selectedCount?: number;
+  lastSelectedAt?: string;
+  isPermanent?: boolean;
+  [key: string]: unknown;
+}
+
+export interface AssistantRecommendation {
+  title: string;
+  reason: string;
+  metadata?: AssistantRecommendationMetadata | null;
+}
+
 export interface AssistantOutput {
   mode: 'exercise_swap' | 'fatigue_alert';
-  recommendations: Array<{
-    title: string;
-    reason: string;
-    metadata?: Record<string, unknown>;
-  }>;
+  recommendations: AssistantRecommendation[];
   alert?: {
     type: string;
     severity: 'low' | 'medium' | 'high';
     message: string;
     action: string;
-  };
+  } | null;
 }
 
 export const masterPlanOutputSchema = {
@@ -299,28 +309,27 @@ export const assistantOutputSchema = {
     recommendations: {
       type: 'array',
       minItems: 1,
-      maxItems: 3,
+      maxItems: 5,
       items: {
         type: 'object',
-        additionalProperties: false,
+        additionalProperties: true,
         required: ['title', 'reason'],
         properties: {
-          title: { type: 'string', minLength: 3 },
-          reason: { type: 'string', minLength: 6 },
-          metadata: { type: 'object', nullable: true },
+          title: { type: 'string', minLength: 2 },
+          reason: { type: 'string', minLength: 4 },
+          metadata: { type: ['object', 'null'], nullable: true },
         },
       },
     },
     alert: {
-      type: 'object',
+      type: ['object', 'null'],
       nullable: true,
-      additionalProperties: false,
-      required: ['type', 'severity', 'message', 'action'],
+      additionalProperties: true,
       properties: {
-        type: { type: 'string', minLength: 3 },
+        type: { type: 'string', minLength: 2 },
         severity: { type: 'string', enum: ['low', 'medium', 'high'] },
-        message: { type: 'string', minLength: 6 },
-        action: { type: 'string', minLength: 6 },
+        message: { type: 'string', minLength: 3 },
+        action: { type: 'string', minLength: 3 },
       },
     },
   },

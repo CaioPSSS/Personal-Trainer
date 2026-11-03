@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
+import { todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,7 +55,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
+    const todayStr = todayISO();
     const date = body.date ? String(body.date).trim() : todayStr;
     const sessionRpe = body.sessionRpe != null ? Number(body.sessionRpe) : null;
     const avgHeartRate = body.avgHeartRate != null ? Number(body.avgHeartRate) : null;

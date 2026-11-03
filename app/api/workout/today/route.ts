@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { todayISO } from '@/lib/dates';
 import {
   calculateProgressiveOverload,
   isCompoundExercise,
@@ -50,7 +51,7 @@ interface WorkoutPayload {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const date = searchParams.get('date') || new Date().toISOString().split('T')[0];
+    const date = searchParams.get('date') || todayISO();
 
     // 1. Fetch active mesocycle plan
     const activePlan = await prisma.mesocyclePlan.findFirst({
@@ -162,20 +163,30 @@ export async function GET(request: NextRequest) {
     const previousPerformances: Record<string, string> = {};
     const progressionData: Record<string, ExercisePreviousPerformanceData> = {};
 
-    if (workoutToday) {
-      for (const rx of workoutToday.prescriptions) {
-        const lastExec = await prisma.exerciseExecution.findFirst({
-          where: {
-            exerciseName: rx.exerciseName,
-            workoutExecution: {
-              athleteProfileId: 'singleton',
-              status: 'completed',
-              date: { lt: date }
-            }
+    if (workoutToday && workoutToday.prescriptions.length > 0) {
+      const rxNames = Array.from(new Set(workoutToday.prescriptions.map((rx) => rx.exerciseName)));
+      const historicalExecutions = await prisma.exerciseExecution.findMany({
+        where: {
+          exerciseName: { in: rxNames },
+          workoutExecution: {
+            athleteProfileId: 'singleton',
+            status: 'completed',
+            date: { lt: date },
           },
-          orderBy: { createdAt: 'desc' },
-          include: { setExecutions: true }
-        });
+        },
+        orderBy: { createdAt: 'desc' },
+        include: { setExecutions: true },
+      });
+
+      const latestByExerciseName = new Map<string, (typeof historicalExecutions)[number]>();
+      for (const exec of historicalExecutions) {
+        if (!latestByExerciseName.has(exec.exerciseName)) {
+          latestByExerciseName.set(exec.exerciseName, exec);
+        }
+      }
+
+      for (const rx of workoutToday.prescriptions) {
+        const lastExec = latestByExerciseName.get(rx.exerciseName);
 
         if (lastExec && lastExec.setExecutions.length > 0) {
           const validSets = lastExec.setExecutions.filter((s) => s.reps > 0);
@@ -277,6 +288,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       active: true,
       mesocyclePlanId: activePlan.id,
+      mesocycleObjective: activePlan.objective,
       workoutToday,
       templates: dayTemplates,
       existingWellness,
@@ -668,7 +680,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 6. Detect Personal Records (PRs)
+    // 6. Detect Personal Records (PRs) with a single batched historical query
     interface PersonalRecordItem {
       exerciseName: string;
       metric: 'load' | 'volume';
@@ -678,6 +690,33 @@ export async function POST(request: NextRequest) {
     }
 
     const personalRecords: PersonalRecordItem[] = [];
+
+    const allNamesToSearch = Array.from(
+      new Set(
+        workout.exercises.flatMap((ex) =>
+          ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName
+            ? [ex.exerciseName, ex.substitutedFrom]
+            : [ex.exerciseName]
+        )
+      )
+    );
+
+    const allHistoricalExecs =
+      allNamesToSearch.length > 0
+        ? await prisma.exerciseExecution.findMany({
+            where: {
+              exerciseName: { in: allNamesToSearch },
+              workoutExecution: {
+                athleteProfileId: 'singleton',
+                status: 'completed',
+                id: { not: createdWorkoutExecutionId || undefined },
+              },
+            },
+            include: {
+              setExecutions: true,
+            },
+          })
+        : [];
 
     for (const ex of workout.exercises) {
       const currentSetsWithLoad = ex.sets.filter(
@@ -691,24 +730,12 @@ export async function POST(request: NextRequest) {
         0
       );
 
-      const namesToSearch = [ex.exerciseName];
+      const namesToSearch = new Set([ex.exerciseName]);
       if (ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName) {
-        namesToSearch.push(ex.substitutedFrom);
+        namesToSearch.add(ex.substitutedFrom);
       }
 
-      const historicalExecs = await prisma.exerciseExecution.findMany({
-        where: {
-          exerciseName: { in: namesToSearch },
-          workoutExecution: {
-            athleteProfileId: 'singleton',
-            status: 'completed',
-            id: { not: createdWorkoutExecutionId || undefined },
-          },
-        },
-        include: {
-          setExecutions: true,
-        },
-      });
+      const historicalExecs = allHistoricalExecs.filter((h) => namesToSearch.has(h.exerciseName));
 
       if (historicalExecs.length > 0) {
         let historicalMaxLoad = 0;

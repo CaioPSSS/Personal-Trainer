@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shiftISODate, diffISODays, dayOfWeekName, todayISO, isISODate } from './dates';
+import {
+  shiftISODate,
+  diffISODays,
+  dayOfWeekName,
+  todayISO,
+  isISODate,
+  mondayOfISODate,
+  weekRangeOfISODate,
+} from './dates';
 
 test('Dates: shiftISODate handles whole days across months without timezone drift', () => {
   assert.equal(shiftISODate('2026-10-03', 1), '2026-10-04');
@@ -34,4 +42,14 @@ test('Dates: isISODate validates format strictly', () => {
 test('Dates: todayISO returns a valid ISO date string', () => {
   const today = todayISO();
   assert.equal(isISODate(today), true);
+});
+
+test('Dates: mondayOfISODate and weekRangeOfISODate compute ISO week boundaries accurately', () => {
+  assert.equal(mondayOfISODate('2026-09-30'), '2026-09-28'); // Wednesday -> Monday
+  assert.equal(mondayOfISODate('2026-10-04'), '2026-09-28'); // Sunday -> Monday
+  assert.equal(mondayOfISODate('2026-09-28'), '2026-09-28'); // Monday -> Monday
+
+  const range = weekRangeOfISODate('2026-10-04');
+  assert.equal(range.startOfWeek, '2026-09-28');
+  assert.equal(range.endOfWeek, '2026-10-04');
 });

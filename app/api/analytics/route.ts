@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { todayISO, mondayOfISODate, shiftISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -10,33 +11,19 @@ function formatPace(sec?: number | null): string {
   return `${m}:${s.toString().padStart(2, '0')}/km`;
 }
 
-function formatDateString(d: Date): string {
-  const year = d.getFullYear();
-  const month = (d.getMonth() + 1).toString().padStart(2, '0');
-  const day = d.getDate().toString().padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function getMondayOfCurrentWeek(): Date {
-  const d = new Date();
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
-  const monday = new Date(d.setDate(diff));
-  monday.setHours(0, 0, 0, 0);
-  return monday;
+function formatWeekLabelFromISO(mondayStr: string): string {
+  const [, month, day] = mondayStr.split('-').map(Number);
+  return `Sem ${day}/${month}`;
 }
 
 export async function GET() {
   try {
-    const today = new Date();
-    const todayStr = formatDateString(today);
+    const todayStr = todayISO();
 
-    // Current week Monday to Sunday
-    const currentMonday = getMondayOfCurrentWeek();
-    const currentSunday = new Date(currentMonday);
-    currentSunday.setDate(currentMonday.getDate() + 6);
-    const mondayStr = formatDateString(currentMonday);
-    const sundayStr = formatDateString(currentSunday);
+    // Current week Monday to Sunday in the athlete's timezone
+    const mondayStr = mondayOfISODate(todayStr);
+    const sundayStr = shiftISODate(mondayStr, 6);
+    const sixWeeksAgoMondayStr = shiftISODate(mondayStr, -35);
 
     // -------------------------------------------------------------------------
     // 1. Running profile & executions for paceData and volumeData
@@ -106,13 +93,8 @@ export async function GET() {
     }> = [];
 
     for (let w = 5; w >= 0; w--) {
-      const wMonday = new Date(currentMonday);
-      wMonday.setDate(currentMonday.getDate() - w * 7);
-      const wSunday = new Date(wMonday);
-      wSunday.setDate(wMonday.getDate() + 6);
-
-      const wMonStr = formatDateString(wMonday);
-      const wSunStr = formatDateString(wSunday);
+      const wMonStr = shiftISODate(mondayStr, -w * 7);
+      const wSunStr = shiftISODate(wMonStr, 6);
 
       const weekExecs = runningExecutions.filter(
         (e) => e.date >= wMonStr && e.date <= wSunStr
@@ -127,7 +109,7 @@ export async function GET() {
         ? plannedWeekSessions.reduce((sum, s) => sum + (s.totalDistanceKm || 0), 0)
         : targetKmDefault;
 
-      const weekLabel = `Sem ${wMonday.getDate()}/${wMonday.getMonth() + 1}`;
+      const weekLabel = formatWeekLabelFromISO(wMonStr);
       volumeData.push({
         weekLabel,
         actualKm: Math.round(actualKm * 10) / 10,
@@ -210,7 +192,10 @@ export async function GET() {
     // 3. Adherence Data from CalendarEvent (last 6 weeks)
     // -------------------------------------------------------------------------
     const calendarEvents = await prisma.calendarEvent.findMany({
-      where: { athleteProfileId: 'singleton' },
+      where: {
+        athleteProfileId: 'singleton',
+        date: { gte: sixWeeksAgoMondayStr, lte: sundayStr },
+      },
       orderBy: { date: 'asc' },
     });
 
@@ -223,13 +208,8 @@ export async function GET() {
     }> = [];
 
     for (let w = 5; w >= 0; w--) {
-      const wMonday = new Date(currentMonday);
-      wMonday.setDate(currentMonday.getDate() - w * 7);
-      const wSunday = new Date(wMonday);
-      wSunday.setDate(wMonday.getDate() + 6);
-
-      const wMonStr = formatDateString(wMonday);
-      const wSunStr = formatDateString(wSunday);
+      const wMonStr = shiftISODate(mondayStr, -w * 7);
+      const wSunStr = shiftISODate(wMonStr, 6);
 
       const weekEvents = calendarEvents.filter(
         (e) => e.date >= wMonStr && e.date <= wSunStr
@@ -242,7 +222,7 @@ export async function GET() {
       const percentage = total > 0 ? Math.round((completedCount / total) * 100) : 0;
 
       adherenceData.push({
-        weekLabel: `Sem ${wMonday.getDate()}/${wMonday.getMonth() + 1}`,
+        weekLabel: formatWeekLabelFromISO(wMonStr),
         completedCount,
         plannedCount,
         skippedCount,
@@ -279,18 +259,16 @@ export async function GET() {
     completedRunning.forEach((r) => completedDatesSet.add(r.date));
     completedCross.forEach((x) => completedDatesSet.add(x.date));
 
-    // Calculate streak
+    // Calculate streak using timezone-accurate ISO dates
     let streak = 0;
-    const checkDate = new Date();
-    // If today has activity, streak starts from today
-    // If today doesn't have activity yet, check yesterday to keep streak active
-    if (!completedDatesSet.has(formatDateString(checkDate))) {
-      checkDate.setDate(checkDate.getDate() - 1);
+    let checkDateStr = todayStr;
+    if (!completedDatesSet.has(checkDateStr)) {
+      checkDateStr = shiftISODate(todayStr, -1);
     }
 
-    while (completedDatesSet.has(formatDateString(checkDate))) {
+    while (completedDatesSet.has(checkDateStr)) {
       streak++;
-      checkDate.setDate(checkDate.getDate() - 1);
+      checkDateStr = shiftISODate(checkDateStr, -1);
     }
 
     // -------------------------------------------------------------------------

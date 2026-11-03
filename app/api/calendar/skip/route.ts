@@ -1,32 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { weekRangeOfISODate, shiftISODate, isISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
-
-function getWeekRange(dateStr: string): { startOfWeek: string; endOfWeek: string } {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const d = new Date(Date.UTC(year, month - 1, day));
-  const dayOfWeek = d.getUTCDay(); // 0 = Sunday, 1 = Monday, ...
-  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
-
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() + diffToMonday);
-
-  const sunday = new Date(monday);
-  sunday.setUTCDate(monday.getUTCDate() + 6);
-
-  return {
-    startOfWeek: monday.toISOString().split('T')[0],
-    endOfWeek: sunday.toISOString().split('T')[0],
-  };
-}
-
-function addDaysToISODate(dateStr: string, days: number): string {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().split('T')[0];
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -51,12 +27,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const strategyFlag = strategy === 'skip_and_reschedule' ? 'skip_and_reschedule' : 'skip_only';
+    // Preserve any existing ISO originalDate if the event was previously moved
+    const encodedOriginalDate =
+      event.originalDate && isISODate(event.originalDate)
+        ? `${strategyFlag}::${event.originalDate}`
+        : strategyFlag;
+
     // 1. Mark target event as skipped and save the strategy used
     const updatedEvent = await prisma.calendarEvent.update({
       where: { id: eventId },
       data: {
         status: 'skipped',
-        originalDate: strategy === 'skip_and_reschedule' ? 'skip_and_reschedule' : 'skip_only',
+        originalDate: encodedOriginalDate,
       },
     });
 
@@ -67,11 +50,18 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    if (event.referenceModel === 'CrossTrainingActivity' && event.referenceId) {
+      await prisma.crossTrainingActivity.updateMany({
+        where: { id: event.referenceId },
+        data: { status: 'skipped' },
+      });
+    }
+
     let shiftedCount = 0;
 
     // 2. If strategy is skip_and_reschedule and it's a strength event:
     if (strategy === 'skip_and_reschedule' && event.eventType === 'strength') {
-      const { endOfWeek } = getWeekRange(event.date);
+      const { endOfWeek } = weekRangeOfISODate(event.date);
 
       // Find other planned strength events in the current week starting from event.date
       const subsequentPlanned = await prisma.calendarEvent.findMany({
@@ -89,7 +79,7 @@ export async function POST(req: NextRequest) {
       });
 
       for (const item of subsequentPlanned) {
-        const nextDate = addDaysToISODate(item.date, 1);
+        const nextDate = shiftISODate(item.date, 1);
         await prisma.calendarEvent.update({
           where: { id: item.id },
           data: {

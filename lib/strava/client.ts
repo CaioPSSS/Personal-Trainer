@@ -5,11 +5,11 @@ import { diffISODays, shiftISODate } from '@/lib/dates';
 
 export const STRAVA_CONFIG = {
   clientId: process.env.STRAVA_CLIENT_ID || '282597',
-  clientSecret: process.env.STRAVA_CLIENT_SECRET || '08313dc56a1e7c8eed3875718b692f6d5f17f510',
-  defaultAccessToken: 'b6e78228c3a7cdcde65cb65c004ebccbaca748a8',
-  defaultRefreshToken: 'df5530b3e97651b1fa312cdc0b433fbffcd724fd',
-  defaultExpiresAt: 1790536756,
-  defaultAthleteId: 129158587,
+  clientSecret: process.env.STRAVA_CLIENT_SECRET || '',
+  defaultAccessToken: process.env.STRAVA_DEFAULT_ACCESS_TOKEN || '',
+  defaultRefreshToken: process.env.STRAVA_DEFAULT_REFRESH_TOKEN || '',
+  defaultExpiresAt: Number(process.env.STRAVA_DEFAULT_EXPIRES_AT || 0),
+  defaultAthleteId: Number(process.env.STRAVA_DEFAULT_ATHLETE_ID || 129158587),
   scope: 'read,activity:read_all',
   oauthTokenUrl: 'https://www.strava.com/oauth/token',
   oauthAuthorizeUrl: 'https://www.strava.com/oauth/authorize',
@@ -86,6 +86,9 @@ export async function getValidAccessToken(): Promise<string> {
   });
 
   if (!integration) {
+    if (!STRAVA_CONFIG.defaultAccessToken || !STRAVA_CONFIG.defaultRefreshToken) {
+      throw new Error('Strava não está conectado. Autorize sua conta em Configurações.');
+    }
     integration = await prisma.stravaIntegration.create({
       data: {
         id: 'singleton',

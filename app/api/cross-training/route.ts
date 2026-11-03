@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
 import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
+import { todayISO, shiftISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,9 +28,7 @@ interface CrossTrainingPayload {
 
 export async function GET() {
   try {
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-    const dateLimit = sixtyDaysAgo.toISOString().split('T')[0];
+    const dateLimit = shiftISODate(todayISO(), -60);
 
     const activities = await prisma.crossTrainingActivity.findMany({
       where: {
@@ -54,7 +53,7 @@ export async function POST(req: NextRequest) {
     const body: CrossTrainingPayload = await req.json();
     const {
       activityType,
-      date = new Date().toISOString().split('T')[0],
+      date = todayISO(),
       title,
       durationMinutes,
       sessionRpe,
@@ -148,6 +147,7 @@ export async function POST(req: NextRequest) {
         success: true,
         activity: result.activity,
         calendarEvent: result.calendarEvent,
+        rebalance: null,
       },
       { status: 201 }
     );

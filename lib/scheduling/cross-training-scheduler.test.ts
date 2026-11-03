@@ -4,6 +4,7 @@ import {
   normalizeDayOfWeek,
   shouldPruneRecurringEvent,
   buildOccupiedScheduleSlots,
+  extractOriginalISODate,
   RecurringCrossTrainingRule,
 } from './cross-training-scheduler';
 import { todayISO, shiftISODate, dayOfWeekName } from '@/lib/dates';
@@ -91,4 +92,10 @@ test('Cross-Training Scheduler: individually rescheduled occurrences override re
     occupied.has('2026-10-26::crossfit'),
     'Original Monday must be marked occupied so sync does not resurrect it'
   );
+
+  // 3. Sentinels like "skip_only" or "skip_only::2026-10-26" are handled cleanly by extractOriginalISODate
+  assert.equal(extractOriginalISODate('skip_only'), null);
+  assert.equal(extractOriginalISODate('skip_and_reschedule'), null);
+  assert.equal(extractOriginalISODate('skip_only::2026-10-26'), '2026-10-26');
+  assert.equal(extractOriginalISODate('2026-10-26'), '2026-10-26');
 });

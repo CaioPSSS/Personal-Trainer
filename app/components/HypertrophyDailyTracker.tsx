@@ -1,11 +1,23 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Dumbbell, Calendar, Plus, Trash, Save, Sparkles, Smile } from 'lucide-react';
+import { Dumbbell, Calendar, Plus, Trash, Save, Sparkles, Smile, RefreshCw, CheckCircle2, Repeat } from 'lucide-react';
 import { useFormDraft } from '@/app/hooks/useFormDraft';
 import { getLocalISODate } from '@/lib/dateUtils';
 import PostWorkoutSummaryModal, { PostWorkoutSummaryModalProps } from './PostWorkoutSummaryModal';
 import { ExercisePreviousPerformanceData } from '@/lib/progression/load-calculator';
+
+interface SwapSuggestionItem {
+  title: string;
+  reason: string;
+  metadata?: {
+    objective?: string;
+    selectedCount?: number;
+    lastSelectedAt?: string;
+    isPermanent?: boolean;
+    [key: string]: unknown;
+  } | null;
+}
 
 interface Prescription {
   id: string;
@@ -20,6 +32,17 @@ interface Prescription {
   targetRpeMax: number | null;
   restSeconds: number | null;
   advancedTechnique: string | null;
+  substitutionHints?: {
+    objective?: string;
+    originalExerciseName?: string;
+    permanentReplacement?: {
+      fromExercise: string;
+      toExercise: string;
+      objective: string;
+      updatedAt: string;
+    } | null;
+    savedSuggestions?: SwapSuggestionItem[];
+  } | null;
 }
 
 interface WorkoutDayTemplate {
@@ -78,6 +101,7 @@ const getRpeLabel = (rpeVal: string | null | undefined) => {
 export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTrackerProps) {
   const [selectedDate, setSelectedDate] = useState(getLocalISODate());
   const [activeMesocycleId, setActiveMesocycleId] = useState<string | null>(null);
+  const [activeMesocycleObjective, setActiveMesocycleObjective] = useState<string>('');
   const [templates, setTemplates] = useState<WorkoutDayTemplate[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<WorkoutDayTemplate | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,8 +111,11 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   // Swap suggestions states
   const [swappingIndex, setSwappingIndex] = useState<number | null>(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [suggestions, setSuggestions] = useState<Array<{ title: string; reason: string }>>([]);
+  const [suggestions, setSuggestions] = useState<SwapSuggestionItem[]>([]);
   const [swapError, setSwapError] = useState<string | null>(null);
+  const [swapFromCache, setSwapFromCache] = useState(false);
+  const [activeSwapSuggestionId, setActiveSwapSuggestionId] = useState<string | null>(null);
+  const [applyingSwapTitle, setApplyingSwapTitle] = useState<string | null>(null);
 
   // Form states
   const [sleepHours, setSleepHours] = useState('');
@@ -167,6 +194,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         }
 
         setActiveMesocycleId(data.mesocyclePlanId);
+        setActiveMesocycleObjective(data.mesocycleObjective || '');
         setTemplates(data.templates || []);
         setPreviousPerformances(data.previousPerformances || {});
         const progs: Record<string, ExercisePreviousPerformanceData> = data.progressionData || data.previousPerformance || {};
@@ -236,6 +264,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
             exercisePrescriptionId?: string | null;
             exerciseName: string;
             movementPattern?: string | null;
+            substitutedFrom?: string | null;
             sortOrder: number;
             notes?: string | null;
             setExecutions: SetExecutionJson[];
@@ -244,6 +273,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
             exercisePrescriptionId: ex.exercisePrescriptionId || '',
             exerciseName: ex.exerciseName,
             movementPattern: ex.movementPattern || '',
+            substitutedFrom: ex.substitutedFrom || undefined,
             sortOrder: ex.sortOrder,
             notes: ex.notes || '',
             sets: ex.setExecutions.map((s: SetExecutionJson) => ({
@@ -432,34 +462,53 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     setExercises(updated);
   };
 
-  const handleSwapExerciseClick = async (exIdx: number) => {
-    if (swapCooldownTimeLeft > 0) return;
+  const handleSwapExerciseClick = async (exIdx: number, forceRefresh = false) => {
+    if (forceRefresh && swapCooldownTimeLeft > 0) return;
     const ex = exercises[exIdx];
+    const targetExerciseName = ex.substitutedFrom || ex.exerciseName;
+
     setSwappingIndex(exIdx);
     setLoadingSuggestions(true);
     setSwapError(null);
-    setSuggestions([]);
+    if (forceRefresh) {
+      setSuggestions([]);
+      setSwapFromCache(false);
+    }
 
     try {
       const response = await fetch('/api/coach/assistant', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
+        },
         body: JSON.stringify({
           mode: 'exercise_swap',
           payload: {
-            exerciseName: ex.exerciseName,
+            exerciseName: targetExerciseName,
             movementPattern: ex.movementPattern,
+            exercisePrescriptionId: ex.exercisePrescriptionId || undefined,
+            objective: activeMesocycleObjective || undefined,
+            forceRefresh,
           },
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Falha ao obter alternativas de substituição do Assistant Coach.');
+        const errJson = await response.json().catch(() => ({}));
+        throw new Error(
+          errJson.error || 'Falha ao obter alternativas de substituição do Assistant Coach.'
+        );
       }
 
       const data = await response.json();
-      if (data.success && data.output?.recommendations) {
+      if (data.success && Array.isArray(data.output?.recommendations)) {
         setSuggestions(data.output.recommendations);
+        setSwapFromCache(Boolean(data.fromCache));
+        setActiveSwapSuggestionId(data.swapSuggestionId || null);
+        if (!data.fromCache) {
+          setSwapCooldownTimeLeft(15);
+        }
       } else {
         throw new Error('Ocorreu um erro ou o formato retornado é inválido.');
       }
@@ -468,25 +517,129 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       setSwapError(err instanceof Error ? err.message : 'Erro ao processar substituição.');
     } finally {
       setLoadingSuggestions(false);
-      setSwapCooldownTimeLeft(30);
     }
   };
 
-  const applyExerciseSwap = (suggestedName: string) => {
+  const applyExerciseSwap = async (sug: SwapSuggestionItem, applyScope: 'today' | 'always') => {
     if (swappingIndex === null) return;
+    const targetIdx = swappingIndex;
     const updated = [...exercises];
-    const originalEx = updated[swappingIndex];
+    const originalEx = { ...updated[targetIdx] };
+    const canonicalOriginalName = originalEx.substitutedFrom || originalEx.exerciseName;
 
-    originalEx.substitutedFrom = originalEx.substitutedFrom || originalEx.exerciseName;
-    originalEx.exerciseName = suggestedName;
+    setApplyingSwapTitle(sug.title);
 
+    // Update current workout session state immediately
+    originalEx.substitutedFrom = canonicalOriginalName;
+    originalEx.exerciseName = sug.title;
+    updated[targetIdx] = originalEx;
     setExercises(updated);
-    setSwappingIndex(null);
-    setSuggestions([]);
-    setMessage({
-      type: 'success',
-      text: `Exercício substituído por "${suggestedName}" para o treino de hoje!`,
-    });
+
+    try {
+      const res = await fetch('/api/coach/assistant', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
+        },
+        body: JSON.stringify({
+          swapSuggestionId: activeSwapSuggestionId,
+          exercisePrescriptionId: originalEx.exercisePrescriptionId || null,
+          requestedExercise: canonicalOriginalName,
+          selectedTitle: sug.title,
+          selectedReason: sug.reason,
+          movementPattern: originalEx.movementPattern,
+          objective: activeMesocycleObjective || undefined,
+          applyScope,
+          recommendations: suggestions,
+        }),
+      });
+
+      if (res.ok) {
+        const patchData = await res.json();
+
+        // Update progression badge & prefill load if historical performance exists for the replacement exercise
+        if (originalEx.exercisePrescriptionId && patchData.replacementProgression) {
+          setProgressionData((prev) => ({
+            ...prev,
+            [originalEx.exercisePrescriptionId]: patchData.replacementProgression,
+          }));
+          if (patchData.replacementPreviousPerformanceText) {
+            setPreviousPerformances((prev) => ({
+              ...prev,
+              [originalEx.exercisePrescriptionId]: patchData.replacementPreviousPerformanceText,
+            }));
+          }
+          const suggestedKg = patchData.replacementProgression.suggestedLoadKg;
+          if (suggestedKg > 0) {
+            setExercises((prevExs) => {
+              const nextExs = [...prevExs];
+              const target = nextExs[targetIdx];
+              if (target) {
+                nextExs[targetIdx] = {
+                  ...target,
+                  sets: target.sets.map((s) => ({
+                    ...s,
+                    loadKg: s.reps === '' ? String(suggestedKg) : s.loadKg,
+                  })),
+                };
+              }
+              return nextExs;
+            });
+          }
+        }
+
+        // If permanent ('always'), update templates and selectedTemplate in state
+        if (applyScope === 'always' && originalEx.exercisePrescriptionId) {
+          const updatedIds: string[] = Array.isArray(patchData.updatedPrescriptionIds)
+            ? patchData.updatedPrescriptionIds
+            : [originalEx.exercisePrescriptionId];
+
+          const updateTemplatePrescriptions = (tmpl: WorkoutDayTemplate): WorkoutDayTemplate => ({
+            ...tmpl,
+            prescriptions: tmpl.prescriptions.map((p) =>
+              updatedIds.includes(p.id)
+                ? {
+                    ...p,
+                    exerciseName: sug.title,
+                    substitutionHints: {
+                      ...(p.substitutionHints || {}),
+                      objective: activeMesocycleObjective,
+                      originalExerciseName:
+                        p.substitutionHints?.originalExerciseName || canonicalOriginalName,
+                      permanentReplacement: {
+                        fromExercise:
+                          p.substitutionHints?.originalExerciseName || canonicalOriginalName,
+                        toExercise: sug.title,
+                        objective: activeMesocycleObjective,
+                        updatedAt: new Date().toISOString(),
+                      },
+                      savedSuggestions: patchData.recommendations || suggestions,
+                    },
+                  }
+                : p
+            ),
+          });
+
+          setTemplates((prev) => prev.map(updateTemplatePrescriptions));
+          setSelectedTemplate((prev) => (prev ? updateTemplatePrescriptions(prev) : null));
+        }
+      }
+    } catch (err) {
+      console.warn('Não foi possível sincronizar preferência de substituição:', err);
+    } finally {
+      setApplyingSwapTitle(null);
+      setSwappingIndex(null);
+      setSuggestions([]);
+      setSwapFromCache(false);
+      setMessage({
+        type: 'success',
+        text:
+          applyScope === 'always'
+            ? `Exercício substituído sempre por "${sug.title}"! Seu plano atual foi atualizado e a IA principal foi informada.`
+            : `Exercício substituído hoje por "${sug.title}" (opções salvas para as próximas vezes)!`,
+      });
+    }
   };
 
   const handleSaveWellnessOnly = async () => {
@@ -1001,16 +1154,34 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                               Detalhes da última sessão: {previousPerformances[prescription.id]}
                             </span>
                           )}
+                          {ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName && (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded-md mt-1.5 font-medium">
+                              <Repeat className="h-2.5 w-2.5" />
+                              <span>Substituindo hoje: {ex.substitutedFrom}</span>
+                            </span>
+                          )}
+                          {(!ex.substitutedFrom || ex.substitutedFrom === ex.exerciseName) &&
+                            prescription?.substitutionHints?.permanentReplacement && (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md mt-1.5 font-medium">
+                                <CheckCircle2 className="h-2.5 w-2.5" />
+                                <span>
+                                  Substituto fixo (era {prescription.substitutionHints.permanentReplacement.fromExercise})
+                                </span>
+                              </span>
+                            )}
                         </div>
 
                         <button
                           type="button"
-                          disabled={swapCooldownTimeLeft > 0}
-                          onClick={() => handleSwapExerciseClick(exIdx)}
-                          className="flex items-center gap-1 text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 transition px-2.5 py-1.5 rounded-lg font-bold w-fit cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                          onClick={() => handleSwapExerciseClick(exIdx, false)}
+                          className="flex items-center gap-1 text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 transition px-2.5 py-1.5 rounded-lg font-bold w-fit cursor-pointer"
                         >
                           <Sparkles className="h-3 w-3" />
-                          <span>{swapCooldownTimeLeft > 0 ? `Aguarde ${swapCooldownTimeLeft}s` : 'Substituir Exercício'}</span>
+                          <span>
+                            {prescription?.substitutionHints?.savedSuggestions?.length
+                              ? 'Substituir Exercício (Salvo)'
+                              : 'Substituir Exercício'}
+                          </span>
                         </button>
                       </div>
 
@@ -1267,27 +1438,56 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8"
           onClick={() => {
+            if (applyingSwapTitle) return;
             setSwappingIndex(null);
             setSuggestions([]);
             setSwapError(null);
+            setSwapFromCache(false);
           }}
         >
           <div 
             className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div>
-              <div className="flex items-center gap-2 text-cyan-400">
-                <Sparkles className="h-5 w-5 animate-pulse" />
-                <span className="text-xs uppercase tracking-[0.2em] font-bold">Assistant Coach AI</span>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2 text-cyan-400">
+                  <Sparkles className="h-5 w-5 animate-pulse" />
+                  <span className="text-xs uppercase tracking-[0.2em] font-bold">Assistant Coach AI</span>
+                </div>
+                <h3 className="text-lg font-bold text-slate-100 mt-2">
+                  Substituir:{' '}
+                  <span className="text-indigo-300">
+                    &ldquo;{exercises[swappingIndex]?.substitutedFrom || exercises[swappingIndex]?.exerciseName}&rdquo;
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  {activeMesocycleObjective
+                    ? `Objetivo atual: ${activeMesocycleObjective}`
+                    : 'Alternativas equivalentes de mesmo padrão biomecânico e setup rápido.'}
+                </p>
               </div>
-              <h3 className="text-lg font-bold text-slate-100 mt-2">
-                Substituir: <span className="text-indigo-300">&ldquo;{exercises[swappingIndex]?.exerciseName}&rdquo;</span>
-              </h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Buscando alternativas rápidas de mesmo padrão biomecânico para respeitar a duração de 1 hora de treino.
-              </p>
+              {swapFromCache && !loadingSuggestions && (
+                <button
+                  type="button"
+                  disabled={swapCooldownTimeLeft > 0}
+                  onClick={() => handleSwapExerciseClick(swappingIndex, true)}
+                  className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 px-3 py-1.5 rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                  title="Solicitar novas sugestões à IA"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  <span>{swapCooldownTimeLeft > 0 ? `Aguarde ${swapCooldownTimeLeft}s` : 'Novas opções IA'}</span>
+                </button>
+              )}
             </div>
+
+            {swapFromCache && !loadingSuggestions && !swapError && (
+              <div className="bg-emerald-500/10 border border-emerald-500/25 px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2">
+                <p className="text-xs text-emerald-300 font-medium">
+                  ⚡ Opções salvas carregadas instantaneamente para este exercício e objetivo.
+                </p>
+              </div>
+            )}
 
             {loadingSuggestions ? (
               <div className="flex flex-col items-center justify-center py-8 space-y-3">
@@ -1295,40 +1495,99 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                 <span className="text-xs text-slate-400">Analisando padrão biomecânico e setups rápidos...</span>
               </div>
             ) : swapError ? (
-              <div className="bg-rose-500/10 border border-rose-500/30 p-4 rounded-xl text-rose-350 text-xs">
-                {swapError}
+              <div className="bg-rose-500/10 border border-rose-500/30 p-4 rounded-xl text-rose-300 text-xs space-y-2">
+                <p>{swapError}</p>
+                <button
+                  type="button"
+                  onClick={() => handleSwapExerciseClick(swappingIndex, true)}
+                  className="text-xs font-bold text-cyan-300 underline cursor-pointer"
+                >
+                  Tentar novamente
+                </button>
               </div>
             ) : (
-              <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
+              <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
                 {suggestions.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-4">Nenhuma sugestão de substituto encontrada.</p>
                 ) : (
-                  suggestions.map((sug, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      onClick={() => applyExerciseSwap(sug.title)}
-                      className="w-full text-left bg-slate-950/45 border border-slate-800 hover:border-indigo-500/50 p-4 rounded-xl transition cursor-pointer hover:bg-slate-900/50 group"
-                    >
-                      <h4 className="text-sm font-bold text-slate-200 group-hover:text-indigo-300 transition">
-                        {sug.title}
-                      </h4>
-                      <p className="text-xs text-slate-450 mt-1.5 leading-relaxed">
-                        {sug.reason}
-                      </p>
-                    </button>
-                  ))
+                  suggestions.map((sug, idx) => {
+                    const usedCount = typeof sug.metadata?.selectedCount === 'number' ? sug.metadata.selectedCount : 0;
+                    const isPerm = Boolean(sug.metadata?.isPermanent);
+                    const isApplyingThis = applyingSwapTitle === sug.title;
+
+                    return (
+                      <div
+                        key={idx}
+                        className={`w-full text-left bg-slate-950/60 border ${
+                          isPerm
+                            ? 'border-emerald-500/50'
+                            : usedCount > 0
+                              ? 'border-indigo-500/40'
+                              : 'border-slate-800'
+                        } p-4 rounded-2xl transition space-y-3`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <h4 className="text-sm font-bold text-slate-100">
+                              {sug.title}
+                            </h4>
+                            <div className="flex items-center gap-1.5">
+                              {isPerm && (
+                                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
+                                  ⭐ Substituto Fixo
+                                </span>
+                              )}
+                              {usedCount > 0 && (
+                                <span className="text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded-full">
+                                  ✓ Escolhido {usedCount}x
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                            {sug.reason}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-2 border-t border-slate-800/80">
+                          <button
+                            type="button"
+                            disabled={Boolean(applyingSwapTitle)}
+                            onClick={() => void applyExerciseSwap(sug, 'today')}
+                            className="flex-1 py-2 px-3 rounded-xl bg-indigo-500/15 hover:bg-indigo-500/25 border border-indigo-500/30 text-indigo-200 text-xs font-bold transition cursor-pointer disabled:opacity-50"
+                          >
+                            {isApplyingThis ? 'Aplicando...' : 'Substituir só hoje'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(applyingSwapTitle)}
+                            onClick={() => void applyExerciseSwap(sug, 'always')}
+                            className="flex-1 py-2 px-3 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                            title="Atualiza a ficha deste mesociclo e avisa o Master Coach para os próximos planos"
+                          >
+                            <Repeat className="h-3.5 w-3.5" />
+                            <span>Substituir sempre</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
             )}
 
-            <div className="flex justify-end pt-2 border-t border-slate-800">
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <span className="text-[11px] text-slate-500">
+                &ldquo;Substituir sempre&rdquo; atualiza sua ficha e ensina a IA principal.
+              </span>
               <button
                 type="button"
+                disabled={Boolean(applyingSwapTitle)}
                 onClick={() => {
                   setSwappingIndex(null);
                   setSuggestions([]);
                   setSwapError(null);
+                  setSwapFromCache(false);
                 }}
                 className="bg-slate-950 text-slate-400 border border-slate-800 hover:bg-slate-900 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer"
               >

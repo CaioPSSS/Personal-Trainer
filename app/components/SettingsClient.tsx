@@ -226,9 +226,18 @@ export default function SettingsClient({
     if (!w || !h) return null;
     let age = 30;
     if (birthDate) {
-      const birthYear = parseInt(birthDate.slice(0, 4), 10);
-      if (!isNaN(birthYear) && birthYear >= 1920 && birthYear <= 2026) {
-        age = Math.max(16, 2026 - birthYear);
+      const [by, bm, bd] = birthDate.split('-').map(Number);
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      if (!isNaN(by) && by >= 1920 && by <= currentYear) {
+        let computedAge = currentYear - by;
+        if (!isNaN(bm) && !isNaN(bd)) {
+          const mDiff = (now.getMonth() + 1) - bm;
+          if (mDiff < 0 || (mDiff === 0 && now.getDate() < bd)) {
+            computedAge--;
+          }
+        }
+        age = Math.max(16, computedAge);
       }
     }
     // Mifflin-St Jeor

@@ -10,6 +10,7 @@ import {
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts } from '@/lib/ai/prompts';
+import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { Prisma } from '@prisma/client';
 
 export async function POST(request: NextRequest) {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle] = await Promise.all([
+    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle, swapSuggestions] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -61,13 +62,24 @@ export async function POST(request: NextRequest) {
           },
         },
       }),
+      prisma.exerciseSwapSuggestion.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 60,
+      }),
     ]);
+
+    const exerciseSubstitutionSummary = buildExerciseSubstitutionSummary({
+      swapSuggestions,
+      activeMesocycle,
+      recentWorkouts,
+    });
 
     const prompts = buildDataAnalystPrompts({
       athleteProfile,
       activeMesocycle,
       recentWorkouts,
       recentWellness,
+      exerciseSubstitutionSummary,
     });
 
     const result = await generateStructuredOutput<DataAnalystReport>({
@@ -96,6 +108,8 @@ export async function POST(request: NextRequest) {
           contextSizes: {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
+            permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
+            frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
           },
         },
         responsePayload: result.data as unknown as Prisma.InputJsonValue,

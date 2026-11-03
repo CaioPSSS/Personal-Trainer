@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { isAuthorized } from '@/lib/auth';
+import { todayISO, shiftISODate } from '@/lib/dates';
 
 export const maxDuration = 300;
 import {
@@ -13,10 +14,10 @@ import {
 } from '@/lib/ai/contracts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
+import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
 import { scheduleMesocycleWorkouts } from '@/lib/scheduling/strength-scheduler';
 import { Prisma } from '@prisma/client';
-
 
 export async function POST(request: NextRequest) {
   if (!isAuthorized(request)) {
@@ -36,11 +37,17 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const fourteenDaysAgo = new Date();
-    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
-    const fourteenDaysAgoStr = fourteenDaysAgo.toISOString().split('T')[0];
+    const fourteenDaysAgoStr = shiftISODate(todayISO(), -14);
 
-    const [athleteProfile, recentWorkouts, recentWellness, previousBrain, activeMesocycle, recentCrossTraining] = await Promise.all([
+    const [
+      athleteProfile,
+      recentWorkouts,
+      recentWellness,
+      previousBrain,
+      activeMesocycle,
+      recentCrossTraining,
+      swapSuggestions,
+    ] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -82,7 +89,17 @@ export async function POST(request: NextRequest) {
         },
         orderBy: { date: 'desc' },
       }),
+      prisma.exerciseSwapSuggestion.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 60,
+      }),
     ]);
+
+    const exerciseSubstitutionSummary = buildExerciseSubstitutionSummary({
+      swapSuggestions,
+      activeMesocycle,
+      recentWorkouts,
+    });
 
     let analystData: DataAnalystReport;
     let analystRunLogId: string = 'bypass';
@@ -90,6 +107,9 @@ export async function POST(request: NextRequest) {
     let analystAttempts = 0;
 
     if (recentWorkouts.length < 3) {
+      const permanentNotes = exerciseSubstitutionSummary.permanentSwaps.map(
+        (s) => `Respect permanent substitution: use "${s.replacementExercise}" instead of "${s.originalExercise}"`
+      );
       analystData = {
         executiveSummary: "Baseline phase. No prior data available. Design an introductory hypertrophy block based solely on athlete profile.",
         exercisePerformance: [],
@@ -102,6 +122,7 @@ export async function POST(request: NextRequest) {
           'Establish baseline progressive overload',
           'Focus on movement pattern mastery',
           'Rely entirely on Athlete Profile for constraints',
+          ...permanentNotes,
         ],
       };
     } else {
@@ -110,6 +131,7 @@ export async function POST(request: NextRequest) {
         activeMesocycle,
         recentWorkouts,
         recentWellness,
+        exerciseSubstitutionSummary,
       });
 
       const analystResult = await generateStructuredOutput<DataAnalystReport>({
@@ -138,6 +160,8 @@ export async function POST(request: NextRequest) {
             contextSizes: {
               workouts: recentWorkouts.length,
               wellness: recentWellness.length,
+              permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
+              frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
             },
           } as unknown as Prisma.InputJsonValue,
           responsePayload: analystResult.data as unknown as Prisma.InputJsonValue,
@@ -157,6 +181,7 @@ export async function POST(request: NextRequest) {
       recentWorkouts,
       recentWellness,
       crossTrainingSummary: recentCrossTraining,
+      exerciseSubstitutionSummary,
     });
 
     const result = await generateStructuredOutput<MasterPlanOutput>({
@@ -187,6 +212,8 @@ export async function POST(request: NextRequest) {
           contextSizes: {
             workouts: recentWorkouts.length,
             wellness: recentWellness.length,
+            permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
+            frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
           },
         } as unknown as Prisma.InputJsonValue,
         responsePayload: result.data as unknown as Prisma.InputJsonValue,

@@ -1,6 +1,12 @@
 import { prisma } from '../prisma';
 import { MasterPlanOutput } from '../ai/contracts';
 import { Prisma } from '@prisma/client';
+import { todayISO, shiftISODate } from '../dates';
+import {
+  findSavedSwapSuggestions,
+  parseRecommendationsJson,
+  slugifyExerciseKey,
+} from '../ai/exercise-swap';
 
 /**
  * Saves a generated hypertrophy mesocycle plan structure to the PostgreSQL database,
@@ -12,6 +18,12 @@ export async function saveMasterPlanToDb(
   aiRunLogId?: string
 ) {
   return await prisma.$transaction(async (tx) => {
+    // Fetch recent swap suggestions to carry over saved options & enforce permanent swaps
+    const swapHistory = await tx.exerciseSwapSuggestion.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 60,
+    });
+
     // 1. Archive other active mesocycles for this athlete
     await tx.mesocyclePlan.updateMany({
       where: {
@@ -23,32 +35,33 @@ export async function saveMasterPlanToDb(
       },
     });
 
-    // Clean up uncompleted planned strength calendar events from previous plans
+    const startDate = todayISO();
+    const endDate = shiftISODate(startDate, plan.mesocycle.durationWeeks * 7);
+    const planObjective = plan.mesocycle.objective;
+
+    // Clean up future uncompleted planned strength calendar events from previous plans (never delete past history)
     await tx.calendarEvent.deleteMany({
       where: {
         athleteProfileId,
         eventType: 'strength',
         status: 'planned',
+        date: { gte: startDate },
       },
     });
-
-    const today = new Date();
-    const startDate = today.toISOString().split('T')[0];
-    const endDate = new Date(today.getTime() + plan.mesocycle.durationWeeks * 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
     // 2. Create the new MesocyclePlan and all dependent entities
     const createdPlan = await tx.mesocyclePlan.create({
       data: {
         athleteProfileId,
         title: plan.mesocycle.title,
-        objective: plan.mesocycle.objective,
+        objective: planObjective,
         split: plan.mesocycle.split,
         durationWeeks: plan.mesocycle.durationWeeks,
         targetSessionMinutes: plan.mesocycle.targetSessionMinutes,
         startDate,
         endDate,
         status: 'active',
-        rawPlan: plan as unknown as Prisma.InputJsonValue, // Raw JSON payload representation
+        rawPlan: plan as unknown as Prisma.InputJsonValue,
         createdByAiRunId: aiRunLogId,
         weeks: {
           create: plan.mesocycle.weeks.map((week) => ({
@@ -63,19 +76,58 @@ export async function saveMasterPlanToDb(
             label: day.label,
             estimatedDurationMin: day.estimatedDurationMin,
             prescriptions: {
-              create: day.exercises.map((exercise, index) => ({
-                exerciseKey: exercise.exerciseKey,
-                exerciseName: exercise.exerciseName,
-                movementPattern: exercise.movementPattern,
-                sortOrder: index + 1,
-                targetSets: exercise.targetSets,
-                targetRepMin: exercise.targetRepMin,
-                targetRepMax: exercise.targetRepMax,
-                targetRpeMin: exercise.targetRpeMin,
-                targetRpeMax: exercise.targetRpeMax,
-                restSeconds: exercise.restSeconds,
-                advancedTechnique: exercise.advancedTechnique,
-              })),
+              create: day.exercises.map((exercise, index) => {
+                const savedMatch = findSavedSwapSuggestions({
+                  exerciseName: exercise.exerciseName,
+                  objective: planObjective,
+                  swapHistory,
+                });
+
+                const permanentRec = savedMatch?.recommendations.find(
+                  (rec) => Boolean(rec.metadata?.isPermanent)
+                );
+
+                const effectiveExerciseName = permanentRec
+                  ? permanentRec.title
+                  : exercise.exerciseName;
+                const effectiveExerciseKey = permanentRec
+                  ? slugifyExerciseKey(permanentRec.title)
+                  : exercise.exerciseKey;
+
+                const substitutionHints = savedMatch
+                  ? ({
+                      objective: planObjective,
+                      originalExerciseName: exercise.exerciseName,
+                      permanentReplacement: permanentRec
+                        ? {
+                            fromExercise: exercise.exerciseName,
+                            toExercise: permanentRec.title,
+                            objective: planObjective,
+                            updatedAt:
+                              typeof permanentRec.metadata?.lastSelectedAt === 'string'
+                                ? permanentRec.metadata.lastSelectedAt
+                                : new Date().toISOString(),
+                          }
+                        : null,
+                      savedSuggestions: parseRecommendationsJson(savedMatch.recommendations),
+                    } as unknown as Prisma.InputJsonValue)
+                  : Prisma.DbNull;
+
+                return {
+                  exerciseKey: effectiveExerciseKey,
+                  exerciseName: effectiveExerciseName,
+                  movementPattern: exercise.movementPattern,
+                  sortOrder: index + 1,
+                  targetSets: exercise.targetSets,
+                  targetRepMin: exercise.targetRepMin,
+                  targetRepMax: exercise.targetRepMax,
+                  targetRpeMin: exercise.targetRpeMin,
+                  targetRpeMax: exercise.targetRpeMax,
+                  restSeconds: exercise.restSeconds,
+                  advancedTechnique: exercise.advancedTechnique,
+                  substitutionHints,
+                };
+              }),
             },
           })),
         },

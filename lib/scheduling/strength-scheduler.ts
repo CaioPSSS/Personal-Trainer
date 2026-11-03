@@ -555,6 +555,7 @@ export async function rebalanceWeekSchedule(
   // Separate fixed events from planned strength events
   const fixedScheduleEvents: CalendarEventScheduleContext[] = [];
   const plannedStrengthEvents: typeof weekEvents = [];
+  const nonPlannedEvents: Array<{ ev: (typeof weekEvents)[number]; dayIndex: number }> = [];
 
   for (const ev of weekEvents) {
     const evDate = new Date(`${ev.date}T00:00:00`);
@@ -567,51 +568,78 @@ export async function rebalanceWeekSchedule(
     if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
       plannedStrengthEvents.push(ev);
     } else {
-      // Completed strength, running, cross-training, or past planned events (< today)
-      let runningSessionType: string | undefined;
-      let muscleGroups: string[] | undefined;
-      let sessionRpe: number | null | undefined;
-
-      if (ev.eventType === 'running' && ev.referenceId) {
-        if (ev.referenceModel === 'RunningExecution') {
-          const runExec = await prisma.runningExecution.findUnique({
-            where: { id: ev.referenceId },
-            select: { runningSession: { select: { sessionType: true } } },
-          });
-          runningSessionType = runExec?.runningSession?.sessionType;
-        } else {
-          const runSession = await prisma.runningSession.findUnique({
-            where: { id: ev.referenceId },
-            select: { sessionType: true },
-          });
-          runningSessionType = runSession?.sessionType;
-        }
-      }
-
-      if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
-        const ct = await prisma.crossTrainingActivity.findUnique({
-          where: { id: ev.referenceId },
-          select: { muscleGroups: true, sessionRpe: true },
-        });
-        if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
-          muscleGroups = ct.muscleGroups as string[];
-        }
-        sessionRpe = ct?.sessionRpe;
-      }
-
-      fixedScheduleEvents.push({
-        id: ev.id,
-        date: ev.date,
-        dayIndex,
-        eventType: ev.eventType,
-        status: ev.status,
-        title: ev.title,
-        referenceModel: ev.referenceModel,
-        runningSessionType,
-        muscleGroups,
-        sessionRpe,
-      });
+      nonPlannedEvents.push({ ev, dayIndex });
     }
+  }
+
+  // Batch-fetch referenced RunningExecution, RunningSession, and CrossTrainingActivity records (eliminates N+1)
+  const runExecIds = nonPlannedEvents
+    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel === 'RunningExecution')
+    .map(({ ev }) => ev.referenceId!);
+  const runSessionIds = nonPlannedEvents
+    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel !== 'RunningExecution')
+    .map(({ ev }) => ev.referenceId!);
+  const ctIds = nonPlannedEvents
+    .filter(({ ev }) => ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId)
+    .map(({ ev }) => ev.referenceId!);
+
+  const [runExecs, runSessions, ctActivities] = await Promise.all([
+    runExecIds.length > 0
+      ? prisma.runningExecution.findMany({
+          where: { id: { in: runExecIds } },
+          select: { id: true, runningSession: { select: { sessionType: true } } },
+        })
+      : Promise.resolve([]),
+    runSessionIds.length > 0
+      ? prisma.runningSession.findMany({
+          where: { id: { in: runSessionIds } },
+          select: { id: true, sessionType: true },
+        })
+      : Promise.resolve([]),
+    ctIds.length > 0
+      ? prisma.crossTrainingActivity.findMany({
+          where: { id: { in: ctIds } },
+          select: { id: true, muscleGroups: true, sessionRpe: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const runExecMap = new Map(runExecs.map((r) => [r.id, r.runningSession?.sessionType]));
+  const runSessionMap = new Map(runSessions.map((s) => [s.id, s.sessionType]));
+  const ctMap = new Map(ctActivities.map((c) => [c.id, c]));
+
+  for (const { ev, dayIndex } of nonPlannedEvents) {
+    let runningSessionType: string | undefined;
+    let muscleGroups: string[] | undefined;
+    let sessionRpe: number | null | undefined;
+
+    if (ev.eventType === 'running' && ev.referenceId) {
+      runningSessionType =
+        ev.referenceModel === 'RunningExecution'
+          ? runExecMap.get(ev.referenceId)
+          : runSessionMap.get(ev.referenceId);
+    }
+
+    if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
+      const ct = ctMap.get(ev.referenceId);
+      if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
+        muscleGroups = ct.muscleGroups as string[];
+      }
+      sessionRpe = ct?.sessionRpe;
+    }
+
+    fixedScheduleEvents.push({
+      id: ev.id,
+      date: ev.date,
+      dayIndex,
+      eventType: ev.eventType,
+      status: ev.status,
+      title: ev.title,
+      referenceModel: ev.referenceModel,
+      runningSessionType,
+      muscleGroups,
+      sessionRpe,
+    });
   }
 
   // Filter available days: only days >= today can receive workouts
@@ -629,10 +657,21 @@ export async function rebalanceWeekSchedule(
     };
   }
 
-  // Filter planned workouts if athlete has a target lower than planned events count
-  const targetCount = weeklyWorkoutsTarget
-    ? Math.min(weeklyWorkoutsTarget, plannedStrengthEvents.length)
+  // Count already completed strength workouts in the week so total weekly target is respected
+  const completedStrengthInWeek = fixedScheduleEvents.filter(
+    (e) => e.eventType === 'strength' && e.status === 'completed'
+  ).length;
+  const remainingTargetForWeek = weeklyWorkoutsTarget
+    ? Math.max(0, weeklyWorkoutsTarget - completedStrengthInWeek)
     : plannedStrengthEvents.length;
+
+  const targetCount = Math.min(remainingTargetForWeek, plannedStrengthEvents.length);
+  const excessEvents = plannedStrengthEvents.slice(targetCount);
+  if (excessEvents.length > 0) {
+    await prisma.calendarEvent.deleteMany({
+      where: { id: { in: excessEvents.map((e) => e.id) } },
+    });
+  }
 
   const workoutsToSchedule: StrengthWorkoutToSchedule[] = plannedStrengthEvents
     .slice(0, targetCount)
@@ -779,9 +818,12 @@ export async function scheduleMesocycleWorkouts(
       };
     });
 
-    // Pick templates for this week (respecting targetWorkoutsPerWeek)
+    // Pick templates for this week (rotating cyclically across weeks when targetWorkoutsPerWeek < dayTemplates.length)
     const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
-    const templatesForWeek = dayTemplates.slice(0, countToSchedule);
+    const templatesForWeek = Array.from({ length: countToSchedule }, (_, i) => {
+      const templateIdx = (weekIndex * countToSchedule + i) % dayTemplates.length;
+      return dayTemplates[templateIdx];
+    });
 
     const workoutsToSchedule: StrengthWorkoutToSchedule[] = templatesForWeek.map((t) => ({
       id: t.id,
@@ -942,6 +984,11 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
 }> {
   const prisma = await getPrisma();
   const athleteProfileId = params.athleteProfileId || 'singleton';
+  const today = todayISO();
+
+  if (params.date < today) {
+    throw new Error('Não é permitido reagendar ou selecionar templates para datas passadas.');
+  }
 
   // 1. Fetch active mesocycle plan and its templates
   const activePlan = await prisma.mesocyclePlan.findFirst({
@@ -1034,59 +1081,88 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
 
   const fixedScheduleEvents: CalendarEventScheduleContext[] = [];
   const existingPlannedStrengthEvents: typeof weekEvents = [];
+  const nonPlannedEvents: Array<{ ev: (typeof weekEvents)[number]; dayIndex: number }> = [];
 
   for (const ev of weekEvents) {
     const evDate = new Date(`${ev.date}T00:00:00`);
     const day = evDate.getDay();
     const dayIndex = day === 0 ? 6 : day - 1;
 
-    if (ev.eventType === 'strength' && ev.status === 'planned') {
+    // STRICT FORWARD-ONLY RULE: only future planned strength events (>= today) can be moved
+    if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
       existingPlannedStrengthEvents.push(ev);
     } else {
-      let runningSessionType: string | undefined;
-      let muscleGroups: string[] | undefined;
-      let sessionRpe: number | null | undefined;
-
-      if (ev.eventType === 'running' && ev.referenceId) {
-        if (ev.referenceModel === 'RunningExecution') {
-          const runExec = await prisma.runningExecution.findUnique({
-            where: { id: ev.referenceId },
-            select: { runningSession: { select: { sessionType: true } } },
-          });
-          runningSessionType = runExec?.runningSession?.sessionType;
-        } else {
-          const runSession = await prisma.runningSession.findUnique({
-            where: { id: ev.referenceId },
-            select: { sessionType: true },
-          });
-          runningSessionType = runSession?.sessionType;
-        }
-      }
-
-      if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
-        const ct = await prisma.crossTrainingActivity.findUnique({
-          where: { id: ev.referenceId },
-          select: { muscleGroups: true, sessionRpe: true },
-        });
-        if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
-          muscleGroups = ct.muscleGroups as string[];
-        }
-        sessionRpe = ct?.sessionRpe;
-      }
-
-      fixedScheduleEvents.push({
-        id: ev.id,
-        date: ev.date,
-        dayIndex,
-        eventType: ev.eventType,
-        status: ev.status,
-        title: ev.title,
-        referenceModel: ev.referenceModel,
-        runningSessionType,
-        muscleGroups,
-        sessionRpe,
-      });
+      nonPlannedEvents.push({ ev, dayIndex });
     }
+  }
+
+  const runExecIds = nonPlannedEvents
+    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel === 'RunningExecution')
+    .map(({ ev }) => ev.referenceId!);
+  const runSessionIds = nonPlannedEvents
+    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel !== 'RunningExecution')
+    .map(({ ev }) => ev.referenceId!);
+  const ctIds = nonPlannedEvents
+    .filter(({ ev }) => ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId)
+    .map(({ ev }) => ev.referenceId!);
+
+  const [runExecs, runSessions, ctActivities] = await Promise.all([
+    runExecIds.length > 0
+      ? prisma.runningExecution.findMany({
+          where: { id: { in: runExecIds } },
+          select: { id: true, runningSession: { select: { sessionType: true } } },
+        })
+      : Promise.resolve([]),
+    runSessionIds.length > 0
+      ? prisma.runningSession.findMany({
+          where: { id: { in: runSessionIds } },
+          select: { id: true, sessionType: true },
+        })
+      : Promise.resolve([]),
+    ctIds.length > 0
+      ? prisma.crossTrainingActivity.findMany({
+          where: { id: { in: ctIds } },
+          select: { id: true, muscleGroups: true, sessionRpe: true },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const runExecMap = new Map(runExecs.map((r) => [r.id, r.runningSession?.sessionType]));
+  const runSessionMap = new Map(runSessions.map((s) => [s.id, s.sessionType]));
+  const ctMap = new Map(ctActivities.map((c) => [c.id, c]));
+
+  for (const { ev, dayIndex } of nonPlannedEvents) {
+    let runningSessionType: string | undefined;
+    let muscleGroups: string[] | undefined;
+    let sessionRpe: number | null | undefined;
+
+    if (ev.eventType === 'running' && ev.referenceId) {
+      runningSessionType =
+        ev.referenceModel === 'RunningExecution'
+          ? runExecMap.get(ev.referenceId)
+          : runSessionMap.get(ev.referenceId);
+    }
+
+    if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
+      const ct = ctMap.get(ev.referenceId);
+      if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
+        muscleGroups = ct.muscleGroups as string[];
+      }
+      sessionRpe = ct?.sessionRpe;
+    }
+
+    fixedScheduleEvents.push({
+      id: ev.id,
+      date: ev.date,
+      dayIndex,
+      eventType: ev.eventType,
+      status: ev.status,
+      title: ev.title,
+      referenceModel: ev.referenceModel,
+      runningSessionType,
+      muscleGroups,
+      sessionRpe,
+    });
   }
 
   // Also add the selected workout as a fixed strength event on params.date!
@@ -1101,28 +1177,39 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
   });
 
   // 6. Determine remaining templates to schedule in the week following the AI split order
+  const pastOrCompletedStrengthCount = nonPlannedEvents.filter(
+    ({ ev }) => ev.eventType === 'strength' && (ev.status === 'completed' || ev.date < today)
+  ).length;
   const totalCountForWeek = Math.min(weeklyWorkoutsTarget, activePlan.workoutDays.length);
-  const remainingCount = totalCountForWeek - 1;
+  const remainingCount = Math.max(0, totalCountForWeek - 1 - pastOrCompletedStrengthCount);
 
   let rebalancedCount = 0;
 
-  if (remainingCount > 0) {
+  // Candidate days for remaining workouts: availableDays excluding targetDayIndex AND strictly >= today
+  const forwardAvailableDays = availableDays.filter(
+    (d) => d !== targetDayIndex && shiftISODate(startStr, d) >= today
+  );
+  const allForwardDays = [0, 1, 2, 3, 4, 5, 6].filter(
+    (d) => d !== targetDayIndex && shiftISODate(startStr, d) >= today
+  );
+
+  if (remainingCount > 0 && allForwardDays.length > 0) {
     const allTemplates = activePlan.workoutDays;
     const numTemplates = allTemplates.length;
     const chosenIndex = allTemplates.findIndex((t) => t.id === chosenTemplate.id);
 
+    const cappedRemaining = Math.min(remainingCount, allForwardDays.length);
     // Sequence the remaining templates in cyclic split order: next in line after chosenTemplate
     const remainingTemplates: typeof allTemplates = [];
-    for (let step = 1; step <= remainingCount; step++) {
+    for (let step = 1; step <= cappedRemaining; step++) {
       const nextIdx = (chosenIndex + step) % numTemplates;
       remainingTemplates.push(allTemplates[nextIdx]);
     }
 
-    // Candidate days for remaining workouts: availableDays excluding targetDayIndex
-    const candidateDays = availableDays.filter((d) => d !== targetDayIndex);
-    const validCandidateDays = candidateDays.length >= remainingTemplates.length
-      ? candidateDays
-      : [0, 1, 2, 3, 4, 5, 6].filter((d) => d !== targetDayIndex);
+    const validCandidateDays =
+      forwardAvailableDays.length >= remainingTemplates.length
+        ? forwardAvailableDays
+        : allForwardDays;
 
     const workoutsToSchedule: StrengthWorkoutToSchedule[] = remainingTemplates.map((t) => ({
       id: t.id,

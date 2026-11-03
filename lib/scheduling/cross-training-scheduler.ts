@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { todayISO, shiftISODate, dayOfWeekName } from '@/lib/dates';
+import { todayISO, shiftISODate, dayOfWeekName, isISODate } from '@/lib/dates';
 import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
 
 export interface RecurringCrossTrainingRule {
@@ -68,6 +68,21 @@ export const SPORT_COLOR_MAP: Record<string, string> = {
 };
 
 /**
+ * Extracts a valid ISO date ("YYYY-MM-DD") from `originalDate`, ignoring strategy sentinels
+ * like "skip_only" or extracting the trailing date from "skip_only::2026-10-26".
+ */
+export function extractOriginalISODate(originalDate?: string | null): string | null {
+  if (!originalDate) return null;
+  if (isISODate(originalDate as unknown)) return originalDate;
+  if (originalDate.includes('::')) {
+    const parts = originalDate.split('::');
+    const candidate = parts[parts.length - 1];
+    if (isISODate(candidate as unknown)) return candidate;
+  }
+  return null;
+}
+
+/**
  * Determines whether a planned cross-training event should be pruned.
  * If the event was individually moved to another date by the user (originalDate !== date),
  * it is an intentional individual override and must NEVER be pruned.
@@ -76,8 +91,9 @@ export function shouldPruneRecurringEvent(
   event: { date: string; eventType: string; originalDate?: string | null },
   rules: RecurringCrossTrainingRule[]
 ): boolean {
+  const originIso = extractOriginalISODate(event.originalDate);
   // If the user individually moved this occurrence to another date, NEVER prune it!
-  if (event.originalDate && event.originalDate !== event.date) {
+  if (originIso && originIso !== event.date) {
     return false;
   }
 
@@ -104,11 +120,12 @@ export function buildOccupiedScheduleSlots(
     set.add(`${ev.date}::${ev.eventType.toLowerCase()}`);
     set.add(`${ev.date}::${ev.title.trim().toLowerCase()}`);
 
-    // If this event was moved from originalDate, mark originalDate as also occupied/overridden
+    // If this event was moved from a valid ISO originalDate, mark originalDate as also occupied/overridden
     // so recurring sync will NOT recreate it on the original day!
-    if (ev.originalDate) {
-      set.add(`${ev.originalDate}::${ev.eventType.toLowerCase()}`);
-      set.add(`${ev.originalDate}::${ev.title.trim().toLowerCase()}`);
+    const originIso = extractOriginalISODate(ev.originalDate);
+    if (originIso) {
+      set.add(`${originIso}::${ev.eventType.toLowerCase()}`);
+      set.add(`${originIso}::${ev.title.trim().toLowerCase()}`);
     }
   }
   return set;
@@ -143,8 +160,31 @@ export async function syncPlannedCrossTraining(
   let createdCount = 0;
   let cleanedCount = 0;
 
-  // 1. If no rules exist, remove any future planned recurring cross-training events
+  // 1. If no rules exist, remove any future planned recurring cross-training events and their activities
   if (rules.length === 0) {
+    const futureEvents = await prisma.calendarEvent.findMany({
+      where: {
+        athleteProfileId,
+        date: { gte: today },
+        status: 'planned',
+        referenceModel: 'CrossTrainingActivity',
+      },
+      select: { id: true, referenceId: true },
+    });
+
+    const refIds = futureEvents
+      .map((e) => e.referenceId)
+      .filter((id): id is string => Boolean(id));
+
+    if (refIds.length > 0) {
+      await prisma.crossTrainingActivity.deleteMany({
+        where: {
+          id: { in: refIds },
+          status: 'planned',
+        },
+      });
+    }
+
     const deletedFuture = await prisma.calendarEvent.deleteMany({
       where: {
         athleteProfileId,
@@ -188,7 +228,7 @@ export async function syncPlannedCrossTraining(
       athleteProfileId,
       OR: [
         { date: { gte: today, lte: maxHorizonDate } },
-        { originalDate: { gte: today, lte: maxHorizonDate } },
+        { originalDate: { not: null } },
       ],
     },
     select: {

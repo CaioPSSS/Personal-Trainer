@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applyWorkoutTemplateSelectionAndRebalance } from '@/lib/scheduling/strength-scheduler';
+import { todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,6 +12,13 @@ export async function POST(req: NextRequest) {
     if (!date || !templateId) {
       return NextResponse.json(
         { error: 'Campos date (YYYY-MM-DD) e templateId são obrigatórios.' },
+        { status: 400 }
+      );
+    }
+
+    if (date < todayISO()) {
+      return NextResponse.json(
+        { error: 'Não é permitido alterar o planejamento de datas passadas. O histórico é imutável.' },
         { status: 400 }
       );
     }

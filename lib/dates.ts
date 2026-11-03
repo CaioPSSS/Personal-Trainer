@@ -58,3 +58,24 @@ export function diffISODays(a: string, b: string): number {
     Math.abs(Date.UTC(ay, am - 1, ad) - Date.UTC(by, bm - 1, bd)) / 86_400_000
   );
 }
+
+/**
+ * Returns the Monday ISO date ("YYYY-MM-DD") of the ISO week containing `dateStr`.
+ */
+export function mondayOfISODate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const utc = new Date(Date.UTC(y, m - 1, d));
+  const day = utc.getUTCDay(); // 0 = Sunday, 1 = Monday, ...
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  utc.setUTCDate(utc.getUTCDate() + diffToMonday);
+  return utc.toISOString().slice(0, 10);
+}
+
+/**
+ * Returns Monday (`startOfWeek`) and Sunday (`endOfWeek`) ISO dates for the week of `dateStr`.
+ */
+export function weekRangeOfISODate(dateStr: string): { startOfWeek: string; endOfWeek: string } {
+  const startOfWeek = mondayOfISODate(dateStr);
+  const endOfWeek = shiftISODate(startOfWeek, 6);
+  return { startOfWeek, endOfWeek };
+}

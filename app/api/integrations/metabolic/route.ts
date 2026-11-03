@@ -5,6 +5,7 @@ import {
   reconcileEcosystemRange,
   getSyncConfig,
 } from '@/lib/integrations/metabolic-tracker';
+import { todayISO, shiftISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
@@ -119,11 +120,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Default: reconcile range (últimos 14 dias se não especificado)
-    const today = new Date();
-    const defaultEnd = today.toISOString().split('T')[0];
-    const past = new Date(today);
-    past.setDate(past.getDate() - 14);
-    const defaultStart = past.toISOString().split('T')[0];
+    const defaultEnd = todayISO();
+    const defaultStart = shiftISODate(defaultEnd, -14);
 
     const startDate = body.startDate || defaultStart;
     const endDate = body.endDate || defaultEnd;
