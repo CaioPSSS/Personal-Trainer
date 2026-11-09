@@ -18,6 +18,7 @@ export interface PaceDataPoint {
   date: string;
   pace5kSec: number;
   pace10kSec: number;
+  vdot?: number;
   formatted5k: string;
   formatted10k: string;
 }
@@ -138,6 +139,12 @@ export default function PaceEvolutionChart({ data: initialData }: PaceEvolutionC
                           <span>Pace 10K:</span>
                           <span className="font-mono font-bold">{d.formatted10k}</span>
                         </div>
+                        {d.vdot != null && (
+                          <div className="flex items-center justify-between gap-4 text-amber-300 pt-1 border-t border-slate-800">
+                            <span>VDOT Estimado:</span>
+                            <span className="font-mono font-bold">{d.vdot}</span>
+                          </div>
+                        )}
                       </div>
                     );
                   }

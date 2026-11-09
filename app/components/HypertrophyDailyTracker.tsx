@@ -1,10 +1,29 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Dumbbell, Calendar, Plus, Trash, Save, Sparkles, Smile, RefreshCw, CheckCircle2, Repeat } from 'lucide-react';
+import {
+  Dumbbell,
+  Calendar,
+  Plus,
+  Trash,
+  Save,
+  Sparkles,
+  Smile,
+  RefreshCw,
+  CheckCircle2,
+  Repeat,
+  Volume2,
+  VolumeX,
+  Smartphone,
+  TrendingUp,
+} from 'lucide-react';
 import { useFormDraft } from '@/app/hooks/useFormDraft';
+import { useWakeLock } from '@/app/hooks/useWakeLock';
 import { getLocalISODate } from '@/lib/dateUtils';
+import { playRestFinishedAlert } from '@/lib/sound';
+import { calculateEstimated1RM } from '@/lib/analytics/hypertrophy-analytics';
 import PostWorkoutSummaryModal, { PostWorkoutSummaryModalProps } from './PostWorkoutSummaryModal';
+import ExerciseHistoryModal from './ExerciseHistoryModal';
 import { ExercisePreviousPerformanceData } from '@/lib/progression/load-calculator';
 
 interface SwapSuggestionItem {
@@ -140,8 +159,17 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [summaryModalProps, setSummaryModalProps] = useState<PostWorkoutSummaryModalProps | null>(null);
 
   const { saveDraft, loadDraft, clearDraft } = useFormDraft<DraftState>('workout-draft');
+  const { isLocked: isWakeLockActive } = useWakeLock(true);
   const [swapCooldownTimeLeft, setSwapCooldownTimeLeft] = useState(0);
-  const [activeTimer, setActiveTimer] = useState<{ exIdx: number; seconds: number } | null>(null);
+  const [activeTimer, setActiveTimer] = useState<{
+    exIdx: number;
+    exerciseName: string;
+    seconds: number;
+    totalSeconds: number;
+  } | null>(null);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [autoStartRest, setAutoStartRest] = useState(true);
+  const [historyExerciseName, setHistoryExerciseName] = useState<string | null>(null);
 
   useEffect(() => {
     if (swapCooldownTimeLeft <= 0) return;
@@ -154,10 +182,17 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   useEffect(() => {
     if (!activeTimer || activeTimer.seconds <= 0) return;
     const interval = setInterval(() => {
-      setActiveTimer((prev) => (prev ? { ...prev, seconds: prev.seconds - 1 } : null));
+      setActiveTimer((prev) => {
+        if (!prev) return null;
+        if (prev.seconds <= 1) {
+          playRestFinishedAlert(soundEnabled);
+          return null;
+        }
+        return { ...prev, seconds: prev.seconds - 1 };
+      });
     }, 1000);
     return () => clearInterval(interval);
-  }, [activeTimer]);
+  }, [activeTimer, soundEnabled]);
 
   useEffect(() => {
     if (swappingIndex === null) return;
@@ -435,6 +470,24 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     
     if (field === 'isFailure' && value === true) {
       if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(40);
+    }
+
+    // Auto-start rest timer when RPE is selected or Failure is checked
+    const isRpeTrigger = field === 'rpe' && String(value) !== '';
+    const isFailureTrigger = field === 'isFailure' && value === true;
+
+    if (autoStartRest && (isRpeTrigger || isFailureTrigger)) {
+      const targetEx = updated[exIdx];
+      const prescription = selectedTemplate?.prescriptions.find(
+        (p) => p.id === targetEx.exercisePrescriptionId
+      );
+      const restSec = prescription?.restSeconds || 90;
+      setActiveTimer({
+        exIdx,
+        exerciseName: targetEx.exerciseName,
+        seconds: restSec,
+        totalSeconds: restSec,
+      });
     }
   };
 
@@ -1067,16 +1120,53 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         {/* Right column: Target exercises tracking */}
         <div className="space-y-4">
           <div className="bg-slate-800 border border-slate-700/80 p-5 rounded-2xl shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
-              <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2">
-                <Dumbbell className="h-4 w-4 text-indigo-400" />
-                <span>Planilha de Exercícios</span>
-              </h3>
-              {selectedTemplate && (
-                <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-500/20 font-mono">
-                  {selectedTemplate.label}
-                </span>
-              )}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 pb-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-sm font-bold text-slate-100 uppercase tracking-wider flex items-center gap-2">
+                  <Dumbbell className="h-4 w-4 text-indigo-400" />
+                  <span>Planilha de Exercícios</span>
+                </h3>
+                {isWakeLockActive && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full"
+                    title="Wake Lock ativo: a tela permanecerá ligada durante o treino"
+                  >
+                    <Smartphone className="h-2.5 w-2.5" />
+                    <span>Tela ativa</span>
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAutoStartRest((prev) => !prev)}
+                  className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border transition cursor-pointer ${
+                    autoStartRest
+                      ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/30'
+                      : 'bg-slate-900 text-slate-500 border-slate-700'
+                  }`}
+                  title="Iniciar cronômetro de descanso automaticamente ao preencher RPE ou Falha"
+                >
+                  ⏱️ Auto-Timer: {autoStartRest ? 'ON' : 'OFF'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSoundEnabled((prev) => !prev)}
+                  className={`p-1 rounded-lg border transition cursor-pointer ${
+                    soundEnabled
+                      ? 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                      : 'bg-slate-900 text-slate-500 border-slate-700'
+                  }`}
+                  title={soundEnabled ? 'Alerta sonoro ativado' : 'Alerta sonoro silenciado'}
+                >
+                  {soundEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+                </button>
+                {selectedTemplate && (
+                  <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full border border-indigo-500/20 font-mono">
+                    {selectedTemplate.label}
+                  </span>
+                )}
+              </div>
             </div>
 
             {exercises.length === 0 ? (
@@ -1096,9 +1186,17 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                             Padrão: {ex.movementPattern}
                           </span>
                           <div className="flex items-center gap-2 flex-wrap mt-0.5">
-                            <h4 className="text-sm font-bold text-slate-100">
-                              {ex.exerciseName}
-                            </h4>
+                            <button
+                              type="button"
+                              onClick={() => setHistoryExerciseName(ex.exerciseName)}
+                              className="text-sm font-bold text-slate-100 hover:text-indigo-300 transition flex items-center gap-1.5 cursor-pointer group text-left"
+                              title="Clique para abrir histórico de cargas e e1RM deste exercício"
+                            >
+                              <span className="underline decoration-slate-700 group-hover:decoration-indigo-400 underline-offset-4">
+                                {ex.exerciseName}
+                              </span>
+                              <TrendingUp className="h-3.5 w-3.5 text-indigo-400 opacity-80 group-hover:opacity-100 shrink-0" />
+                            </button>
                             {prescription && (() => {
                               const prog = progressionData[prescription.id];
                               if (!prog || prog.lastLoadKg === 0) {
@@ -1192,7 +1290,21 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                           return (
                           <div key={setIdx} className={`bg-slate-950 p-4 rounded-xl border ${isHardSet ? 'border-rose-500/50' : 'border-slate-800'} space-y-3 shadow-inner transition-colors duration-300`}>
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-black text-slate-400">Série {set.setNumber}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black text-slate-400">Série {set.setNumber}</span>
+                                {(() => {
+                                  const live1RM = calculateEstimated1RM(
+                                    parseFloat(set.loadKg),
+                                    parseInt(set.reps, 10),
+                                    set.rpe ? parseFloat(set.rpe) : null
+                                  );
+                                  return live1RM > 0 ? (
+                                    <span className="text-[10px] font-mono font-bold text-indigo-300 bg-indigo-500/10 border border-indigo-500/25 px-1.5 py-0.5 rounded">
+                                      e1RM {live1RM}kg
+                                    </span>
+                                  ) : null;
+                                })()}
+                              </div>
                               <div className="flex items-center gap-3">
                                 <label className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
                                   <input
@@ -1264,7 +1376,15 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
 
                             <button
                               type="button"
-                              onClick={() => setActiveTimer({ exIdx, seconds: prescription?.restSeconds || 90 })}
+                              onClick={() => {
+                                const restSec = prescription?.restSeconds || 90;
+                                setActiveTimer({
+                                  exIdx,
+                                  exerciseName: ex.exerciseName,
+                                  seconds: restSec,
+                                  totalSeconds: restSec,
+                                });
+                              }}
                               className="w-full text-center text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 px-2.5 py-1.5 rounded-lg transition font-bold"
                             >
                               ⏱️ {activeTimer?.exIdx === exIdx && activeTimer.seconds > 0
@@ -1348,16 +1468,38 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                                   />
                                 </td>
                                 <td className="py-2 px-2 text-center">
-                                  <button
-                                    type="button"
-                                    onClick={() => setActiveTimer({ exIdx, seconds: prescription?.restSeconds || 90 })}
-                                    className="text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 px-2.5 py-1.5 rounded-lg transition font-bold"
-                                  >
-                                    ⏱️ {activeTimer?.exIdx === exIdx && activeTimer.seconds > 0
-                                      ? `${Math.floor(activeTimer.seconds / 60)}:${String(activeTimer.seconds % 60).padStart(2, '0')}`
-                                      : `Descanso (${prescription?.restSeconds || 90}s)`
-                                    }
-                                  </button>
+                                  <div className="flex flex-col items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const restSec = prescription?.restSeconds || 90;
+                                        setActiveTimer({
+                                          exIdx,
+                                          exerciseName: ex.exerciseName,
+                                          seconds: restSec,
+                                          totalSeconds: restSec,
+                                        });
+                                      }}
+                                      className="text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/10 px-2.5 py-1.5 rounded-lg transition font-bold cursor-pointer"
+                                    >
+                                      ⏱️ {activeTimer?.exIdx === exIdx && activeTimer.seconds > 0
+                                        ? `${Math.floor(activeTimer.seconds / 60)}:${String(activeTimer.seconds % 60).padStart(2, '0')}`
+                                        : `Descanso (${prescription?.restSeconds || 90}s)`
+                                      }
+                                    </button>
+                                    {(() => {
+                                      const live1RM = calculateEstimated1RM(
+                                        parseFloat(set.loadKg),
+                                        parseInt(set.reps, 10),
+                                        set.rpe ? parseFloat(set.rpe) : null
+                                      );
+                                      return live1RM > 0 ? (
+                                        <span className="text-[9px] font-mono text-indigo-300">
+                                          e1RM: <strong>{live1RM}kg</strong>
+                                        </span>
+                                      ) : null;
+                                    })()}
+                                  </div>
                                 </td>
                                 <td className="py-2 pl-2">
                                   {ex.sets.length > 1 && (
@@ -1597,6 +1739,88 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           </div>
         </div>
       )}
+      {/* ⏱️ Barra Flutuante de Cronômetro de Descanso (#6) */}
+      {activeTimer && activeTimer.seconds > 0 && (
+        <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 z-40 w-[92vw] max-w-md rounded-2xl border border-cyan-500/40 bg-slate-900/95 backdrop-blur-xl px-4 py-3 shadow-2xl shadow-cyan-500/15">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400 block">
+                ⏱️ Descanso em Andamento
+              </span>
+              <p className="text-xs font-semibold text-slate-200 truncate">
+                {activeTimer.exerciseName}
+              </p>
+            </div>
+            <div className="text-2xl font-black font-mono text-cyan-300 shrink-0">
+              {Math.floor(activeTimer.seconds / 60)}:{String(activeTimer.seconds % 60).padStart(2, '0')}
+            </div>
+          </div>
+
+          <div className="w-full h-1.5 bg-slate-950 rounded-full overflow-hidden mt-2 mb-2.5 border border-slate-800">
+            <div
+              className="h-full bg-gradient-to-r from-cyan-400 to-indigo-500 transition-all duration-500"
+              style={{
+                width: `${Math.min(100, Math.max(0, (activeTimer.seconds / Math.max(1, activeTimer.totalSeconds)) * 100))}%`,
+              }}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveTimer((prev) =>
+                    prev ? { ...prev, seconds: Math.max(5, prev.seconds - 15) } : null
+                  )
+                }
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold transition cursor-pointer"
+              >
+                -15s
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setActiveTimer((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          seconds: prev.seconds + 15,
+                          totalSeconds: Math.max(prev.totalSeconds, prev.seconds + 15),
+                        }
+                      : null
+                  )
+                }
+                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-bold transition cursor-pointer"
+              >
+                +15s
+              </button>
+              <button
+                type="button"
+                onClick={() => setSoundEnabled((prev) => !prev)}
+                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] transition cursor-pointer"
+                title={soundEnabled ? 'Som ativado' : 'Som silenciado'}
+              >
+                {soundEnabled ? '🔊' : '🔇'}
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTimer(null)}
+              className="px-3 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-[11px] font-bold transition cursor-pointer"
+            >
+              Pular Descanso
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 📈 Modal de Histórico por Exercício (#31) */}
+      <ExerciseHistoryModal
+        exerciseName={historyExerciseName}
+        onClose={() => setHistoryExerciseName(null)}
+      />
+
       {/* 🏆 Modal de Resumo Pós-Treino (Debrief Factual) */}
       {summaryModalProps && (
         <PostWorkoutSummaryModal

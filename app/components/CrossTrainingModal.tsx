@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { X, Flame, Waves, Bike, Heart, Swords, Activity, Clock, Calendar, Check, Loader2 } from 'lucide-react';
+import { X, Flame, Waves, Bike, Heart, Swords, Activity, Clock, Calendar, Check, Loader2, Sparkles } from 'lucide-react';
 import { useToast } from './ToastProvider';
 
 interface CrossTrainingModalProps {
@@ -55,7 +55,44 @@ export default function CrossTrainingModal({
   const [sessionRpe, setSessionRpe] = useState(7);
   const [muscleGroups, setMuscleGroups] = useState<string[]>(['Pernas', 'Core']);
   const [notes, setNotes] = useState('');
+  const [wodText, setWodText] = useState('');
+  const [isParsingWod, setIsParsingWod] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleParseWod = async () => {
+    if (!wodText || wodText.trim().length < 4) {
+      error('Cole a descrição do WOD (ex: 21-15-9 Thrusters e Pull-ups) para analisar.');
+      return;
+    }
+    setIsParsingWod(true);
+    try {
+      const res = await fetch('/api/cross-training/parse-wod', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wodText }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha ao analisar WOD.');
+      }
+      const data = await res.json();
+      if (data.parsed) {
+        if (data.parsed.durationMinutes) setDurationMinutes(Number(data.parsed.durationMinutes));
+        if (data.parsed.suggestedRpe) setSessionRpe(Number(data.parsed.suggestedRpe));
+        if (Array.isArray(data.parsed.muscleGroups) && data.parsed.muscleGroups.length > 0) {
+          setMuscleGroups(data.parsed.muscleGroups);
+        }
+        if (data.parsed.metabolicNotes) {
+          setNotes(data.parsed.metabolicNotes);
+        }
+        success('WOD analisado! Grupos musculares, RPE e duração preenchidos.', 'Parser de WOD');
+      }
+    } catch (err) {
+      error(err instanceof Error ? err.message : 'Erro ao analisar WOD.');
+    } finally {
+      setIsParsingWod(false);
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -203,6 +240,43 @@ export default function CrossTrainingModal({
               })}
             </div>
           </div>
+
+          {/* #15 AI WOD Parser (CrossFit / Functional) */}
+          {activityType === 'crossfit' && (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-950/15 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Parser Inteligente de WOD (IA + Biomecânica)</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={isParsingWod || !wodText.trim()}
+                  onClick={handleParseWod}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-[11px] font-bold transition disabled:opacity-50 cursor-pointer"
+                >
+                  {isParsingWod ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      <span>Analisando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3 h-3" />
+                      <span>✨ Analisar WOD</span>
+                    </>
+                  )}
+                </button>
+              </div>
+              <textarea
+                rows={2}
+                value={wodText}
+                onChange={(e) => setWodText(e.target.value)}
+                placeholder="Cole o WOD do Box aqui (ex: For Time 21-15-9 Thrusters 42.5kg + Pull-ups, Time Cap 15 min)..."
+                className="w-full bg-slate-900/80 border border-slate-700/80 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60 resize-none"
+              />
+            </div>
+          )}
 
           {/* Date & Duration */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

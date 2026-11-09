@@ -1,13 +1,25 @@
 import './globals.css';
 import { Inter } from 'next/font/google';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { ToastProvider } from './components/ToastProvider';
 
 const inter = Inter({ subsets: ['latin'] });
 
+export const viewport: Viewport = {
+  themeColor: '#020617',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+};
+
 export const metadata: Metadata = {
   title: 'Personal Trainer — Multi-Sport AI Coaching',
   description: 'Plataforma multi-esportes com periodização de hipertrofia por IA, corrida integrada ao Strava e análise fisiológica avançada.',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Personal Trainer',
+  },
   icons: {
     icon: [
       { url: '/personal_trainer.svg', type: 'image/svg+xml' },

@@ -2,7 +2,23 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Sparkles, Dumbbell, Footprints, ArrowRight, Plus, Brain, Zap, ShieldCheck } from 'lucide-react';
+import {
+  Sparkles,
+  Dumbbell,
+  Footprints,
+  ArrowRight,
+  Plus,
+  Brain,
+  Zap,
+  ShieldCheck,
+  Calendar as CalendarIcon,
+  Activity,
+  Check,
+  Copy,
+  Loader2,
+  X,
+  TrendingUp,
+} from 'lucide-react';
 import NextWorkoutCard from './NextWorkoutCard';
 import StreakCounter from './StreakCounter';
 import WeeklyVolumeBar from './WeeklyVolumeBar';
@@ -13,6 +29,7 @@ import AdherenceChart from './charts/AdherenceChart';
 import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
 import { AthleteProfile, MesocyclePlan } from '@prisma/client';
 import { useRouter } from 'next/navigation';
+import type { DailyReadinessResult, WeeklyReviewSummary } from '@/lib/analytics/readiness-score';
 
 type ProfileWithMesocycles = AthleteProfile & {
   mesocycles?: MesocyclePlan[];
@@ -32,8 +49,12 @@ export default function ExecutiveDashboard({
   const router = useRouter();
   const [isMonthlyOpen, setIsMonthlyOpen] = useState(false);
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
+  const [isIcsModalOpen, setIsIcsModalOpen] = useState(false);
+  const [copiedIcs, setCopiedIcs] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [calendarKey, setCalendarKey] = useState(0);
+  const [aiReviewText, setAiReviewText] = useState<string | null>(null);
+  const [isLoadingAiReview, setIsLoadingAiReview] = useState(false);
   const [analytics, setAnalytics] = useState<{
     streak?: number;
     weeklyVolume?: {
@@ -48,6 +69,8 @@ export default function ExecutiveDashboard({
       skippedCount: number;
       percentage: number;
     }>;
+    readiness?: DailyReadinessResult;
+    weeklyReview?: WeeklyReviewSummary;
   } | null>(null);
 
   useEffect(() => {
@@ -127,6 +150,51 @@ export default function ExecutiveDashboard({
     setCalendarKey((prev) => prev + 1);
   };
 
+  const handleGenerateWeeklyAiReview = async () => {
+    if (!analytics?.weeklyReview || isLoadingAiReview) return;
+    setIsLoadingAiReview(true);
+    try {
+      const res = await fetch('/api/coach/weekly-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          weeklyReview: analytics.weeklyReview,
+          readiness: analytics.readiness,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.commentary) {
+          setAiReviewText(
+            `${data.commentary.headline}\n\n${data.commentary.coachAnalysis}\n\n🎯 Ajuste Tático: ${data.commentary.tacticalAdjustment}`
+          );
+        } else {
+          setAiReviewText(data.reviewText || null);
+        }
+      }
+    } catch (err) {
+      console.error('[ExecutiveDashboard] Erro ao gerar review IA:', err);
+    } finally {
+      setIsLoadingAiReview(false);
+    }
+  };
+
+  const icsUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}/api/calendar/ics`
+      : '/api/calendar/ics';
+  const webcalUrl = icsUrl.replace(/^https?:\/\//i, 'webcal://');
+
+  const handleCopyIcsUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(icsUrl);
+      setCopiedIcs(true);
+      setTimeout(() => setCopiedIcs(false), 2500);
+    } catch {
+      // ignore
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
       {/* Executive Greeting Header */}
@@ -168,13 +236,97 @@ export default function ExecutiveDashboard({
           <button
             type="button"
             onClick={() => setIsCrossModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold transition cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 text-amber-400" />
             <span>+ Registrar Atividade</span>
           </button>
+          <button
+            type="button"
+            onClick={() => setIsIcsModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 text-xs font-semibold transition cursor-pointer"
+          >
+            <CalendarIcon className="w-3.5 h-3.5 text-cyan-400" />
+            <span>📅 Sincronizar Agenda (.ics)</span>
+          </button>
         </div>
       </div>
+
+      {/* #16 Daily Multi-Sport Readiness Score (0-100%) */}
+      {analytics?.readiness && (
+        <div
+          className={`rounded-2xl border p-5 shadow-lg transition-all ${
+            analytics.readiness.status === 'green'
+              ? 'border-emerald-500/30 bg-gradient-to-r from-emerald-950/30 via-slate-900 to-slate-900'
+              : analytics.readiness.status === 'yellow'
+                ? 'border-amber-500/30 bg-gradient-to-r from-amber-950/30 via-slate-900 to-slate-900'
+                : 'border-rose-500/35 bg-gradient-to-r from-rose-950/35 via-slate-900 to-slate-900'
+          }`}
+        >
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex items-start sm:items-center gap-4">
+              <div
+                className={`w-16 h-16 rounded-2xl border flex flex-col items-center justify-center shrink-0 font-mono ${
+                  analytics.readiness.status === 'green'
+                    ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                    : analytics.readiness.status === 'yellow'
+                      ? 'border-amber-500/40 bg-amber-500/15 text-amber-300'
+                      : 'border-rose-500/40 bg-rose-500/15 text-rose-300'
+                }`}
+              >
+                <span className="text-xl font-black leading-none">{analytics.readiness.score}%</span>
+                <span className="text-[9px] uppercase tracking-wider font-bold mt-0.5">Prontidão</span>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                    <Activity className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Score Diário de Prontidão Multi-Esporte</span>
+                  </span>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                      analytics.readiness.status === 'green'
+                        ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-300'
+                        : analytics.readiness.status === 'yellow'
+                          ? 'border-amber-500/30 bg-amber-500/15 text-amber-300'
+                          : 'border-rose-500/30 bg-rose-500/15 text-rose-300'
+                    }`}
+                  >
+                    {analytics.readiness.label}
+                  </span>
+                </div>
+                <p className="text-xs sm:text-sm text-slate-200 font-medium leading-relaxed">
+                  {analytics.readiness.recommendation}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 lg:max-w-md lg:justify-end">
+              <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] flex items-center gap-1.5">
+                <span className="font-mono font-bold text-emerald-400">
+                  +{analytics.readiness.breakdown.sleepScore}
+                </span>
+                <span className="text-slate-300 font-semibold">Sono</span>
+              </div>
+              <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] flex items-center gap-1.5">
+                <span className="font-mono font-bold text-indigo-400">
+                  +{analytics.readiness.breakdown.recoveryWellnessScore}
+                </span>
+                <span className="text-slate-300 font-semibold">Recuperação</span>
+              </div>
+              <div className="px-2.5 py-1.5 rounded-xl bg-slate-950/60 border border-slate-800 text-[11px] flex items-center gap-1.5">
+                <span className="font-mono font-bold text-amber-400">
+                  -{analytics.readiness.breakdown.acuteLoadPenalty}
+                </span>
+                <span className="text-slate-300 font-semibold">
+                  Carga 3d ({analytics.readiness.acuteSessionsLast3Days} sessões)
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mesocycle Status Notification if none active */}
       {!hasActiveMesocycle && (
@@ -323,6 +475,242 @@ export default function ExecutiveDashboard({
 
       {/* 📊 Training Adherence Consistency Analytics */}
       <AdherenceChart data={analytics?.adherenceData} />
+
+      {/* #23 Weekly Review Card (Hybrid: Instant Comparative + On-Demand AI Review) */}
+      {analytics?.weeklyReview && (
+        <div className="glass-card p-6 border-slate-800 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
+                <TrendingUp className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-slate-100">
+                  Check-in & Balanço Semanal ({analytics.weeklyReview.currentWeekLabel})
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Comparativo multi-esporte: Semana Atual vs. Anterior ({analytics.weeklyReview.previousWeekLabel})
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              disabled={isLoadingAiReview}
+              onClick={handleGenerateWeeklyAiReview}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-indigo-500/35 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200 text-xs font-bold transition disabled:opacity-50 cursor-pointer self-start sm:self-auto"
+            >
+              {isLoadingAiReview ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  <span>Gerando Análise IA...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>✨ Gerar Análise IA da Semana</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Adesão Semanal
+              </span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-emerald-400 font-mono">
+                  {analytics.weeklyReview.adherencePercent.current}%
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  Ant: {analytics.weeklyReview.adherencePercent.previous}%
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Tonelagem Força
+              </span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-indigo-300 font-mono">
+                  {(analytics.weeklyReview.strengthTonnageKg.current / 1000).toFixed(1)}t
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold ${
+                    (analytics.weeklyReview.strengthTonnageKg.deltaPercent ?? 0) >= 0
+                      ? 'text-emerald-400'
+                      : 'text-amber-400'
+                  }`}
+                >
+                  {analytics.weeklyReview.strengthTonnageKg.deltaPercent !== null
+                    ? analytics.weeklyReview.strengthTonnageKg.deltaPercent >= 0
+                      ? `+${analytics.weeklyReview.strengthTonnageKg.deltaPercent}%`
+                      : `${analytics.weeklyReview.strengthTonnageKg.deltaPercent}%`
+                    : 'Novo'}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Volume Corrida
+              </span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-cyan-300 font-mono">
+                  {analytics.weeklyReview.runningKm.current.toFixed(1)} km
+                </span>
+                <span
+                  className={`text-[10px] font-mono font-bold ${
+                    analytics.weeklyReview.runningKm.deltaKm >= 0 ? 'text-emerald-400' : 'text-slate-400'
+                  }`}
+                >
+                  {analytics.weeklyReview.runningKm.deltaKm >= 0
+                    ? `+${analytics.weeklyReview.runningKm.deltaKm}km`
+                    : `${analytics.weeklyReview.runningKm.deltaKm}km`}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                CrossFit / Funcional
+              </span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-amber-300 font-mono">
+                  {analytics.weeklyReview.crossTrainingSessions.current}x
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  Ant: {analytics.weeklyReview.crossTrainingSessions.previous}x
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-1 col-span-2 md:col-span-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                Gasto Estimado
+              </span>
+              <div className="flex items-baseline justify-between">
+                <span className="text-lg font-black text-rose-300 font-mono">
+                  {analytics.weeklyReview.caloriesBurnedTotal.current} kcal
+                </span>
+                <span className="text-[10px] text-slate-500 font-mono">
+                  {analytics.weeklyReview.strengthSets.current} séries
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-slate-950/50 border border-slate-800/80 p-3.5 space-y-1.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400 block">
+              Focos Prioritários para a Próxima Semana
+            </span>
+            <ul className="space-y-1 text-xs text-slate-300 list-disc pl-4">
+              {analytics.weeklyReview.automatedFocusPoints.map((pt, i) => (
+                <li key={i}>{pt}</li>
+              ))}
+            </ul>
+          </div>
+
+          {aiReviewText && (
+            <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/25 p-4 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-300">
+                <Brain className="w-4 h-4 text-indigo-400" />
+                <span>Parecer Semanal do Master Coach IA</span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-200 leading-relaxed whitespace-pre-line">
+                {aiReviewText}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* #27 Calendar .ics Sync Modal */}
+      {isIcsModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
+                  <CalendarIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">
+                    Sincronizar Agenda (.ics)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Google Calendar, Apple Calendar & Outlook (Eventos de Dia Inteiro)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIcsModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Seus treinos planejados e concluídos de <strong>Musculação</strong>, <strong>Corrida</strong> (com aquecimento, tiros e ritmos) e <strong>CrossFit</strong> são exportados como eventos de Dia Inteiro com a prescrição completa nas notas.
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                URL de Assinatura / Feed iCalendar
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={icsUrl}
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-300 font-mono focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyIcsUrl}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition cursor-pointer"
+                >
+                  {copiedIcs ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Copiado!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copiar</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-800">
+              <a
+                href="/api/calendar/ics"
+                download="personal-trainer-agenda.ics"
+                className="px-3.5 py-2 rounded-xl border border-slate-700 bg-slate-800/70 hover:bg-slate-800 text-xs font-semibold text-slate-200 transition"
+              >
+                Baixar Arquivo .ics
+              </a>
+              <a
+                href={webcalUrl}
+                className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold transition shadow-md shadow-cyan-500/20"
+              >
+                Assinar no Apple / App de Calendário
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Cross-Training Modal */}
       <CrossTrainingModal
