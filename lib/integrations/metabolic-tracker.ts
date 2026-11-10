@@ -33,6 +33,21 @@ export interface SyncResult {
 }
 
 export const DEFAULT_METABOLIC_URL = 'https://meu-rastreador-metabolico-p7xl.vercel.app';
+export const DEFAULT_METABOLIC_SECRET = 'Senh@Met1';
+
+export function getCandidateSyncSecrets(): string[] {
+  const candidates = [
+    process.env.ECOSYSTEM_SYNC_SECRET,
+    process.env.APP_PASSWORD,
+    process.env.CRON_SECRET,
+    DEFAULT_METABOLIC_SECRET,
+    'dev_sync_secret_metabolic',
+  ]
+    .filter((v): v is string => Boolean(v && v.trim().length > 0))
+    .map((v) => v.trim());
+
+  return Array.from(new Set(candidates));
+}
 
 export async function getSyncConfig() {
   let url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '');
@@ -56,8 +71,52 @@ export async function getSyncConfig() {
     }
   }
   url = url || DEFAULT_METABOLIC_URL;
-  const secret = process.env.ECOSYSTEM_SYNC_SECRET || 'dev_sync_secret_metabolic';
-  return { url, secret };
+  const secrets = getCandidateSyncSecrets();
+  const secret = secrets[0] || DEFAULT_METABOLIC_SECRET;
+  return { url, secret, secrets };
+}
+
+/**
+ * Executa uma chamada autenticada para o Meu Rastreador Metabólico tentando
+ * automaticamente os segredos candidatos caso receba HTTP 401 (ex: quando
+ * APP_PASSWORD e ECOSYSTEM_SYNC_SECRET diferem entre projetos na Vercel).
+ */
+export async function fetchFromMetabolicTracker(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = 4000
+): Promise<{ response: Response; url: string }> {
+  const { url, secrets } = await getSyncConfig();
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  let lastResponse: Response | null = null;
+
+  for (const token of secrets) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const headers = new Headers(init.headers);
+      headers.set('Authorization', `Bearer ${token}`);
+      headers.set('x-source-app', 'Personal-Trainer');
+
+      const response = await fetch(`${url}${normalizedPath}`, {
+        ...init,
+        headers,
+        signal: controller.signal,
+      });
+
+      lastResponse = response;
+
+      // Se autenticou (ou deu outro status que não seja 401), retorna imediatamente
+      if (response.status !== 401) {
+        return { response, url };
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return { response: lastResponse!, url };
 }
 
 /**
@@ -67,22 +126,18 @@ export async function getSyncConfig() {
 export async function syncActivityToMetabolicTracker(
   payload: ActivitySyncPayload
 ): Promise<SyncResult> {
-  const { url, secret } = await getSyncConfig();
-
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-    const response = await fetch(`${url}/api/integrations/trainer/activity`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${secret}`,
-        'x-source-app': 'Personal-Trainer',
+    const { response } = await fetchFromMetabolicTracker(
+      '/api/integrations/trainer/activity',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeoutId));
+      4000
+    );
 
     if (!response.ok) {
       console.warn(
@@ -333,20 +388,12 @@ export async function syncDaysToMetabolicTracker(
 export async function fetchDailyNutrition(
   date: string
 ): Promise<DailyNutritionData | null> {
-  const { url, secret } = await getSyncConfig();
-
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-    const response = await fetch(`${url}/api/integrations/trainer/nutrition?date=${date}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        'x-source-app': 'Personal-Trainer',
-      },
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeoutId));
+    const { response } = await fetchFromMetabolicTracker(
+      `/api/integrations/trainer/nutrition?date=${date}`,
+      { method: 'GET' },
+      4000
+    );
 
     if (!response.ok) {
       return null;
@@ -415,7 +462,6 @@ export async function reconcileEcosystemRange(
   nutritionDaysImported: number;
   errors: string[];
 }> {
-  const { url, secret } = await getSyncConfig();
   const errors: string[] = [];
   let nutritionDaysImported = 0;
   let syncedDaysCount = 0;
@@ -467,19 +513,11 @@ export async function reconcileEcosystemRange(
 
   // 3. Pede ao Rastreador o bloco de nutrição do intervalo
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
-
-    const res = await fetch(
-      `${url}/api/integrations/trainer/nutrition?startDate=${startDate}&endDate=${endDate}`,
-      {
-        headers: {
-          Authorization: `Bearer ${secret}`,
-          'x-source-app': 'Personal-Trainer',
-        },
-        signal: controller.signal,
-      }
-    ).finally(() => clearTimeout(timeoutId));
+    const { response: res } = await fetchFromMetabolicTracker(
+      `/api/integrations/trainer/nutrition?startDate=${startDate}&endDate=${endDate}`,
+      { method: 'GET' },
+      5000
+    );
 
     if (res.ok) {
       const data = await res.json();
@@ -511,6 +549,8 @@ export async function reconcileEcosystemRange(
           nutritionDaysImported++;
         }
       }
+    } else {
+      errors.push(`Nutrição: HTTP ${res.status}`);
     }
   } catch (err) {
     errors.push(`Falha ao importar nutrição: ${err instanceof Error ? err.message : String(err)}`);

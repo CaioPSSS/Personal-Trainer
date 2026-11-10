@@ -178,6 +178,12 @@ export default function SettingsClient({
       if (data.status === 'connected') {
         setMetabolicStatus('connected');
         success('Conexão estabelecida com sucesso com o Rastreador Metabólico!', 'Conectado');
+      } else if (data.status === 'unauthorized' || data.statusCode === 401) {
+        setMetabolicStatus('offline');
+        toastError(
+          'Acesso negado (401). Verifique se ECOSYSTEM_SYNC_SECRET / APP_PASSWORD coincidem e faça um Redeploy no Vercel do Rastreador.',
+          'Não Autorizado (401)'
+        );
       } else {
         setMetabolicStatus('offline');
         toastError('Não foi possível conectar. Verifique se o app irmão está rodando.', 'Offline');
@@ -201,14 +207,27 @@ export default function SettingsClient({
       });
       const data = await res.json();
       if (data.success && data.result) {
-        const { syncedDaysCount, nutritionDaysImported } = data.result;
-        success(
-          `Sincronização concluída: ${syncedDaysCount} treinos enviados, ${nutritionDaysImported} dias de nutrição importados!`,
-          'Sincronizado'
-        );
-        setMetabolicReconcileResult(
-          `${syncedDaysCount} treinos enviados • ${nutritionDaysImported} dias de nutrição importados`
-        );
+        const { syncedDaysCount, nutritionDaysImported, errors = [] } = data.result;
+        if (errors.length > 0 && syncedDaysCount === 0 && nutritionDaysImported === 0) {
+          setMetabolicStatus('offline');
+          const has401 = errors.some((e: string) => e.includes('401'));
+          toastError(
+            has401
+              ? 'Sincronização recusada (HTTP 401). Faça Redeploy no Vercel do Rastreador ou alinhe ECOSYSTEM_SYNC_SECRET.'
+              : `Falha na sincronização: ${errors[0]}`,
+            has401 ? 'Erro de Autenticação (401)' : 'Falha na Sincronização'
+          );
+          setMetabolicReconcileResult(`⚠️ Erro: ${errors[0]}`);
+        } else {
+          setMetabolicStatus('connected');
+          success(
+            `Sincronização concluída: ${syncedDaysCount} treinos enviados, ${nutritionDaysImported} dias de nutrição importados!`,
+            'Sincronizado'
+          );
+          setMetabolicReconcileResult(
+            `${syncedDaysCount} treinos enviados • ${nutritionDaysImported} dias de nutrição importados`
+          );
+        }
       } else {
         toastError('Falha durante a reconciliação com o Rastreador.', 'Erro');
       }

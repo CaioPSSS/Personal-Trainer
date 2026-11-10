@@ -4,6 +4,7 @@ import {
   fetchDailyNutrition,
   reconcileEcosystemRange,
   getSyncConfig,
+  fetchFromMetabolicTracker,
 } from '@/lib/integrations/metabolic-tracker';
 import { todayISO, shiftISODate } from '@/lib/dates';
 
@@ -81,20 +82,14 @@ export async function POST(request: NextRequest) {
     const action = body.action || 'reconcile';
 
     if (action === 'test_connection') {
-      const { url, secret } = await getSyncConfig();
+      const { url } = await getSyncConfig();
 
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-        const res = await fetch(`${url}/api/integrations/trainer/test`, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${secret}`,
-            'x-source-app': 'Personal-Trainer',
-          },
-          signal: controller.signal,
-        }).finally(() => clearTimeout(timeoutId));
+        const { response: res } = await fetchFromMetabolicTracker(
+          '/api/integrations/trainer/test',
+          { method: 'GET' },
+          3000
+        );
 
         if (res.ok) {
           return NextResponse.json({
@@ -105,7 +100,7 @@ export async function POST(request: NextRequest) {
         }
         return NextResponse.json({
           success: false,
-          status: 'error',
+          status: res.status === 401 ? 'unauthorized' : 'error',
           statusCode: res.status,
           url,
         });
