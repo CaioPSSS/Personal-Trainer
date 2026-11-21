@@ -140,7 +140,9 @@ async function callOpenRouter(params: {
 
   const executeFetch = async (
     includeResponseFormat: boolean,
-    includeReasoningEffort: boolean
+    includeReasoningEffort: boolean,
+    overrideEffort?: ReasoningEffortLevel,
+    overrideMaxTokens?: number
   ): Promise<Response> => {
     const payload: Record<string, unknown> = {
       model: params.model,
@@ -148,14 +150,17 @@ async function callOpenRouter(params: {
       messages: params.messages,
     };
 
-    if (params.maxTokens && params.maxTokens > 0) {
-      payload.max_tokens = params.maxTokens;
+    const effectiveMaxTokens = overrideMaxTokens ?? params.maxTokens;
+    const effectiveEffort = overrideEffort ?? params.reasoningEffort;
+
+    if (effectiveMaxTokens && effectiveMaxTokens > 0) {
+      payload.max_tokens = effectiveMaxTokens;
     }
     if (includeResponseFormat) {
       payload.response_format = { type: 'json_object' };
     }
-    if (includeReasoningEffort && params.reasoningEffort) {
-      payload.reasoning = { effort: params.reasoningEffort };
+    if (includeReasoningEffort && effectiveEffort) {
+      payload.reasoning = { effort: effectiveEffort };
     }
 
     try {
@@ -182,10 +187,12 @@ async function callOpenRouter(params: {
     }
   };
 
-  let response = await executeFetch(params.useJsonResponseFormat, Boolean(params.reasoningEffort));
+  let usedResponseFormat = params.useJsonResponseFormat;
+  let usedReasoningEffort = Boolean(params.reasoningEffort);
+  let response = await executeFetch(usedResponseFormat, usedReasoningEffort);
 
   // If provider rejects optional response_format or reasoning parameters with HTTP 400, retry cleanly without them
-  if (response.status === 400 && (params.useJsonResponseFormat || params.reasoningEffort)) {
+  if (response.status === 400 && (usedResponseFormat || usedReasoningEffort)) {
     const errText = await response.text().catch(() => '');
     const lower = errText.toLowerCase();
     const isParamRejection =
@@ -195,6 +202,8 @@ async function callOpenRouter(params: {
       lower.includes('unsupported');
 
     if (isParamRejection) {
+      usedResponseFormat = false;
+      usedReasoningEffort = false;
       response = await executeFetch(false, false);
     } else {
       throw new OpenRouterRequestError(
@@ -213,13 +222,38 @@ async function callOpenRouter(params: {
     );
   }
 
-  const parsed = (await response.json()) as OpenRouterResponse;
+  let parsed = (await response.json()) as OpenRouterResponse;
   if (parsed.error) {
     const message = typeof parsed.error === 'string' ? parsed.error : parsed.error.message;
     throw new OpenRouterRequestError(
       `OpenRouter response error for ${params.model}: ${message ?? 'unknown error'}`,
       { shouldSkipModel: true }
     );
+  }
+
+  // If reasoning tokens consumed the entire max_tokens budget before emitting JSON content,
+  // retry once with lower reasoning effort and an expanded max_tokens ceiling.
+  const firstChoice = parsed.choices?.[0];
+  const emptyContentDueToLength =
+    !firstChoice?.message?.content?.trim() && firstChoice?.finish_reason === 'length';
+
+  if (emptyContentDueToLength) {
+    const expandedMaxTokens = Math.min(32_000, Math.max(12_000, (params.maxTokens ?? 8_000) * 2));
+    console.warn(
+      `[OpenRouter] ${params.model} hit finish_reason=length with empty content; retrying once with effort=low and max_tokens=${expandedMaxTokens}.`
+    );
+    const retryResponse = await executeFetch(
+      usedResponseFormat,
+      usedReasoningEffort,
+      'low',
+      expandedMaxTokens
+    );
+    if (retryResponse.ok) {
+      const retryParsed = (await retryResponse.json()) as OpenRouterResponse;
+      if (!retryParsed.error) {
+        parsed = retryParsed;
+      }
+    }
   }
 
   return parsed;

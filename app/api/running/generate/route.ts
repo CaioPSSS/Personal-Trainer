@@ -416,7 +416,7 @@ export async function POST(req: NextRequest) {
       temperature: 0.2,
       maxRetries: 1,
       reasoningEffort: 'medium',
-      maxTokens: 12000,
+      maxTokens: 24000,
       perModelTimeoutsMs: [180_000, 65_000, 30_000],
       totalBudgetMs: 275_000,
       semanticValidator: (plan) => validateRunningPlanSemantics(plan, weeklyRunsTarget),

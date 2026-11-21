@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
           maxRetries: 1,
           temperature: 0.15,
           reasoningEffort: 'low',
-          maxTokens: 1500,
+          maxTokens: 4000,
           perModelTimeoutsMs: [20_000, 15_000],
           totalBudgetMs: 40_000,
         });
@@ -291,7 +291,7 @@ export async function POST(request: NextRequest) {
       maxRetries: 1,
       temperature: 0.15,
       reasoningEffort: 'low',
-      maxTokens: 1500,
+      maxTokens: 4000,
       perModelTimeoutsMs: [20_000, 15_000],
       totalBudgetMs: 40_000,
     });

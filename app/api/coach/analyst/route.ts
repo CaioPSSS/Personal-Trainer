@@ -176,8 +176,8 @@ export async function POST(request: NextRequest) {
       modelCascade: analystCascade,
       maxRetries: 1,
       temperature: 0.15,
-      reasoningEffort: 'medium',
-      maxTokens: 4500,
+      reasoningEffort: 'low',
+      maxTokens: 12000,
       perModelTimeoutsMs: [55_000, 35_000],
       totalBudgetMs: 95_000,
     });

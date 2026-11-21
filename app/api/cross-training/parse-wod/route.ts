@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
           maxRetries: 1,
           temperature: 0.1,
           reasoningEffort: 'low',
-          maxTokens: 1000,
+          maxTokens: 4000,
           perModelTimeoutsMs: [20_000, 15_000],
           totalBudgetMs: 40_000,
         });
