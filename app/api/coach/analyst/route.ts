@@ -1,15 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { isAuthorized } from '@/lib/auth';
+import { shiftISODate, todayISO } from '@/lib/dates';
 
 export const maxDuration = 300;
+
 import {
   DataAnalystReport,
   dataAnalystReportSchema,
   DATA_ANALYST_REPORT_SCHEMA_VERSION,
 } from '@/lib/ai/contracts';
+import {
+  DATA_ANALYST_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts } from '@/lib/ai/prompts';
+import {
+  buildCompactAthleteProfile,
+  buildCompactMesocycleSummary,
+  buildConcurrentRunningDigest,
+  buildWellnessNutritionDigest,
+  buildWorkoutHistoryDigest,
+} from '@/lib/ai/context-builders';
 import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { Prisma } from '@prisma/client';
 
@@ -18,7 +31,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash,minimax/minimax-m3').split(',');
+  const analystCascade = resolveModelCascade(
+    process.env.DATA_ANALYST_CASCADE,
+    DATA_ANALYST_DEFAULT_CASCADE
+  );
 
   try {
     await prisma.athleteProfile.upsert({
@@ -30,7 +46,18 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle, swapSuggestions] = await Promise.all([
+    const fourteenDaysAgoStr = shiftISODate(todayISO(), -14);
+
+    const [
+      athleteProfile,
+      recentWorkouts,
+      recentWellness,
+      activeMesocycle,
+      swapSuggestions,
+      runningProfile,
+      activeRunningPlan,
+      recentRuns,
+    ] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -47,7 +74,7 @@ export async function POST(request: NextRequest) {
       prisma.wellnessDaily.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
-        take: 56,
+        take: 28,
       }),
       prisma.mesocyclePlan.findFirst({
         where: {
@@ -56,8 +83,11 @@ export async function POST(request: NextRequest) {
         },
         include: {
           workoutDays: {
+            orderBy: { dayOrder: 'asc' },
             include: {
-              prescriptions: true,
+              prescriptions: {
+                orderBy: { sortOrder: 'asc' },
+              },
             },
           },
         },
@@ -65,6 +95,44 @@ export async function POST(request: NextRequest) {
       prisma.exerciseSwapSuggestion.findMany({
         orderBy: { createdAt: 'desc' },
         take: 60,
+      }),
+      prisma.runningProfile.findUnique({
+        where: { id: 'singleton' },
+        select: {
+          primaryObjective: true,
+          weeklyRunsTarget: true,
+          availableDays: true,
+          currentPace5kSec: true,
+        },
+      }),
+      prisma.runningPlan.findFirst({
+        where: { runningProfileId: 'singleton', status: 'active' },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          title: true,
+          phase: true,
+          weeklyTargetKm: true,
+          sessions: {
+            orderBy: [{ weekNumber: 'asc' }, { scheduledDate: 'asc' }],
+            select: {
+              weekNumber: true,
+              dayOfWeek: true,
+              sessionType: true,
+              title: true,
+              totalDistanceKm: true,
+            },
+          },
+        },
+      }),
+      prisma.runningExecution.findMany({
+        where: { runningProfileId: 'singleton', date: { gte: fourteenDaysAgoStr } },
+        orderBy: { date: 'desc' },
+        select: {
+          date: true,
+          distanceKm: true,
+          sessionRpe: true,
+          caloriesBurned: true,
+        },
       }),
     ]);
 
@@ -74,11 +142,29 @@ export async function POST(request: NextRequest) {
       recentWorkouts,
     });
 
-    const prompts = buildDataAnalystPrompts({
-      athleteProfile,
-      activeMesocycle,
-      recentWorkouts,
+    const compactProfile = buildCompactAthleteProfile(
+      athleteProfile as unknown as Record<string, unknown> | null
+    );
+    const compactMesocycle = buildCompactMesocycleSummary(activeMesocycle);
+    const workoutHistoryDigest = buildWorkoutHistoryDigest(recentWorkouts);
+    const wellnessNutritionDigest = buildWellnessNutritionDigest(
       recentWellness,
+      athleteProfile?.bodyWeightKg
+    );
+    const concurrentRunningDigest = buildConcurrentRunningDigest({
+      runningProfile,
+      activeRunningPlan,
+      recentRuns,
+    });
+
+    const prompts = buildDataAnalystPrompts({
+      athleteProfile: compactProfile,
+      activeMesocycle: compactMesocycle,
+      recentWorkouts: [],
+      recentWellness: [],
+      workoutHistoryDigest,
+      wellnessNutritionDigest,
+      concurrentRunningDigest,
       exerciseSubstitutionSummary,
     });
 
@@ -88,8 +174,12 @@ export async function POST(request: NextRequest) {
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
       modelCascade: analystCascade,
-      maxRetries: 2,
+      maxRetries: 1,
       temperature: 0.15,
+      reasoningEffort: 'medium',
+      maxTokens: 4500,
+      perModelTimeoutsMs: [55_000, 35_000],
+      totalBudgetMs: 95_000,
     });
 
     await prisma.aiRunLog.create({
@@ -107,7 +197,8 @@ export async function POST(request: NextRequest) {
           usage: result.usage,
           contextSizes: {
             workouts: recentWorkouts.length,
-            wellness: recentWellness.length,
+            exercisesDigested: workoutHistoryDigest.exercises.length,
+            wellnessDays: wellnessNutritionDigest.daysLogged,
             permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
             frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
           },

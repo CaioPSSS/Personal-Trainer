@@ -4,6 +4,7 @@ import { isAuthorized } from '@/lib/auth';
 import { isISODate, todayISO, shiftISODate } from '@/lib/dates';
 
 export const maxDuration = 300;
+
 import {
   DataAnalystReport,
   dataAnalystReportSchema,
@@ -11,9 +12,23 @@ import {
   masterPlanOutputSchema,
   MASTER_PLAN_SCHEMA_VERSION,
   MasterPlanOutput,
+  validateMasterPlanSemantics,
 } from '@/lib/ai/contracts';
+import {
+  DATA_ANALYST_DEFAULT_CASCADE,
+  MASTER_COACH_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
+import {
+  buildCompactAthleteProfile,
+  buildCompactCrossTrainingDigest,
+  buildCompactMesocycleSummary,
+  buildConcurrentRunningDigest,
+  buildWellnessNutritionDigest,
+  buildWorkoutHistoryDigest,
+} from '@/lib/ai/context-builders';
 import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
 import {
@@ -31,8 +46,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const masterCascade = (process.env.MASTER_COACH_CASCADE ?? 'deepseek/deepseek-v4-pro,qwen/qwen3.7-plus,minimax/minimax-m3,deepseek/deepseek-v4-flash-0731').split(',');
-  const analystCascade = (process.env.DATA_ANALYST_CASCADE ?? 'deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash,minimax/minimax-m3').split(',');
+  const masterCascade = resolveModelCascade(
+    process.env.MASTER_COACH_CASCADE,
+    MASTER_COACH_DEFAULT_CASCADE
+  );
+  const analystCascade = resolveModelCascade(
+    process.env.DATA_ANALYST_CASCADE,
+    DATA_ANALYST_DEFAULT_CASCADE
+  );
+
+  const requestStartMs = Date.now();
+
+  let requestedStartDate: string | null = null;
+  try {
+    const body = (await request.json()) as { startDate?: string };
+    if (typeof body?.startDate === 'string' && isISODate(body.startDate)) {
+      requestedStartDate = body.startDate;
+    }
+  } catch {
+    // Empty or no body passed
+  }
 
   try {
     await prisma.athleteProfile.upsert({
@@ -44,7 +77,8 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const fourteenDaysAgoStr = shiftISODate(todayISO(), -14);
+    const today = todayISO();
+    const fourteenDaysAgoStr = shiftISODate(today, -14);
 
     const [
       athleteProfile,
@@ -54,6 +88,9 @@ export async function POST(request: NextRequest) {
       activeMesocycle,
       recentCrossTraining,
       swapSuggestions,
+      runningProfile,
+      activeRunningPlan,
+      recentRunningExecutions,
     ] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
@@ -71,10 +108,16 @@ export async function POST(request: NextRequest) {
       prisma.wellnessDaily.findMany({
         where: { athleteProfileId: 'singleton' },
         orderBy: { date: 'desc' },
-        take: 56,
+        take: 28,
       }),
       prisma.coachBrainEntry.findFirst({
         orderBy: { createdAt: 'desc' },
+        select: {
+          version: true,
+          hypotheses: true,
+          retrospective: true,
+          createdAt: true,
+        },
       }),
       prisma.mesocyclePlan.findFirst({
         where: {
@@ -83,8 +126,11 @@ export async function POST(request: NextRequest) {
         },
         include: {
           workoutDays: {
+            orderBy: { dayOrder: 'asc' },
             include: {
-              prescriptions: true,
+              prescriptions: {
+                orderBy: { sortOrder: 'asc' },
+              },
             },
           },
         },
@@ -100,6 +146,50 @@ export async function POST(request: NextRequest) {
         orderBy: { createdAt: 'desc' },
         take: 60,
       }),
+      prisma.runningProfile.findUnique({
+        where: { id: 'singleton' },
+        select: {
+          primaryObjective: true,
+          weeklyRunsTarget: true,
+          availableDays: true,
+          currentPace5kSec: true,
+        },
+      }),
+      prisma.runningPlan.findFirst({
+        where: {
+          runningProfileId: 'singleton',
+          status: 'active',
+        },
+        orderBy: { createdAt: 'desc' },
+        select: {
+          title: true,
+          phase: true,
+          weeklyTargetKm: true,
+          sessions: {
+            orderBy: [{ weekNumber: 'asc' }, { scheduledDate: 'asc' }],
+            select: {
+              weekNumber: true,
+              dayOfWeek: true,
+              sessionType: true,
+              title: true,
+              totalDistanceKm: true,
+            },
+          },
+        },
+      }),
+      prisma.runningExecution.findMany({
+        where: {
+          runningProfileId: 'singleton',
+          date: { gte: fourteenDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        select: {
+          date: true,
+          distanceKm: true,
+          sessionRpe: true,
+          caloriesBurned: true,
+        },
+      }),
     ]);
 
     const exerciseSubstitutionSummary = buildExerciseSubstitutionSummary({
@@ -108,6 +198,22 @@ export async function POST(request: NextRequest) {
       recentWorkouts,
     });
 
+    const compactProfile = buildCompactAthleteProfile(
+      athleteProfile as unknown as Record<string, unknown> | null
+    );
+    const compactMesocycle = buildCompactMesocycleSummary(activeMesocycle);
+    const workoutHistoryDigest = buildWorkoutHistoryDigest(recentWorkouts);
+    const wellnessNutritionDigest = buildWellnessNutritionDigest(
+      recentWellness,
+      athleteProfile?.bodyWeightKg
+    );
+    const concurrentRunningDigest = buildConcurrentRunningDigest({
+      runningProfile,
+      activeRunningPlan,
+      recentRuns: recentRunningExecutions,
+    });
+    const compactCrossTraining = buildCompactCrossTrainingDigest(recentCrossTraining);
+
     let analystData: DataAnalystReport;
     let analystRunLogId: string = 'bypass';
     let analystModelUsed = 'bypass';
@@ -115,29 +221,33 @@ export async function POST(request: NextRequest) {
 
     if (recentWorkouts.length < 3) {
       const permanentNotes = exerciseSubstitutionSummary.permanentSwaps.map(
-        (s) => `Respect permanent substitution: use "${s.replacementExercise}" instead of "${s.originalExercise}"`
+        (s) => `Respeitar substituição permanente: usar "${s.replacementExercise}" em vez de "${s.originalExercise}"`
       );
       analystData = {
-        executiveSummary: "Baseline phase. No prior data available. Design an introductory hypertrophy block based solely on athlete profile.",
+        executiveSummary:
+          'Baseline phase. Sem histórico suficiente para análise estatística; projetar bloco inicial de hipertrofia com alto SFR baseado no perfil do atleta, corrida concorrente e recuperação.',
         exercisePerformance: [],
         progressionSignals: {
           progressionCompliance: 'moderate',
-          keyBottlenecks: ['N/A - Baseline phase'],
-          recoveryConstraints: ['N/A - Baseline phase'],
+          keyBottlenecks: ['N/A - Fase inicial (Baseline)'],
+          recoveryConstraints: ['N/A - Fase inicial (Baseline)'],
         },
         recommendationsForMaster: [
-          'Establish baseline progressive overload',
-          'Focus on movement pattern mastery',
-          'Rely entirely on Athlete Profile for constraints',
+          'Estabelecer dupla progressão limpa com RIR bem calibrado',
+          'Priorizar exercícios de alto SFR e estabilidade mecânica',
+          'Calibrar volume conforme perfil, sono, dieta e carga concorrente de corrida/CrossFit',
           ...permanentNotes,
         ],
       };
     } else {
       const analystPrompts = buildDataAnalystPrompts({
-        athleteProfile,
-        activeMesocycle,
-        recentWorkouts,
-        recentWellness,
+        athleteProfile: compactProfile,
+        activeMesocycle: compactMesocycle,
+        recentWorkouts: [],
+        recentWellness: [],
+        workoutHistoryDigest,
+        wellnessNutritionDigest,
+        concurrentRunningDigest,
         exerciseSubstitutionSummary,
       });
 
@@ -147,8 +257,12 @@ export async function POST(request: NextRequest) {
         systemPrompt: analystPrompts.systemPrompt,
         userPrompt: analystPrompts.userPrompt,
         modelCascade: analystCascade,
-        maxRetries: 2,
+        maxRetries: 1,
         temperature: 0.15,
+        reasoningEffort: 'medium',
+        maxTokens: 4500,
+        perModelTimeoutsMs: [40_000, 25_000],
+        totalBudgetMs: 65_000,
       });
 
       const analystRunLog = await prisma.aiRunLog.create({
@@ -166,7 +280,9 @@ export async function POST(request: NextRequest) {
             usage: analystResult.usage,
             contextSizes: {
               workouts: recentWorkouts.length,
-              wellness: recentWellness.length,
+              exercisesDigested: workoutHistoryDigest.exercises.length,
+              wellnessDays: wellnessNutritionDigest.daysLogged,
+              hasConcurrentRunning: Boolean(concurrentRunningDigest),
               permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
               frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
             },
@@ -182,14 +298,27 @@ export async function POST(request: NextRequest) {
     }
 
     const masterPrompts = buildMasterCoachPrompts({
-      athleteProfile,
+      athleteProfile: compactProfile,
       analystReport: analystData,
       previousCoachBrain: previousBrain,
-      recentWorkouts,
-      recentWellness,
-      crossTrainingSummary: recentCrossTraining,
+      recentWorkouts: [],
+      recentWellness: [],
+      workoutHistoryDigest,
+      wellnessNutritionDigest,
+      concurrentRunningDigest,
+      crossTrainingSummary: compactCrossTraining,
       exerciseSubstitutionSummary,
     });
+
+    // Reserve generous time for the flagship model (~180s) while keeping fallback headroom inside Vercel's 300s cap
+    const elapsedBeforeMasterMs = Date.now() - requestStartMs;
+    const masterBudgetMs = Math.max(90_000, 275_000 - elapsedBeforeMasterMs);
+    const expectedDaysCount =
+      athleteProfile?.weeklyWorkoutsTarget &&
+      athleteProfile.weeklyWorkoutsTarget >= 2 &&
+      athleteProfile.weeklyWorkoutsTarget <= 6
+        ? athleteProfile.weeklyWorkoutsTarget
+        : null;
 
     const result = await generateStructuredOutput<MasterPlanOutput>({
       schemaId: `master-plan-${MASTER_PLAN_SCHEMA_VERSION}`,
@@ -197,8 +326,13 @@ export async function POST(request: NextRequest) {
       systemPrompt: masterPrompts.systemPrompt,
       userPrompt: masterPrompts.userPrompt,
       modelCascade: masterCascade,
-      maxRetries: 2,
-      temperature: 0.1,
+      maxRetries: 1,
+      temperature: 0.15,
+      reasoningEffort: 'medium',
+      maxTokens: 12000,
+      perModelTimeoutsMs: [180_000, 65_000, 30_000],
+      totalBudgetMs: masterBudgetMs,
+      semanticValidator: (plan) => validateMasterPlanSemantics(plan, expectedDaysCount),
     });
 
     const runLog = await prisma.aiRunLog.create({
@@ -218,7 +352,8 @@ export async function POST(request: NextRequest) {
           analystSummary: analystData.executiveSummary,
           contextSizes: {
             workouts: recentWorkouts.length,
-            wellness: recentWellness.length,
+            wellnessDays: wellnessNutritionDigest.daysLogged,
+            hasConcurrentRunning: Boolean(concurrentRunningDigest),
             permanentSwaps: exerciseSubstitutionSummary.permanentSwaps.length,
             frequentSwaps: exerciseSubstitutionSummary.frequentSwaps.length,
           },
@@ -227,17 +362,6 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    let requestedStartDate: string | null = null;
-    try {
-      const body = (await request.json()) as { startDate?: string };
-      if (typeof body?.startDate === 'string' && isISODate(body.startDate)) {
-        requestedStartDate = body.startDate;
-      }
-    } catch {
-      // Empty or no body passed
-    }
-
-    const today = todayISO();
     const availableDayIndices = parseAvailableDayIndices(athleteProfile?.availableDays);
     const weeklyTarget =
       athleteProfile?.weeklyWorkoutsTarget ?? Math.max(1, result.data.mesocycle.days.length);

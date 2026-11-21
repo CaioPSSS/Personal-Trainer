@@ -92,6 +92,27 @@ export interface AssistantOutput {
   } | null;
 }
 
+export const CANONICAL_MOVEMENT_PATTERNS = [
+  'squat',
+  'hinge',
+  'lunge',
+  'knee_extension',
+  'knee_flexion',
+  'hip_thrust',
+  'calf_raise',
+  'hip_adduction',
+  'hip_abduction',
+  'horizontal_push',
+  'vertical_push',
+  'horizontal_pull',
+  'vertical_pull',
+  'shoulder_isolation',
+  'elbow_flexion',
+  'elbow_extension',
+  'core',
+  'carry',
+] as const;
+
 export const masterPlanOutputSchema = {
   $id: 'masterPlanOutput',
   type: 'object',
@@ -115,7 +136,7 @@ export const masterPlanOutputSchema = {
         objective: { type: 'string', minLength: 3 },
         split: { type: 'string', minLength: 2 },
         durationWeeks: { type: 'integer', minimum: 4, maximum: 6 },
-        targetSessionMinutes: { type: 'integer', minimum: 45, maximum: 90 },
+        targetSessionMinutes: { type: 'integer', minimum: 35, maximum: 120 },
         weeks: {
           type: 'array',
           minItems: 4,
@@ -133,7 +154,7 @@ export const masterPlanOutputSchema = {
         },
         days: {
           type: 'array',
-          minItems: 3,
+          minItems: 2,
           maxItems: 6,
           items: {
             type: 'object',
@@ -142,7 +163,7 @@ export const masterPlanOutputSchema = {
             properties: {
               dayOrder: { type: 'integer', minimum: 1, maximum: 7 },
               label: { type: 'string', minLength: 2 },
-              estimatedDurationMin: { type: 'integer', minimum: 35, maximum: 90 },
+              estimatedDurationMin: { type: 'integer', minimum: 30, maximum: 120 },
               exercises: {
                 type: 'array',
                 minItems: 3,
@@ -165,7 +186,10 @@ export const masterPlanOutputSchema = {
                   properties: {
                     exerciseKey: { type: 'string', minLength: 2 },
                     exerciseName: { type: 'string', minLength: 2 },
-                    movementPattern: { type: 'string', minLength: 2 },
+                    movementPattern: {
+                      type: 'string',
+                      enum: [...CANONICAL_MOVEMENT_PATTERNS],
+                    },
                     targetSets: { type: 'integer', minimum: 1, maximum: 8 },
                     targetRepMin: { type: 'integer', minimum: 1, maximum: 25 },
                     targetRepMax: { type: 'integer', minimum: 1, maximum: 30 },
@@ -213,19 +237,19 @@ export const masterPlanOutputSchema = {
           properties: {
             whatWorked: {
               type: 'array',
-              minItems: 1,
-              items: { type: 'string', minLength: 5 },
+              minItems: 0,
+              items: { type: 'string', minLength: 3 },
             },
             whatFailed: {
               type: 'array',
-              minItems: 1,
-              items: { type: 'string', minLength: 5 },
+              minItems: 0,
+              items: { type: 'string', minLength: 3 },
             },
             confidenceScore: { type: 'number', minimum: 0, maximum: 1 },
             correctionActions: {
               type: 'array',
-              minItems: 1,
-              items: { type: 'string', minLength: 5 },
+              minItems: 0,
+              items: { type: 'string', minLength: 3 },
             },
           },
         },
@@ -233,6 +257,57 @@ export const masterPlanOutputSchema = {
     },
   },
 } as const;
+
+/**
+ * Post-schema semantic validation for generated MasterPlanOutput.
+ */
+export function validateMasterPlanSemantics(
+  output: MasterPlanOutput,
+  expectedDaysCount?: number | null
+): string[] {
+  const errors: string[] = [];
+  const { mesocycle } = output;
+
+  if (mesocycle.weeks.length !== mesocycle.durationWeeks) {
+    errors.push(
+      `mesocycle.weeks length (${mesocycle.weeks.length}) must equal durationWeeks (${mesocycle.durationWeeks})`
+    );
+  }
+
+  if (
+    expectedDaysCount &&
+    expectedDaysCount >= 2 &&
+    expectedDaysCount <= 6 &&
+    mesocycle.days.length !== expectedDaysCount
+  ) {
+    errors.push(
+      `mesocycle.days length (${mesocycle.days.length}) must match athlete weeklyWorkoutsTarget (${expectedDaysCount})`
+    );
+  }
+
+  const seenDayOrders = new Set<number>();
+  for (const day of mesocycle.days) {
+    if (seenDayOrders.has(day.dayOrder)) {
+      errors.push(`Duplicate dayOrder ${day.dayOrder} in mesocycle.days`);
+    }
+    seenDayOrders.add(day.dayOrder);
+
+    for (const ex of day.exercises) {
+      if (ex.targetRepMin > ex.targetRepMax) {
+        errors.push(
+          `Exercise "${ex.exerciseName}" has targetRepMin (${ex.targetRepMin}) > targetRepMax (${ex.targetRepMax})`
+        );
+      }
+      if (ex.targetRpeMin > ex.targetRpeMax) {
+        errors.push(
+          `Exercise "${ex.exerciseName}" has targetRpeMin (${ex.targetRpeMin}) > targetRpeMax (${ex.targetRpeMax})`
+        );
+      }
+    }
+  }
+
+  return errors;
+}
 
 export const dataAnalystReportSchema = {
   $id: 'dataAnalystReport',

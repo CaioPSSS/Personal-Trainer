@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAuthorized } from '@/lib/auth';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
+import {
+  ASSISTANT_COACH_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
 
 export const maxDuration = 60;
 
@@ -33,15 +37,10 @@ export async function POST(request: NextRequest) {
       readiness?: Record<string, unknown>;
     };
 
-    const cascade = [
-      ...(process.env.ASSISTANT_COACH_CASCADE ?? '').split(','),
-      ...(process.env.DATA_ANALYST_CASCADE ?? '').split(','),
-      'google/gemini-2.5-flash',
-      'deepseek/deepseek-chat',
-      'openai/gpt-4o-mini',
-    ]
-      .map((m) => m.trim())
-      .filter(Boolean);
+    const cascade = resolveModelCascade(
+      process.env.ASSISTANT_COACH_CASCADE,
+      ASSISTANT_COACH_DEFAULT_CASCADE
+    );
 
     if (process.env.OPENROUTER_API_KEY) {
       try {
@@ -51,9 +50,13 @@ export async function POST(request: NextRequest) {
           systemPrompt:
             'You are Master Coach AI conducting the athlete Sunday Weekly Check-in across Hypertrophy, Running, and CrossFit. Write in clear, motivating, clinical Brazilian Portuguese (pt-BR). Analyze adherence, tonnage delta, running km, and sleep/recovery, and provide a concrete tactical adjustment for the upcoming week.',
           userPrompt: `Weekly Review Data JSON:\n${JSON.stringify(body.weeklyReview ?? {})}\n\nCurrent Readiness JSON:\n${JSON.stringify(body.readiness ?? {})}`,
-          modelCascade: Array.from(new Set(cascade)),
+          modelCascade: cascade,
           maxRetries: 1,
           temperature: 0.2,
+          reasoningEffort: 'low',
+          maxTokens: 1200,
+          perModelTimeoutsMs: [25_000, 20_000],
+          totalBudgetMs: 50_000,
         });
 
         return NextResponse.json({

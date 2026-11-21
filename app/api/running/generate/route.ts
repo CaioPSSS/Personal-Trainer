@@ -7,10 +7,19 @@ import {
   RunningPlanOutput,
   runningPlanOutputSchema,
   RUNNING_PLAN_SCHEMA_VERSION,
+  validateRunningPlanSemantics,
 } from '@/lib/ai/running-contracts';
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
+import {
+  RUNNING_COACH_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
+import { buildWellnessNutritionDigest } from '@/lib/ai/context-builders';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
-import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
+import {
+  parseAvailableDayIndices,
+  rebalanceWeekSchedule,
+} from '@/lib/scheduling/strength-scheduler';
 import {
   isISODate,
   shiftISODate,
@@ -20,7 +29,6 @@ import {
   resolveCycleAnchorMonday,
   resolveRunningPlanMonthYear,
 } from '@/lib/scheduling/plan-dates';
-import { parseAvailableDayIndices } from '@/lib/scheduling/strength-scheduler';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -147,13 +155,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const cascadeEnv =
-    process.env.RUNNING_COACH_CASCADE ??
-    'deepseek/deepseek-v4-pro,qwen/qwen3.7-plus,deepseek/deepseek-v4-flash-0731';
-  const modelCascade = cascadeEnv
-    .split(',')
-    .map((m) => m.trim())
-    .filter(Boolean);
+  const modelCascade = resolveModelCascade(
+    process.env.RUNNING_COACH_CASCADE,
+    RUNNING_COACH_DEFAULT_CASCADE
+  );
 
   try {
     // Ensure base athlete profile singleton exists for CalendarEvent relation
@@ -210,7 +215,7 @@ export async function POST(req: NextRequest) {
     const sixtyDaysAgoStr = shiftISODate(todayStr, -60);
     const thirtyDaysAgoStr = shiftISODate(todayStr, -30);
 
-    // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence & recurring cross-training
+    // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence, wellness/nutrition & recurring cross-training
     const [
       recentExecutions,
       rawBrainEntries,
@@ -218,6 +223,7 @@ export async function POST(req: NextRequest) {
       recentWorkouts,
       activePlan,
       athleteRecord,
+      recentWellness,
     ] = await Promise.all([
       prisma.runningExecution.findMany({
         where: {
@@ -264,9 +270,22 @@ export async function POST(req: NextRequest) {
       }),
       prisma.athleteProfile.findUnique({
         where: { id: 'singleton' },
-        select: { recurringCrossTraining: true },
+        select: { recurringCrossTraining: true, bodyWeightKg: true },
+      }),
+      prisma.wellnessDaily.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: thirtyDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 28,
       }),
     ]);
+
+    const wellnessNutritionDigest = buildWellnessNutritionDigest(
+      recentWellness,
+      athleteRecord?.bodyWeightKg
+    );
 
     // 3. Apply temporal memory decay: 1.0 (current), 0.7 (month -1), 0.4 (month -2)
     const decaySchedule = [1.0, 0.7, 0.4];
@@ -382,11 +401,12 @@ export async function POST(req: NextRequest) {
       recentStrengthWorkouts,
       planAdherenceSummary,
       recurringCrossTraining,
+      wellnessNutritionDigest: wellnessNutritionDigest.daysLogged > 0 ? wellnessNutritionDigest : null,
       targetMonth,
       targetYear,
     });
 
-    // 5. Execute OpenRouter Cascade with Ajv Schema validation
+    // 5. Execute OpenRouter Cascade with Ajv Schema + semantic validation
     const generationResult = await generateStructuredOutput<RunningPlanOutput>({
       schemaId: `running-plan-${RUNNING_PLAN_SCHEMA_VERSION}`,
       schema: runningPlanOutputSchema,
@@ -394,7 +414,12 @@ export async function POST(req: NextRequest) {
       userPrompt,
       modelCascade,
       temperature: 0.2,
-      maxRetries: 2,
+      maxRetries: 1,
+      reasoningEffort: 'medium',
+      maxTokens: 12000,
+      perModelTimeoutsMs: [180_000, 65_000, 30_000],
+      totalBudgetMs: 275_000,
+      semanticValidator: (plan) => validateRunningPlanSemantics(plan, weeklyRunsTarget),
     });
 
     const output = generationResult.data;
@@ -406,7 +431,7 @@ export async function POST(req: NextRequest) {
         data: {
           runType: 'running_coach_monthly_plan',
           status: 'success',
-          primaryModel: modelCascade[0] ?? 'deepseek/deepseek-v4-pro',
+          primaryModel: modelCascade[0] ?? RUNNING_COACH_DEFAULT_CASCADE[0],
           fallbackModel:
             generationResult.modelUsed !== modelCascade[0] ? generationResult.modelUsed : null,
           attemptCount: generationResult.attempts,

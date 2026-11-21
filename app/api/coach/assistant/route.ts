@@ -22,6 +22,10 @@ import {
   tagRecommendationsWithObjective,
 } from '@/lib/ai/exercise-swap';
 import {
+  ASSISTANT_COACH_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
+import {
   calculateProgressiveOverload,
   ExercisePreviousPerformanceData,
   isCompoundExercise,
@@ -49,19 +53,10 @@ interface ApplySwapRequestBody {
 }
 
 function buildAssistantModelCascade(): string[] {
-  const configured = [
-    ...(process.env.ASSISTANT_COACH_CASCADE ?? '').split(','),
-    ...(process.env.DATA_ANALYST_CASCADE ?? '').split(','),
-    'google/gemini-2.5-flash',
-    'deepseek/deepseek-chat',
-    'openai/gpt-4o-mini',
-    'deepseek/deepseek-v4-flash-0731',
-    'qwen/qwen3.7-plus',
-  ]
-    .map((m) => m.trim())
-    .filter(Boolean);
-
-  return Array.from(new Set(configured));
+  return resolveModelCascade(
+    process.env.ASSISTANT_COACH_CASCADE,
+    ASSISTANT_COACH_DEFAULT_CASCADE
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -183,6 +178,10 @@ export async function POST(request: NextRequest) {
           modelCascade: assistantCascade,
           maxRetries: 1,
           temperature: 0.15,
+          reasoningEffort: 'low',
+          maxTokens: 1500,
+          perModelTimeoutsMs: [20_000, 15_000],
+          totalBudgetMs: 40_000,
         });
 
         recommendations = tagRecommendationsWithObjective(
@@ -289,8 +288,12 @@ export async function POST(request: NextRequest) {
       systemPrompt: prompts.systemPrompt,
       userPrompt: prompts.userPrompt,
       modelCascade: assistantCascade,
-      maxRetries: 2,
+      maxRetries: 1,
       temperature: 0.15,
+      reasoningEffort: 'low',
+      maxTokens: 1500,
+      perModelTimeoutsMs: [20_000, 15_000],
+      totalBudgetMs: 40_000,
     });
 
     if (result.data.mode === 'fatigue_alert' && result.data.alert) {
