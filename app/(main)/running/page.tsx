@@ -31,6 +31,7 @@ import PaceEvolutionChart from '@/app/components/charts/PaceEvolutionChart';
 import WeeklyVolumeChart from '@/app/components/charts/WeeklyVolumeChart';
 import LinkRunningSessionModal from '@/app/components/LinkRunningSessionModal';
 import RunningDebriefModal from '@/app/components/RunningDebriefModal';
+import CycleRenewalPrompt from '@/app/components/CycleRenewalPrompt';
 import {
   predictRaceTimesFrom5kPace,
   estimateVdotFrom5kPaceSec,
@@ -412,8 +413,17 @@ export default function RunningPage() {
       }
 
       const genData = await genRes.json();
+      const startLabel =
+        typeof genData.startDate === 'string' && genData.startDate.includes('-')
+          ? genData.startDate.split('-').reverse().slice(0, 2).join('/')
+          : null;
+      const startHint = startLabel
+        ? genData.rolledToNextWeek
+          ? ` Início na segunda-feira (${startLabel}) com todas as 4 semanas preservadas.`
+          : ` Início em ${startLabel}.`
+        : '';
       success(
-        `Novo mesociclo de 4 semanas gerado com sucesso via ${genData.modelUsed || 'Running Coach AI'} (${genData.sessionsCount} sessões distribuídas em ${quickDays.length} dias)!`,
+        `Novo mesociclo de 4 semanas gerado via ${genData.modelUsed || 'Running Coach AI'} (${genData.sessionsCount} sessões)!${startHint}`,
         'Plano Gerado'
       );
       setIsAdjustingSchedule(false);
@@ -633,6 +643,7 @@ export default function RunningPage() {
           ),
         };
       });
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
     } catch (err) {
       toastError(err instanceof Error ? err.message : 'Erro ao pular treino.');
     } finally {
@@ -685,6 +696,7 @@ export default function RunningPage() {
       setManualDurationMin('');
       setManualNotes('');
       setSelectedSessionId(null);
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
       await reloadRunningData();
     } catch (err) {
       toastError(err instanceof Error ? err.message : 'Erro ao salvar treino.');
@@ -807,6 +819,9 @@ export default function RunningPage() {
           </button>
         </div>
       </div>
+
+      {/* Automatic Cycle Renewal Suggestion for Running */}
+      <CycleRenewalPrompt scope="running" onRenewed={reloadRunningData} />
 
       {/* Unlinked Runs Alert Banner */}
       {unlinkedCount > 0 && (

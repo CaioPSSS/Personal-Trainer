@@ -28,7 +28,7 @@ export default async function HomePage() {
 
   const activeMesocycle = athleteProfile?.mesocycles?.[0] || null;
   const currentWeekNumber = calculateCurrentWeek(
-    activeMesocycle?.createdAt,
+    activeMesocycle?.startDate ?? activeMesocycle?.createdAt,
     activeMesocycle?.durationWeeks || 4
   );
   const currentDateFormatted = formatDateLongPTBR();

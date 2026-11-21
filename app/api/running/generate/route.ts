@@ -11,7 +11,16 @@ import {
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
-import { todayISO } from '@/lib/dates';
+import {
+  isISODate,
+  shiftISODate,
+  todayISO,
+} from '@/lib/dates';
+import {
+  resolveCycleAnchorMonday,
+  resolveRunningPlanMonthYear,
+} from '@/lib/scheduling/plan-dates';
+import { parseAvailableDayIndices } from '@/lib/scheduling/strength-scheduler';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -35,22 +44,6 @@ const ALL_CANONICAL_DAYS: DayOfWeek[] = [
   'saturday',
   'sunday',
 ];
-
-function getMondayOfDate(d: Date): Date {
-  const date = new Date(d);
-  date.setHours(0, 0, 0, 0);
-  const day = date.getDay(); // 0 is Sunday, 1 is Monday...
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  return date;
-}
-
-function formatISODate(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 function dayDistance(dayA: string, dayB: string): number {
   const offsetA = DAY_OFFSETS[dayA.toLowerCase()] ?? 0;
@@ -102,48 +95,16 @@ function resolveSessionDay(
   return bestCandidate;
 }
 
-function computeSessionDate(
-  planMonth: number,
-  planYear: number,
-  weekNumber: number,
-  dayOfWeek: string,
-  availableDays?: string[] | null,
-  usedDaysInWeek?: Set<string>
-): string {
-  const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
-  const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
-  const now = new Date();
-  const isCurrentMonth = now.getMonth() + 1 === planMonth && now.getFullYear() === planYear;
-
-  let baseMonday: Date;
-  if (isCurrentMonth) {
-    baseMonday = getMondayOfDate(now);
-  } else {
-    const firstOfMonth = new Date(planYear, planMonth - 1, 1);
-    baseMonday = getMondayOfDate(firstOfMonth);
-  }
-
-  const sessionDate = new Date(baseMonday);
-  sessionDate.setDate(baseMonday.getDate() + (weekNumber - 1) * 7 + dayOffset);
-  return formatISODate(sessionDate);
-}
-
 function computeSessionSchedule(
-  planMonth: number,
-  planYear: number,
+  anchorMonday: string,
   weekNumber: number,
   dayOfWeek: string,
   availableDays?: string[] | null,
   usedDaysInWeek?: Set<string>
 ): { scheduledDate: string; resolvedDay: DayOfWeek } {
   const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
-  const scheduledDate = computeSessionDate(
-    planMonth,
-    planYear,
-    weekNumber,
-    resolvedDay,
-    [resolvedDay]
-  );
+  const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
+  const scheduledDate = shiftISODate(anchorMonday, (weekNumber - 1) * 7 + dayOffset);
   return { scheduledDate, resolvedDay };
 }
 
@@ -217,24 +178,37 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let body: { month?: number; year?: number } = {};
+    let body: { month?: number; year?: number; startDate?: string } = {};
     try {
       body = await req.json();
     } catch {
       // Empty or no body passed
     }
 
-    const now = new Date();
-    const targetMonth = body.month ?? (now.getMonth() + 1);
-    const targetYear = body.year ?? now.getFullYear();
+    const todayStr = todayISO();
+    const requestedStartDate =
+      typeof body.startDate === 'string' && isISODate(body.startDate)
+        ? body.startDate
+        : null;
 
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-    const sixtyDaysAgoStr = formatISODate(sixtyDaysAgo);
+    const availableDayIndices = parseAvailableDayIndices(runningProfile.availableDays);
+    const weeklyRunsTarget =
+      runningProfile.weeklyRunsTarget ??
+      (availableDayIndices.length >= 3 ? 3 : availableDayIndices.length);
 
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const thirtyDaysAgoStr = formatISODate(thirtyDaysAgo);
+    const anchor = resolveCycleAnchorMonday({
+      today: todayStr,
+      availableDayIndices,
+      weeklyTarget: weeklyRunsTarget,
+      requestedStartDate,
+    });
+
+    const derivedMonthYear = resolveRunningPlanMonthYear(anchor.anchorMonday);
+    const targetMonth = body.month ?? derivedMonthYear.month;
+    const targetYear = body.year ?? derivedMonthYear.year;
+
+    const sixtyDaysAgoStr = shiftISODate(todayStr, -60);
+    const thirtyDaysAgoStr = shiftISODate(todayStr, -30);
 
     // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence & recurring cross-training
     const [
@@ -451,19 +425,23 @@ export async function POST(req: NextRequest) {
 
     // 7. Atomically save to Prisma: RunningPlan, RunningSession[], RunningBrainEntry, and CalendarEvent[]
     const saved = await prisma.$transaction(async (tx) => {
+      // Enforce deterministic targetMonth / targetYear derived from anchorMonday
+      const effectiveMonth = targetMonth;
+      const effectiveYear = targetYear;
+
       // Clean up previous draft or plan for this specific month/year if present
       const existingPlan = await tx.runningPlan.findUnique({
         where: {
           runningProfileId_month_year: {
             runningProfileId: 'singleton',
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         include: { sessions: true },
       });
 
-      const today = todayISO();
+      const today = todayStr;
 
       if (existingPlan) {
         // STRICT FORWARD-ONLY RULE:
@@ -493,8 +471,8 @@ export async function POST(req: NextRequest) {
           runningProfileId: 'singleton',
           status: 'active',
           NOT: {
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         data: { status: 'completed' },
@@ -505,8 +483,8 @@ export async function POST(req: NextRequest) {
         where: {
           runningProfileId_month_year: {
             runningProfileId: 'singleton',
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         update: {
@@ -521,8 +499,8 @@ export async function POST(req: NextRequest) {
         create: {
           runningProfileId: 'singleton',
           title: output.plan.title,
-          month: output.plan.month,
-          year: output.plan.year,
+          month: effectiveMonth,
+          year: effectiveYear,
           objective: output.plan.objective,
           phase: output.plan.phase,
           weeklyTargetKm: output.plan.weeklyTargetKm,
@@ -541,12 +519,18 @@ export async function POST(req: NextRequest) {
 
       for (const session of output.plan.sessions) {
         const weekSet = usedDaysPerWeek.get(session.weekNumber) ?? new Set<string>();
+        // For Week 1, restrict candidate days to anchor.week1AllowedDayNames so no sessions
+        // are ever placed in the past and silently discarded.
+        const allowedDaysForWeek =
+          session.weekNumber === 1
+            ? anchor.week1AllowedDayNames
+            : athleteAvailableDays;
+
         const { scheduledDate, resolvedDay } = computeSessionSchedule(
-          plan.month,
-          plan.year,
+          anchor.anchorMonday,
           session.weekNumber,
           session.dayOfWeek,
-          athleteAvailableDays,
+          allowedDaysForWeek,
           weekSet
         );
         weekSet.add(resolvedDay);
@@ -623,7 +607,7 @@ export async function POST(req: NextRequest) {
 
     // 8. Harmonize multi-sport calendar by rebalancing strength workouts around running sessions
     try {
-      await rebalanceWeekSchedule('singleton');
+      await rebalanceWeekSchedule('singleton', anchor.anchorMonday);
     } catch (rebalanceError) {
       console.warn('[Running Generate] Falha ao rebalancear calendário multi-esportes:', rebalanceError);
     }
@@ -632,6 +616,11 @@ export async function POST(req: NextRequest) {
       success: true,
       planId: saved.plan.id,
       sessionsCount: saved.sessions.length,
+      startDate: anchor.effectiveStartDate,
+      anchorMonday: anchor.anchorMonday,
+      rolledToNextWeek: anchor.rolledToNextWeek,
+      month: saved.plan.month,
+      year: saved.plan.year,
       modelUsed: generationResult.modelUsed,
       attempts: generationResult.attempts,
       latencyMs: generationResult.latencyMs,

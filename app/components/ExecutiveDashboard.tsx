@@ -27,9 +27,11 @@ import MonthlyCalendar from './MonthlyCalendar';
 import CrossTrainingModal from './CrossTrainingModal';
 import AdherenceChart from './charts/AdherenceChart';
 import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
+import CycleRenewalPrompt from './CycleRenewalPrompt';
 import { AthleteProfile, MesocyclePlan } from '@prisma/client';
 import { useRouter } from 'next/navigation';
 import type { DailyReadinessResult, WeeklyReviewSummary } from '@/lib/analytics/readiness-score';
+import { getLocalISODate } from '@/lib/dateUtils';
 
 type ProfileWithMesocycles = AthleteProfile & {
   mesocycles?: MesocyclePlan[];
@@ -252,6 +254,15 @@ export default function ExecutiveDashboard({
         </div>
       </div>
 
+      {/* Automatic Cycle Completion / End Renewal Suggestion */}
+      <CycleRenewalPrompt
+        scope="all"
+        onRenewed={() => {
+          handleRefreshCalendar();
+          router.refresh();
+        }}
+      />
+
       {/* #16 Daily Multi-Sport Readiness Score (0-100%) */}
       {analytics?.readiness && (
         <div
@@ -357,7 +368,7 @@ export default function ExecutiveDashboard({
                 <Brain className="h-6 w-6" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-400">
                     Master Coach AI
                   </span>
@@ -366,6 +377,11 @@ export default function ExecutiveDashboard({
                     <Sparkles className="h-2.5 w-2.5" />
                     Periodização Ativa
                   </span>
+                  {activeMesocycle.startDate && activeMesocycle.startDate > getLocalISODate() && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/25 px-2 py-0.5 rounded-full font-mono">
+                      Inicia em {activeMesocycle.startDate.split('-').reverse().slice(0, 2).join('/')}
+                    </span>
+                  )}
                 </div>
                 <h2 className="text-base sm:text-lg font-bold text-slate-100 mt-0.5">
                   {activeMesocycle.title}

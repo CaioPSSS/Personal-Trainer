@@ -1,7 +1,8 @@
 import { prisma } from '../prisma';
 import { MasterPlanOutput } from '../ai/contracts';
 import { Prisma } from '@prisma/client';
-import { todayISO, shiftISODate } from '../dates';
+import { todayISO, mondayOfISODate } from '../dates';
+import { computeCycleEndDate } from '../scheduling/plan-dates';
 import {
   findSavedSwapSuggestions,
   parseRecommendationsJson,
@@ -15,7 +16,8 @@ import {
 export async function saveMasterPlanToDb(
   athleteProfileId: string,
   plan: MasterPlanOutput,
-  aiRunLogId?: string
+  aiRunLogId?: string,
+  scheduleBounds?: { startDate: string; endDate?: string }
 ) {
   return await prisma.$transaction(async (tx) => {
     // Fetch recent swap suggestions to carry over saved options & enforce permanent swaps
@@ -35,17 +37,21 @@ export async function saveMasterPlanToDb(
       },
     });
 
-    const startDate = todayISO();
-    const endDate = shiftISODate(startDate, plan.mesocycle.durationWeeks * 7);
+    const today = todayISO();
+    const startDate = scheduleBounds?.startDate ?? today;
+    const endDate =
+      scheduleBounds?.endDate ??
+      computeCycleEndDate(mondayOfISODate(startDate), plan.mesocycle.durationWeeks);
     const planObjective = plan.mesocycle.objective;
 
     // Clean up future uncompleted planned strength calendar events from previous plans (never delete past history)
+    const cleanupFloor = startDate < today ? startDate : today;
     await tx.calendarEvent.deleteMany({
       where: {
         athleteProfileId,
         eventType: 'strength',
         status: 'planned',
-        date: { gte: startDate },
+        date: { gte: cleanupFloor },
       },
     });
 

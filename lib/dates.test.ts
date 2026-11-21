@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import {
   shiftISODate,
   diffISODays,
+  signedDiffISODays,
+  weekdayIndexISO,
+  formatISODateShortPTBR,
+  formatISODateWithWeekdayPTBR,
   dayOfWeekName,
   todayISO,
   isISODate,
@@ -22,6 +26,20 @@ test('Dates: diffISODays calculates distance in calendar days', () => {
   assert.equal(diffISODays('2026-10-03', '2026-10-04'), 1);
   assert.equal(diffISODays('2026-10-04', '2026-10-02'), 2);
   assert.equal(diffISODays('2026-09-30', '2026-10-01'), 1);
+});
+
+test('Dates: signedDiffISODays preserves sign across calendar days', () => {
+  assert.equal(signedDiffISODays('2026-11-21', '2026-11-23'), 2);
+  assert.equal(signedDiffISODays('2026-11-23', '2026-11-21'), -2);
+  assert.equal(signedDiffISODays('2026-11-23', '2026-11-23'), 0);
+});
+
+test('Dates: weekdayIndexISO and PT-BR formatters align Monday=0 through Sunday=6', () => {
+  assert.equal(weekdayIndexISO('2026-11-23'), 0); // Monday
+  assert.equal(weekdayIndexISO('2026-11-21'), 5); // Saturday
+  assert.equal(weekdayIndexISO('2026-11-22'), 6); // Sunday
+  assert.equal(formatISODateShortPTBR('2026-11-23'), '23/11');
+  assert.equal(formatISODateWithWeekdayPTBR('2026-11-23'), 'Segunda-feira, 23/11');
 });
 
 test('Dates: dayOfWeekName returns correct lowercase English day', () => {

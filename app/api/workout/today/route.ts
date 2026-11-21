@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { todayISO } from '@/lib/dates';
+import { calculateCurrentWeek } from '@/lib/dateUtils';
 import {
   calculateProgressiveOverload,
   isCompoundExercise,
@@ -249,8 +250,12 @@ export async function GET(request: NextRequest) {
       orderBy: { weekNumber: 'asc' }
     });
     
-    const daysSinceStart = Math.floor((new Date(date).getTime() - new Date(activePlan.createdAt).getTime()) / (1000 * 60 * 60 * 24));
-    const currentWeekNumber = Math.max(1, Math.floor(daysSinceStart / 7) + 1);
+    const effectiveStartRef = activePlan.startDate ?? activePlan.createdAt;
+    const currentWeekNumber = calculateCurrentWeek(
+      effectiveStartRef,
+      activePlan.durationWeeks || weeks.length || 4,
+      date
+    );
     const currentWeekData = weeks.find(w => w.weekNumber === currentWeekNumber) || weeks[weeks.length - 1];
     const isDeload = currentWeekData?.isDeload || false;
 

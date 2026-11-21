@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { isAuthorized } from '@/lib/auth';
-import { todayISO, shiftISODate } from '@/lib/dates';
+import { isISODate, todayISO, shiftISODate } from '@/lib/dates';
 
 export const maxDuration = 300;
 import {
@@ -16,7 +16,14 @@ import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
 import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
-import { scheduleMesocycleWorkouts } from '@/lib/scheduling/strength-scheduler';
+import {
+  parseAvailableDayIndices,
+  scheduleMesocycleWorkouts,
+} from '@/lib/scheduling/strength-scheduler';
+import {
+  computeCycleEndDate,
+  resolveCycleAnchorMonday,
+} from '@/lib/scheduling/plan-dates';
 import { Prisma } from '@prisma/client';
 
 export async function POST(request: NextRequest) {
@@ -220,14 +227,43 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id);
+    let requestedStartDate: string | null = null;
+    try {
+      const body = (await request.json()) as { startDate?: string };
+      if (typeof body?.startDate === 'string' && isISODate(body.startDate)) {
+        requestedStartDate = body.startDate;
+      }
+    } catch {
+      // Empty or no body passed
+    }
+
+    const today = todayISO();
+    const availableDayIndices = parseAvailableDayIndices(athleteProfile?.availableDays);
+    const weeklyTarget =
+      athleteProfile?.weeklyWorkoutsTarget ?? Math.max(1, result.data.mesocycle.days.length);
+    const anchor = resolveCycleAnchorMonday({
+      today,
+      availableDayIndices,
+      weeklyTarget,
+      requestedStartDate,
+    });
+    const endDate = computeCycleEndDate(anchor.anchorMonday, result.data.mesocycle.durationWeeks);
+
+    const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id, {
+      startDate: anchor.effectiveStartDate,
+      endDate,
+    });
 
     // Deterministically schedule workouts across the active mesocycle into CalendarEvent
-    await scheduleMesocycleWorkouts('singleton');
+    await scheduleMesocycleWorkouts('singleton', anchor.effectiveStartDate);
 
     return NextResponse.json({
       success: true,
       mesocyclePlanId: String(createdPlan.id),
+      startDate: anchor.effectiveStartDate,
+      endDate,
+      anchorMonday: anchor.anchorMonday,
+      rolledToNextWeek: anchor.rolledToNextWeek,
       modelUsed: result.modelUsed,
       analystModelUsed: analystModelUsed,
       attempts: result.attempts,

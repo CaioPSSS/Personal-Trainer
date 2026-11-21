@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
-import { todayISO, shiftISODate } from '@/lib/dates';
+import { isISODate, shiftISODate, todayISO, weekdayIndexISO } from '../dates';
+import { resolveCycleAnchorMonday } from './plan-dates';
 
 // Lazy loader for PrismaClient to allow importing pure scheduler helpers in unit tests without Next.js path alias issues
 let prismaInstance: PrismaClient | null = null;
@@ -734,7 +735,7 @@ export async function rebalanceWeekSchedule(
  */
 export async function scheduleMesocycleWorkouts(
   athleteProfileId: string,
-  startDate?: Date
+  startDate?: Date | string
 ): Promise<void> {
   const prisma = await getPrisma();
   const activePlan = await prisma.mesocyclePlan.findFirst({
@@ -768,33 +769,36 @@ export async function scheduleMesocycleWorkouts(
   }
 
   const availableDays = parseAvailableDayIndices(athlete.availableDays);
-  const targetWorkoutsPerWeek = athlete.weeklyWorkoutsTarget ?? activePlan.workoutDays.length;
-
-  // Determine base Monday for scheduling
-  let baseDate = startDate;
-  if (!baseDate && activePlan.startDate) {
-    const parts = activePlan.startDate.split('-').map(Number);
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      baseDate = new Date(parts[0], parts[1] - 1, parts[2]);
-    }
-  }
-  if (!baseDate) {
-    baseDate = new Date();
-  }
-
-  const baseMonday = getMondayOfDate(baseDate);
   const dayTemplates = activePlan.workoutDays;
+  const targetWorkoutsPerWeek = athlete.weeklyWorkoutsTarget ?? dayTemplates.length;
+  const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
   const numWeeks = activePlan.durationWeeks || (activePlan.weeks.length > 0 ? activePlan.weeks.length : 4);
   const today = todayISO();
 
-  for (let weekIndex = 0; weekIndex < numWeeks; weekIndex++) {
-    const weekStart = new Date(baseMonday);
-    weekStart.setDate(baseMonday.getDate() + weekIndex * 7);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
+  // Resolve requested start date (string ISO or Date or activePlan.startDate)
+  let requestedStartISO: string | null = null;
+  if (typeof startDate === 'string' && isISODate(startDate)) {
+    requestedStartISO = startDate;
+  } else if (startDate instanceof Date && !isNaN(startDate.getTime())) {
+    requestedStartISO = todayISO(startDate);
+  } else if (activePlan.startDate && isISODate(activePlan.startDate)) {
+    requestedStartISO = activePlan.startDate;
+  }
 
-    const weekStartStr = formatISODate(weekStart);
-    const weekEndStr = formatISODate(weekEnd);
+  const anchor = resolveCycleAnchorMonday({
+    today,
+    availableDayIndices: availableDays,
+    weeklyTarget: countToSchedule,
+    requestedStartDate: requestedStartISO,
+  });
+
+  const baseMondayStr = anchor.anchorMonday;
+
+  for (let weekIndex = 0; weekIndex < numWeeks; weekIndex++) {
+    const weekStartStr = shiftISODate(baseMondayStr, weekIndex * 7);
+    const weekEndStr = shiftISODate(weekStartStr, 6);
+    const [wy, wm, wd] = weekStartStr.split('-').map(Number);
+    const weekStartDate = new Date(wy, wm - 1, wd);
 
     // Fetch existing calendar events for this week (e.g. running sessions, cross-training, completed strength)
     const existingWeekEvents = await prisma.calendarEvent.findMany({
@@ -804,22 +808,17 @@ export async function scheduleMesocycleWorkouts(
       },
     });
 
-    const fixedEvents: CalendarEventScheduleContext[] = existingWeekEvents.map((ev) => {
-      const d = new Date(`${ev.date}T00:00:00`);
-      const day = d.getDay();
-      return {
-        id: ev.id,
-        date: ev.date,
-        dayIndex: day === 0 ? 6 : day - 1,
-        eventType: ev.eventType,
-        status: ev.status,
-        title: ev.title,
-        referenceModel: ev.referenceModel,
-      };
-    });
+    const fixedEvents: CalendarEventScheduleContext[] = existingWeekEvents.map((ev) => ({
+      id: ev.id,
+      date: ev.date,
+      dayIndex: weekdayIndexISO(ev.date),
+      eventType: ev.eventType,
+      status: ev.status,
+      title: ev.title,
+      referenceModel: ev.referenceModel,
+    }));
 
     // Pick templates for this week (rotating cyclically across weeks when targetWorkoutsPerWeek < dayTemplates.length)
-    const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
     const templatesForWeek = Array.from({ length: countToSchedule }, (_, i) => {
       const templateIdx = (weekIndex * countToSchedule + i) % dayTemplates.length;
       return dayTemplates[templateIdx];
@@ -836,19 +835,27 @@ export async function scheduleMesocycleWorkouts(
       sortOrder: t.dayOrder,
     }));
 
+    // For Week 1, restrict available days to the resolved allowed days (>= effectiveStartDate / >= today)
+    // so no Week 1 workouts are ever placed in the past and silently discarded.
+    const weekAvailableDays =
+      weekIndex === 0
+        ? anchor.week1AllowedDayIndices
+        : availableDays;
+
     const { assignment } = solveOptimalWeeklyStrengthDistribution({
-      weekMonday: weekStart,
-      availableDays,
+      weekMonday: weekStartDate,
+      availableDays: weekAvailableDays,
       workouts: workoutsToSchedule,
       fixedEvents,
     });
 
     for (let tIdx = 0; tIdx < assignment.length; tIdx++) {
       const sol = assignment[tIdx];
+      const solDateStr = shiftISODate(weekStartStr, sol.dayIndex);
 
       // STRICT FORWARD-ONLY RULE:
       // Never schedule planned strength events in the past (< today)
-      if (sol.dateStr < today) {
+      if (solDateStr < today) {
         continue;
       }
 
@@ -858,7 +865,7 @@ export async function scheduleMesocycleWorkouts(
       const existing = await prisma.calendarEvent.findFirst({
         where: {
           athleteProfileId,
-          date: sol.dateStr,
+          date: solDateStr,
           eventType: 'strength',
           OR: [
             { referenceId: template.id },
@@ -872,7 +879,7 @@ export async function scheduleMesocycleWorkouts(
         await prisma.calendarEvent.create({
           data: {
             athleteProfileId,
-            date: sol.dateStr,
+            date: solDateStr,
             eventType: 'strength',
             referenceModel: 'WorkoutDayTemplate',
             referenceId: template.id,

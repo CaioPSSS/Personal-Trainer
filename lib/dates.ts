@@ -60,6 +60,54 @@ export function diffISODays(a: string, b: string): number {
 }
 
 /**
+ * Signed difference in whole calendar days (`toISO - fromISO`).
+ * Positive when `toISO > fromISO`, negative when `toISO < fromISO`.
+ */
+export function signedDiffISODays(fromISO: string, toISO: string): number {
+  const [fy, fm, fd] = fromISO.split('-').map(Number);
+  const [ty, tm, td] = toISO.split('-').map(Number);
+  return Math.round(
+    (Date.UTC(ty, tm - 1, td) - Date.UTC(fy, fm - 1, fd)) / 86_400_000
+  );
+}
+
+/**
+ * Returns the Monday-based weekday index (0 = Monday, ..., 6 = Sunday) for an ISO date string.
+ */
+export function weekdayIndexISO(dateStr: string): number {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const utcDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = Sun, 1 = Mon, ...
+  return utcDay === 0 ? 6 : utcDay - 1;
+}
+
+const WEEKDAY_LABELS_PTBR = [
+  'Segunda-feira',
+  'Terça-feira',
+  'Quarta-feira',
+  'Quinta-feira',
+  'Sexta-feira',
+  'Sábado',
+  'Domingo',
+] as const;
+
+/**
+ * Formats an ISO date ("YYYY-MM-DD") as "DD/MM".
+ */
+export function formatISODateShortPTBR(dateStr: string): string {
+  const [, m, d] = dateStr.split('-');
+  if (!m || !d) return dateStr;
+  return `${d}/${m}`;
+}
+
+/**
+ * Formats an ISO date ("YYYY-MM-DD") as "Segunda-feira, 23/11".
+ */
+export function formatISODateWithWeekdayPTBR(dateStr: string): string {
+  const idx = weekdayIndexISO(dateStr);
+  return `${WEEKDAY_LABELS_PTBR[idx]}, ${formatISODateShortPTBR(dateStr)}`;
+}
+
+/**
  * Returns the Monday ISO date ("YYYY-MM-DD") of the ISO week containing `dateStr`.
  */
 export function mondayOfISODate(dateStr: string): string {
