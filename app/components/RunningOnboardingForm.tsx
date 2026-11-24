@@ -180,8 +180,17 @@ export default function RunningOnboardingForm({
       }
 
       const genData = await genRes.json();
+      const startLabel =
+        typeof genData.startDate === 'string' && genData.startDate.includes('-')
+          ? genData.startDate.split('-').reverse().slice(0, 2).join('/')
+          : null;
+      const startHint = startLabel
+        ? genData.rolledToNextWeek
+          ? ` Início na segunda-feira (${startLabel}) com as 4 semanas completas.`
+          : ` Início em ${startLabel}.`
+        : '';
       success(
-        `Plano de 4 semanas gerado com sucesso via ${genData.modelUsed || 'AI Coach'} (${genData.sessionsCount} sessões programadas)!`,
+        `Plano de 4 semanas gerado via ${genData.modelUsed || 'AI Coach'} (${genData.sessionsCount} sessões)!${startHint}`,
         'Periodização Concluída'
       );
 

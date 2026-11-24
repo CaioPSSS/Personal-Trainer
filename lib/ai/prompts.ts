@@ -1,4 +1,4 @@
-import { DataAnalystReport } from '@/lib/ai/contracts';
+import { CANONICAL_MOVEMENT_PATTERNS, DataAnalystReport } from '@/lib/ai/contracts';
 import { ExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
 import { DailyReadinessResult } from '@/lib/analytics/readiness-score';
 import {
@@ -6,6 +6,11 @@ import {
   parseRestrictionTags,
   EquipmentCategory,
 } from '@/lib/ai/safety-filter';
+import {
+  ConcurrentRunningDigest,
+  WellnessNutritionDigest,
+  WorkoutHistoryDigest,
+} from '@/lib/ai/context-builders';
 
 export interface CoachBrainMemoryItem {
   version: number;
@@ -22,6 +27,9 @@ interface MasterPromptContext {
   previousCoachBrains?: CoachBrainMemoryItem[];
   recentWorkouts: unknown[];
   recentWellness: unknown[];
+  workoutHistoryDigest?: WorkoutHistoryDigest | null;
+  wellnessNutritionDigest?: WellnessNutritionDigest | null;
+  concurrentRunningDigest?: ConcurrentRunningDigest | null;
   crossTrainingSummary?: unknown[];
   runningSummary?: unknown | null;
   readinessSummary?: DailyReadinessResult | null;
@@ -37,6 +45,9 @@ interface AnalystPromptContext {
   runningSummary?: unknown | null;
   crossTrainingSummary?: unknown[];
   readinessSummary?: DailyReadinessResult | null;
+  workoutHistoryDigest?: WorkoutHistoryDigest | null;
+  wellnessNutritionDigest?: WellnessNutritionDigest | null;
+  concurrentRunningDigest?: ConcurrentRunningDigest | null;
   exerciseSubstitutionSummary?: ExerciseSubstitutionSummary | null;
 }
 
@@ -161,13 +172,14 @@ export function buildDataAnalystPrompts(context: AnalystPromptContext) {
 ${ANTI_INJECTION_DIRECTIVE}
 
 Role & Objective:
-- Perform rigorous quantitative load and recovery analysis across raw strength logs, endurance running telemetry, cross-training workload, and daily wellness (up to 56 days).
+- Perform rigorous quantitative load, nutrition, and recovery analysis across pre-aggregated or raw strength logs, endurance running telemetry, cross-training workload, and daily wellness/nutrition data (up to 56 days).
 - Deliver concrete, exercise-specific biomechanical findings rather than generic summaries.
+- Write all prose fields ('executiveSummary', 'notes', 'keyBottlenecks', 'recoveryConstraints', 'recommendationsForMaster') in clear, objective Brazilian Portuguese (pt-BR).
 
 Analytical Framework:
-1. Double Progression Verification: Track whether the athlete progresses in repetitions within the prescribed rep bracket before attempting load increases. Quantify load trends (kg/week) and rep trends (reps/week) for all primary compound and isolation movements.
+1. Double Progression Verification: Track whether the athlete progresses in repetitions within the prescribed rep bracket before attempting load increases. Use the pre-computed loadDeltaKg and e1rmDeltaKg trends per exercise.
 2. RPE/RIR Fidelity & Calibration: Measure whether achieved RPE matches target RPE. Detect overshooting (grinding at RPE 10 too early in the cycle) or undershooting (insufficient stimulus).
-3. Recovery & Readiness Correlation: Correlate drops in wellness metrics (sleep quality/duration, perceived stress, somatic fatigue) and Daily Readiness Score with multi-joint performance degradation.
+3. Recovery, Sleep, Readiness & Nutrition Correlation: Correlate drops in sleepHours, increases in stress/fatigue, Daily Readiness Score, caloric deficit ('dietGoal: loss'), or low protein intake (< 1.6 g/kg) with performance stagnation or recovery bottlenecks.
 4. Adherence & Bottlenecks: Detect missed sessions, skipped exercises, or systematic failures to hit target volume per muscle group.
 5. Hybrid Multi-Sport & Metabolic Load:
    - Explicitly evaluate concurrent running volume (60-day executions, weekly km, long runs, intervals/tempo sessions) and cross-training activities alongside resistance training caloric expenditure.
@@ -188,17 +200,44 @@ Strict Constraints:
   );
 
   const promptSections = [
-    'Analyze the athlete training, endurance, and wellness cycle and return a valid JSON report conforming to the schema.',
+    'Analyze the athlete training, endurance, recovery, and nutrition cycle and return a valid JSON report conforming to the schema.',
     'Athlete structured parameters JSON:',
     JSON.stringify({ ...structuredProfile, detectedRestrictionTags: restrictionTags }),
     ...untrustedTextSections,
     'Active mesocycle prescriptions JSON:',
     JSON.stringify(context.activeMesocycle),
-    'Strength workout executions JSON (up to 56 days):',
-    JSON.stringify(context.recentWorkouts),
-    'Wellness logs JSON (up to 56 days):',
-    JSON.stringify(context.recentWellness),
   ];
+
+  if (context.workoutHistoryDigest) {
+    promptSections.push(
+      'Pre-aggregated workout & exercise progression digest (up to 56 days):',
+      JSON.stringify(context.workoutHistoryDigest)
+    );
+  } else {
+    promptSections.push(
+      'Strength workout executions JSON (up to 56 days):',
+      JSON.stringify(context.recentWorkouts)
+    );
+  }
+
+  if (context.wellnessNutritionDigest) {
+    promptSections.push(
+      'Recovery, sleep & nutrition digest (last 28 days):',
+      JSON.stringify(context.wellnessNutritionDigest)
+    );
+  } else {
+    promptSections.push(
+      'Wellness logs JSON (up to 56 days):',
+      JSON.stringify(context.recentWellness)
+    );
+  }
+
+  if (context.concurrentRunningDigest) {
+    promptSections.push(
+      'Concurrent running context JSON:',
+      JSON.stringify(context.concurrentRunningDigest)
+    );
+  }
 
   if (context.runningSummary) {
     promptSections.push(
@@ -239,6 +278,20 @@ export function buildMasterCoachPrompts(context: MasterPromptContext) {
   const sessionGuidance = deriveSessionPrescriptionGuidance(
     typeof profileObj.sessionDurationMin === 'number' ? profileObj.sessionDurationMin : null
   );
+  const weeklyWorkoutsTarget =
+    typeof profileObj.weeklyWorkoutsTarget === 'number' &&
+    profileObj.weeklyWorkoutsTarget >= 2 &&
+    profileObj.weeklyWorkoutsTarget <= 6
+      ? Math.round(profileObj.weeklyWorkoutsTarget)
+      : null;
+  const availableDaysText =
+    Array.isArray(profileObj.availableDays) && profileObj.availableDays.length > 0
+      ? JSON.stringify(profileObj.availableDays)
+      : 'Not specified';
+
+  const daysRuleText = weeklyWorkoutsTarget
+    ? `EXACTLY ${weeklyWorkoutsTarget} distinct workout day templates in 'mesocycle.days' (matching athlete weeklyWorkoutsTarget=${weeklyWorkoutsTarget}, availableDays=${availableDaysText}).`
+    : `Between 3 and 5 distinct workout day templates in 'mesocycle.days' aligned with athlete availableDays=${availableDaysText}.`;
 
   const isBaseline =
     typeof context.isBaselinePhase === 'boolean'
@@ -250,7 +303,18 @@ export function buildMasterCoachPrompts(context: MasterPromptContext) {
 ${ANTI_INJECTION_DIRECTIVE}
 
 Primary Mission:
-Design an optimal 4-6 week hypertrophy mesocycle that maximizes muscular adaptation, manages systemic and multi-sport fatigue, respects the athlete's injury/equipment constraints, and strictly fits within their ${sessionGuidance.durationMin}-MINUTE SESSION DURATION.
+Design an optimal 4-6 week hypertrophy mesocycle that maximizes muscular adaptation, manages systemic and multi-sport fatigue, respects the athlete's injury/equipment constraints, and strictly fits within their ${sessionGuidance.durationMin}-MINUTE SESSION DURATION ('targetSessionMinutes': ${sessionGuidance.durationMin}).
+
+LANGUAGE & NAMING CONSISTENCY (CRITICAL):
+- Write ALL human-facing text in natural Brazilian Portuguese (pt-BR): 'title', 'objective', 'split', 'label', 'exerciseName', 'targetVolumeNotes', 'advancedTechnique', and all 'coachBrain' arrays.
+- Keep 'exerciseName' consistent with standard Brazilian gym naming (and preserve exact names of exercises from the athlete's recent workout history when retaining them, so load progression and PR tracking remain continuous!).
+- Keep 'exerciseKey' as lowercase snake_case ASCII slug, and 'movementPattern' strictly one of the canonical English enum values: [${CANONICAL_MOVEMENT_PATTERNS.join(', ')}].
+- Make sure 'mesocycle.weeks.length' equals 'mesocycle.durationWeeks', 'targetRepMin <= targetRepMax', and 'targetRpeMin <= targetRpeMax'.
+
+SCHEDULE & SPLIT CONSTRAINT:
+- Generate ${daysRuleText}
+- Choose the optimal split for that frequency (e.g. 2d Full Body, 3d Full Body or Upper/Lower/Full, 4d Upper/Lower, 5d Upper/Lower/Push/Pull/Legs, 6d PPL).
+- Explicitly label lower-body workouts in Portuguese (e.g. "Inferiores — Foco Quadríceps" or "Pernas e Posterior") AND assign accurate lower-body 'movementPattern' values ('squat', 'hinge', 'lunge', 'knee_extension', 'knee_flexion', 'hip_thrust', 'calf_raise') so our 48h multi-sport calendar scheduler protects leg recovery around running/CrossFit.
 
 ${equipmentCatalog}
 
@@ -264,13 +328,13 @@ Biomechanical & Hypertrophy Directives:
    - Set 'targetSessionMinutes' and day 'estimatedDurationMin' around ${sessionGuidance.durationMin} minutes.
    - Each workout day MUST strictly contain ${sessionGuidance.exerciseCountRange}.
    - In shared/commercial gym environments, DO NOT prescribe cumbersome supersets across distant stations. Use Antagonist Paired Sets (APS) or rest-pause/myo-reps only when equipment setup is compact (e.g. dumbbell/cable station).
-   - Standard rest intervals: 2-3 minutes for heavy multi-joint lifts, 60-90 seconds for machines and isolation work.
+   - Standard rest intervals: 120-180s for heavy multi-joint lifts, 60-90s for machines and isolation work.
 4. Periodization & Systematic RPE / RIR Progression:
    - Structure target RPE across weeks to manage fatigue accumulation:
-     * Week 1: RIR 3 (Target RPE 7) - Calibration and technical mastery.
-     * Week 2: RIR 2 (Target RPE 8) - Repetition progression within target bracket.
-     * Week 3: RIR 1-2 (Target RPE 8-9) - Progressive load increment via double progression.
-     * Week 4: RIR 0-1 (Target RPE 9-9.5) - Peak accumulation or planned deload depending on duration.
+     * Week 1: RIR 3 (Target RPE 7) - Calibração e padrão motor.
+     * Week 2: RIR 2 (Target RPE 8) - Progressão de repetições na faixa alvo.
+     * Week 3: RIR 1-2 (Target RPE 8-9) - Progressão de carga via dupla progressão.
+     * Week 4: RIR 0-1 (Target RPE 9-9.5) - Pico de estímulo ou deload planejado conforme duração.
      * Week 5-6 (if longer block): Include at least 1 planned deload week (isDeload: true, ~50% set volume, RIR 4 / RPE 6).
 5. Motor Restrictions, Joint Safety & Equipment Compliance (NON-NEGOTIABLE):
    - Strictly prescribe ONLY exercises possible with the athlete's listed equipment above.
@@ -278,12 +342,14 @@ Biomechanical & Hypertrophy Directives:
    - Frame coaching rationale strictly as training load and recovery guidance (never clinical/medical diagnosis).
 6. Baseline / Cold-Start Rule:
    - Current Cycle Phase Flag: isBaselinePhase=${isBaseline ? 'TRUE' : 'FALSE'}.
-   - If isBaselinePhase is TRUE or workout history is sparse, design an accessible high-SFR introductory mesocycle calibrated from the Athlete Profile.
+   - If isBaselinePhase is TRUE or workout history is sparse, design an accessible high-SFR introductory mesocycle calibrated from the Athlete Profile and keep retrospective arrays concise or empty ([]).
 7. CONCURRENT RUNNING & CROSS-TRAINING AWARENESS:
-   - Evaluate the athlete's concurrent Running Profile, active Running Plan, 60-day running executions, recurring cross-training, and Daily Readiness Score.
-   - If high running mileage, long runs, track intervals, or leg-heavy CrossFit sessions are present, modulate weekly lower-body strength volume and axial fatigue accordingly while protecting hypertrophy targets across upper body and posterior chain.
-8. ENERGY EXPENDITURE & CALORIC BALANCE AWARENESS:
-   - Account for combined strength, running, and cross-training caloric expenditure alongside daily nutrition/readiness telemetry. Maintain high-SFR movements and avoid junk volume when recovery margin is narrow.
+   - Evaluate the athlete's concurrent Running Profile, active Running Plan, 60-day running executions ('concurrentRunningDigest' / 'runningSummary'), recurring cross-training, and Daily Readiness Score.
+   - If high running mileage (>= 15-20 km/week), long runs, track intervals, or leg-heavy CrossFit sessions are present, modulate weekly lower-body strength volume and axial fatigue accordingly while protecting hypertrophy targets across upper body and posterior chain.
+8. NUTRITION, CALORIC GOAL & SLEEP AUTOREGULATION:
+   - Inspect 'wellnessNutritionDigest' and Daily Readiness telemetry alongside combined caloric expenditure:
+     * If 'dominantDietGoal' is 'loss' (caloric deficit) or average sleep < 6.5h: prioritize mechanical tension & load retention with high-SFR movements and moderate set volume (MEV to low-MAV, avoiding junk volume).
+     * If 'dominantDietGoal' is 'gain' (surplus) and recovery/sleep is solid (>= 7h): allow fuller MAV volume brackets on priority muscle groups.
 9. EXERCISE SUBSTITUTIONS & PERMANENT ATHLETE PREFERENCES (CRITICAL):
    - Review 'exerciseSubstitutionSummary' carefully:
      * 'permanentSwaps' ("Substituir sempre"): Exercises the athlete explicitly replaced permanently for their objective. NEVER prescribe 'originalExercise' from 'permanentSwaps'; ALWAYS prescribe the athlete's chosen 'replacementExercise' directly instead.
@@ -304,21 +370,40 @@ Output Contract:
       : context.previousCoachBrain;
 
   const promptSections = [
-    'Generate the complete mesocycle plan following the scientific principles and JSON contract.',
+    'Generate the complete mesocycle plan in Brazilian Portuguese (pt-BR) following the scientific principles and JSON contract.',
     `Cycle initialization metadata: isBaselinePhase=${isBaseline}, targetSessionMinutes=${sessionGuidance.durationMin}, recommendedExerciseCount="${sessionGuidance.exerciseCountRange}"`,
     'Athlete structured parameters JSON:',
     JSON.stringify({ ...structuredProfile, detectedRestrictionTags: restrictionTags }),
     ...untrustedTextSections,
     'Data Analyst training & recovery report JSON:',
     JSON.stringify(context.analystReport),
-    'Previous Coach Brain memory with temporal decay JSON:',
-    JSON.stringify(brainMemoryPayload),
   ];
+
+  if (brainMemoryPayload) {
+    promptSections.push(
+      'Previous Coach Brain memory with temporal decay JSON:',
+      JSON.stringify(brainMemoryPayload)
+    );
+  }
+
+  if (context.concurrentRunningDigest) {
+    promptSections.push(
+      'Concurrent Running profile, active plan & last 14 days load JSON (CRITICAL for lower-body SFR & volume):',
+      JSON.stringify(context.concurrentRunningDigest)
+    );
+  }
 
   if (context.runningSummary) {
     promptSections.push(
       'Concurrent Running Profile, Active Plan & 60-Day Executions JSON (adjust lower-body recovery accordingly):',
       JSON.stringify(context.runningSummary)
+    );
+  }
+
+  if (context.wellnessNutritionDigest && context.wellnessNutritionDigest.daysLogged > 0) {
+    promptSections.push(
+      'Recovery, sleep & nutrition digest (last 28 days from Meu Rastreador Metabólico):',
+      JSON.stringify(context.wellnessNutritionDigest)
     );
   }
 
@@ -348,12 +433,19 @@ Output Contract:
     );
   }
 
-  if (isBaseline && context.recentWorkouts.length > 0) {
+  if (
+    isBaseline &&
+    context.workoutHistoryDigest &&
+    context.workoutHistoryDigest.totalWorkouts > 0
+  ) {
+    promptSections.push(
+      'Recent workout digest (baseline sample):',
+      JSON.stringify(context.workoutHistoryDigest)
+    );
+  } else if (isBaseline && context.recentWorkouts.length > 0) {
     promptSections.push(
       'Raw workout execution context JSON (recent sample):',
-      JSON.stringify(context.recentWorkouts.slice(0, 10)),
-      'Raw wellness context JSON (recent sample):',
-      JSON.stringify(context.recentWellness.slice(0, 10))
+      JSON.stringify(context.recentWorkouts.slice(0, 6))
     );
   }
 

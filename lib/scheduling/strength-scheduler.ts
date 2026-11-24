@@ -3,11 +3,11 @@ import {
   todayISO,
   shiftISODate,
   isISODate,
-  mondayOfISODate,
   weekRangeOfISODate,
   dayOfWeekMon0,
   resolveISODate,
 } from '@/lib/dates';
+import { resolveCycleAnchorMonday } from './plan-dates';
 
 /**
  * Returns Monday (start of week) at 00:00:00 UTC for a given date.
@@ -782,7 +782,7 @@ export async function rebalanceWeekSchedule(
  */
 export async function scheduleMesocycleWorkouts(
   athleteProfileId: string,
-  startDate?: Date
+  startDate?: Date | string
 ): Promise<void> {
   const activePlan = await prisma.mesocyclePlan.findFirst({
     where: {
@@ -814,24 +814,33 @@ export async function scheduleMesocycleWorkouts(
   }
 
   const availableDays = parseAvailableDayIndices(athlete.availableDays);
-  const targetWorkoutsPerWeek = athlete.weeklyWorkoutsTarget ?? activePlan.workoutDays.length;
-
-  const baseISO = startDate
-    ? resolveISODate(startDate)
-    : activePlan.startDate && isISODate(activePlan.startDate)
-      ? activePlan.startDate
-      : todayISO();
-
-  const baseMondayISO = mondayOfISODate(baseISO);
   const dayTemplates = activePlan.workoutDays;
+  const targetWorkoutsPerWeek = athlete.weeklyWorkoutsTarget ?? dayTemplates.length;
+  const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
   const numWeeks = activePlan.durationWeeks || (activePlan.weeks.length > 0 ? activePlan.weeks.length : 4);
   const today = todayISO();
 
-  const horizonEndISO = shiftISODate(baseMondayISO, numWeeks * 7);
+  // Resolve requested start date (string ISO or Date or activePlan.startDate)
+  let requestedStartISO: string | null = null;
+  if (startDate) {
+    requestedStartISO = resolveISODate(startDate);
+  } else if (activePlan.startDate && isISODate(activePlan.startDate)) {
+    requestedStartISO = activePlan.startDate;
+  }
+
+  const anchor = resolveCycleAnchorMonday({
+    today,
+    availableDayIndices: availableDays,
+    weeklyTarget: countToSchedule,
+    requestedStartDate: requestedStartISO,
+  });
+
+  const baseMondayStr = anchor.anchorMonday;
+  const horizonEndISO = shiftISODate(baseMondayStr, numWeeks * 7);
   const allHorizonEvents = await prisma.calendarEvent.findMany({
     where: {
       athleteProfileId,
-      date: { gte: baseMondayISO, lte: horizonEndISO },
+      date: { gte: baseMondayStr, lte: horizonEndISO },
     },
   });
 
@@ -850,10 +859,10 @@ export async function scheduleMesocycleWorkouts(
   }> = [];
 
   for (let weekIndex = 0; weekIndex < numWeeks; weekIndex++) {
-    const weekStartStr = shiftISODate(baseMondayISO, weekIndex * 7);
+    const weekStartStr = shiftISODate(baseMondayStr, weekIndex * 7);
     const weekEndStr = shiftISODate(weekStartStr, 6);
-    const [wsYear, wsMonth, wsDay] = weekStartStr.split('-').map(Number);
-    const weekStart = new Date(wsYear, wsMonth - 1, wsDay);
+    const [wy, wm, wd] = weekStartStr.split('-').map(Number);
+    const weekStartDate = new Date(wy, wm - 1, wd);
 
     const fixedEvents = enrichedHorizon.filter(
       (ev) => ev.date >= weekStartStr && ev.date <= weekEndStr
@@ -862,7 +871,7 @@ export async function scheduleMesocycleWorkouts(
       (ev) => ev.date >= weekStartStr && ev.date <= weekEndStr
     );
 
-    const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
+    // Pick templates for this week (rotating cyclically across weeks when targetWorkoutsPerWeek < dayTemplates.length)
     const templatesForWeek = Array.from({ length: countToSchedule }, (_, i) => {
       const templateIdx = (weekIndex * countToSchedule + i) % dayTemplates.length;
       return dayTemplates[templateIdx];
@@ -879,16 +888,27 @@ export async function scheduleMesocycleWorkouts(
       sortOrder: t.dayOrder,
     }));
 
+    // For Week 1, restrict available days to the resolved allowed days (>= effectiveStartDate / >= today)
+    // so no Week 1 workouts are ever placed in the past and silently discarded.
+    const weekAvailableDays =
+      weekIndex === 0
+        ? anchor.week1AllowedDayIndices
+        : availableDays;
+
     const { assignment } = solveOptimalWeeklyStrengthDistribution({
-      weekMonday: weekStart,
-      availableDays,
+      weekMonday: weekStartDate,
+      availableDays: weekAvailableDays,
       workouts: workoutsToSchedule,
       fixedEvents,
     });
 
     for (let tIdx = 0; tIdx < assignment.length; tIdx++) {
       const sol = assignment[tIdx];
-      if (sol.dateStr < today) {
+      const solDateStr = shiftISODate(weekStartStr, sol.dayIndex);
+
+      // STRICT FORWARD-ONLY RULE:
+      // Never schedule planned strength events in the past (< today)
+      if (solDateStr < today) {
         continue;
       }
 
@@ -896,7 +916,7 @@ export async function scheduleMesocycleWorkouts(
 
       const alreadyExists = existingRawWeekEvents.some(
         (ev) =>
-          ev.date === sol.dateStr &&
+          ev.date === solDateStr &&
           ev.eventType === 'strength' &&
           (ev.referenceId === template.id ||
             ev.title === template.label ||
@@ -906,7 +926,7 @@ export async function scheduleMesocycleWorkouts(
       if (!alreadyExists) {
         createsToPersist.push({
           athleteProfileId,
-          date: sol.dateStr,
+          date: solDateStr,
           eventType: 'strength',
           referenceModel: 'WorkoutDayTemplate',
           referenceId: template.id,

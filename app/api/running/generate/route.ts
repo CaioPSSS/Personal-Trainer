@@ -7,12 +7,29 @@ import {
   RunningPlanOutput,
   runningPlanOutputSchema,
   RUNNING_PLAN_SCHEMA_VERSION,
+  validateRunningPlanSemantics,
 } from '@/lib/ai/running-contracts';
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
+import {
+  RUNNING_COACH_DEFAULT_CASCADE,
+  resolveModelCascade,
+} from '@/lib/ai/models';
+import { buildWellnessNutritionDigest } from '@/lib/ai/context-builders';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { fetchHybridCoachingContext } from '@/lib/ai/hybrid-context';
-import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
-import { todayISO, shiftISODate, mondayOfISODate } from '@/lib/dates';
+import {
+  parseAvailableDayIndices,
+  rebalanceWeekSchedule,
+} from '@/lib/scheduling/strength-scheduler';
+import {
+  isISODate,
+  shiftISODate,
+  todayISO,
+} from '@/lib/dates';
+import {
+  resolveCycleAnchorMonday,
+  resolveRunningPlanMonthYear,
+} from '@/lib/scheduling/plan-dates';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -87,43 +104,16 @@ function resolveSessionDay(
   return bestCandidate;
 }
 
-function computeSessionDate(
-  planMonth: number,
-  planYear: number,
-  weekNumber: number,
-  dayOfWeek: string,
-  availableDays?: string[] | null,
-  usedDaysInWeek?: Set<string>
-): string {
-  const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
-  const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
-  const today = todayISO();
-  const [currentYear, currentMonth] = today.split('-').map(Number);
-  const isCurrentMonth = currentMonth === planMonth && currentYear === planYear;
-
-  const anchorISO = isCurrentMonth
-    ? today
-    : `${String(planYear).padStart(4, '0')}-${String(planMonth).padStart(2, '0')}-01`;
-  const baseMondayISO = mondayOfISODate(anchorISO);
-  return shiftISODate(baseMondayISO, (weekNumber - 1) * 7 + dayOffset);
-}
-
 function computeSessionSchedule(
-  planMonth: number,
-  planYear: number,
+  anchorMonday: string,
   weekNumber: number,
   dayOfWeek: string,
   availableDays?: string[] | null,
   usedDaysInWeek?: Set<string>
 ): { scheduledDate: string; resolvedDay: DayOfWeek } {
   const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
-  const scheduledDate = computeSessionDate(
-    planMonth,
-    planYear,
-    weekNumber,
-    resolvedDay,
-    [resolvedDay]
-  );
+  const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
+  const scheduledDate = shiftISODate(anchorMonday, (weekNumber - 1) * 7 + dayOffset);
   return { scheduledDate, resolvedDay };
 }
 
@@ -170,13 +160,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const cascadeEnv =
-    process.env.RUNNING_COACH_CASCADE ??
-    'deepseek/deepseek-v4-pro,qwen/qwen3.7-plus,deepseek/deepseek-v4-flash-0731';
-  const modelCascade = cascadeEnv
-    .split(',')
-    .map((m) => m.trim())
-    .filter(Boolean);
+  const modelCascade = resolveModelCascade(
+    process.env.RUNNING_COACH_CASCADE,
+    RUNNING_COACH_DEFAULT_CASCADE
+  );
 
   try {
     // Ensure base athlete profile singleton exists for CalendarEvent relation
@@ -201,22 +188,39 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let body: { month?: number; year?: number } = {};
+    let body: { month?: number; year?: number; startDate?: string } = {};
     try {
       body = await req.json();
     } catch {
       // Empty or no body passed
     }
 
-    const today = todayISO();
-    const [currentYear, currentMonth] = today.split('-').map(Number);
-    const targetMonth = body.month ?? currentMonth;
-    const targetYear = body.year ?? currentYear;
+    const todayStr = todayISO();
+    const requestedStartDate =
+      typeof body.startDate === 'string' && isISODate(body.startDate)
+        ? body.startDate
+        : null;
 
-    const sixtyDaysAgoStr = shiftISODate(today, -60);
-    const thirtyDaysAgoStr = shiftISODate(today, -30);
+    const availableDayIndices = parseAvailableDayIndices(runningProfile.availableDays);
+    const weeklyRunsTarget =
+      runningProfile.weeklyRunsTarget ??
+      (availableDayIndices.length >= 3 ? 3 : availableDayIndices.length);
 
-    // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence & recurring cross-training
+    const anchor = resolveCycleAnchorMonday({
+      today: todayStr,
+      availableDayIndices,
+      weeklyTarget: weeklyRunsTarget,
+      requestedStartDate,
+    });
+
+    const derivedMonthYear = resolveRunningPlanMonthYear(anchor.anchorMonday);
+    const targetMonth = body.month ?? derivedMonthYear.month;
+    const targetYear = body.year ?? derivedMonthYear.year;
+
+    const sixtyDaysAgoStr = shiftISODate(todayStr, -60);
+    const thirtyDaysAgoStr = shiftISODate(todayStr, -30);
+
+    // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence, wellness/nutrition & recurring cross-training
     const [
       recentExecutions,
       rawBrainEntries,
@@ -224,6 +228,7 @@ export async function POST(req: NextRequest) {
       recentWorkouts,
       activePlan,
       athleteRecord,
+      recentWellness,
       hybridContext,
     ] = await Promise.all([
       prisma.runningExecution.findMany({
@@ -271,10 +276,23 @@ export async function POST(req: NextRequest) {
       }),
       prisma.athleteProfile.findUnique({
         where: { id: 'singleton' },
-        select: { recurringCrossTraining: true },
+        select: { recurringCrossTraining: true, bodyWeightKg: true },
       }),
-      fetchHybridCoachingContext(today),
+      prisma.wellnessDaily.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: thirtyDaysAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 28,
+      }),
+      fetchHybridCoachingContext(todayStr),
     ]);
+
+    const wellnessNutritionDigest = buildWellnessNutritionDigest(
+      recentWellness,
+      athleteRecord?.bodyWeightKg
+    );
 
     // 3. Apply temporal memory decay: 1.0 (current), 0.7 (month -1), 0.4 (month -2)
     const decaySchedule = [1.0, 0.7, 0.4];
@@ -391,11 +409,12 @@ export async function POST(req: NextRequest) {
       planAdherenceSummary,
       recurringCrossTraining,
       readinessSummary: hybridContext.readinessSummary,
+      wellnessNutritionDigest: wellnessNutritionDigest.daysLogged > 0 ? wellnessNutritionDigest : null,
       targetMonth,
       targetYear,
     });
 
-    // 5. Execute OpenRouter Cascade with Ajv Schema validation
+    // 5. Execute OpenRouter Cascade with Ajv Schema + semantic validation
     const generationResult = await generateStructuredOutput<RunningPlanOutput>({
       schemaId: `running-plan-${RUNNING_PLAN_SCHEMA_VERSION}`,
       schema: runningPlanOutputSchema,
@@ -403,7 +422,12 @@ export async function POST(req: NextRequest) {
       userPrompt,
       modelCascade,
       temperature: 0.2,
-      maxRetries: 2,
+      maxRetries: 1,
+      reasoningEffort: 'medium',
+      maxTokens: 24000,
+      perModelTimeoutsMs: [180_000, 65_000, 30_000],
+      totalBudgetMs: 275_000,
+      semanticValidator: (plan) => validateRunningPlanSemantics(plan, weeklyRunsTarget),
     });
 
     const output = generationResult.data;
@@ -415,7 +439,7 @@ export async function POST(req: NextRequest) {
         data: {
           runType: 'running_coach_monthly_plan',
           status: 'success',
-          primaryModel: modelCascade[0] ?? 'deepseek/deepseek-v4-pro',
+          primaryModel: modelCascade[0] ?? RUNNING_COACH_DEFAULT_CASCADE[0],
           fallbackModel:
             generationResult.modelUsed !== modelCascade[0] ? generationResult.modelUsed : null,
           attemptCount: generationResult.attempts,
@@ -434,19 +458,23 @@ export async function POST(req: NextRequest) {
 
     // 7. Atomically save to Prisma: RunningPlan, RunningSession[], RunningBrainEntry, and CalendarEvent[]
     const saved = await prisma.$transaction(async (tx) => {
+      // Enforce deterministic targetMonth / targetYear derived from anchorMonday
+      const effectiveMonth = targetMonth;
+      const effectiveYear = targetYear;
+
       // Clean up previous draft or plan for this specific month/year if present
       const existingPlan = await tx.runningPlan.findUnique({
         where: {
           runningProfileId_month_year: {
             runningProfileId: 'singleton',
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         include: { sessions: true },
       });
 
-      const today = todayISO();
+      const today = todayStr;
 
       if (existingPlan) {
         // STRICT FORWARD-ONLY RULE:
@@ -479,8 +507,8 @@ export async function POST(req: NextRequest) {
             runningProfileId: 'singleton',
             status: 'active',
             NOT: {
-              month: output.plan.month,
-              year: output.plan.year,
+              month: effectiveMonth,
+              year: effectiveYear,
             },
           },
         },
@@ -507,8 +535,8 @@ export async function POST(req: NextRequest) {
           runningProfileId: 'singleton',
           status: 'active',
           NOT: {
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         data: { status: 'completed' },
@@ -519,8 +547,8 @@ export async function POST(req: NextRequest) {
         where: {
           runningProfileId_month_year: {
             runningProfileId: 'singleton',
-            month: output.plan.month,
-            year: output.plan.year,
+            month: effectiveMonth,
+            year: effectiveYear,
           },
         },
         update: {
@@ -535,8 +563,8 @@ export async function POST(req: NextRequest) {
         create: {
           runningProfileId: 'singleton',
           title: output.plan.title,
-          month: output.plan.month,
-          year: output.plan.year,
+          month: effectiveMonth,
+          year: effectiveYear,
           objective: output.plan.objective,
           phase: output.plan.phase,
           weeklyTargetKm: output.plan.weeklyTargetKm,
@@ -555,12 +583,18 @@ export async function POST(req: NextRequest) {
 
       for (const session of output.plan.sessions) {
         const weekSet = usedDaysPerWeek.get(session.weekNumber) ?? new Set<string>();
+        // For Week 1, restrict candidate days to anchor.week1AllowedDayNames so no sessions
+        // are ever placed in the past and silently discarded.
+        const allowedDaysForWeek =
+          session.weekNumber === 1
+            ? anchor.week1AllowedDayNames
+            : athleteAvailableDays;
+
         const { scheduledDate, resolvedDay } = computeSessionSchedule(
-          plan.month,
-          plan.year,
+          anchor.anchorMonday,
           session.weekNumber,
           session.dayOfWeek,
-          athleteAvailableDays,
+          allowedDaysForWeek,
           weekSet
         );
         weekSet.add(resolvedDay);
@@ -638,7 +672,7 @@ export async function POST(req: NextRequest) {
     // 8. Harmonize multi-sport calendar across the 4-week horizon by rebalancing strength workouts
     try {
       for (const offset of [0, 7, 14, 21]) {
-        await rebalanceWeekSchedule('singleton', shiftISODate(today, offset));
+        await rebalanceWeekSchedule('singleton', shiftISODate(anchor.anchorMonday, offset));
       }
     } catch (rebalanceError) {
       console.warn('[Running Generate] Falha ao rebalancear calendário multi-esportes:', rebalanceError);
@@ -648,6 +682,11 @@ export async function POST(req: NextRequest) {
       success: true,
       planId: saved.plan.id,
       sessionsCount: saved.sessions.length,
+      startDate: anchor.effectiveStartDate,
+      anchorMonday: anchor.anchorMonday,
+      rolledToNextWeek: anchor.rolledToNextWeek,
+      month: saved.plan.month,
+      year: saved.plan.year,
       modelUsed: generationResult.modelUsed,
       attempts: generationResult.attempts,
       latencyMs: generationResult.latencyMs,

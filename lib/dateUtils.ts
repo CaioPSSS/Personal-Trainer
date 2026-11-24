@@ -16,7 +16,7 @@ export function calculateCurrentWeek(
   if (!startDateOrCreatedAt) return 1;
 
   let startISO: string;
-  if (isISODate(startDateOrCreatedAt)) {
+  if (typeof startDateOrCreatedAt === 'string' && isISODate(startDateOrCreatedAt)) {
     startISO = startDateOrCreatedAt;
   } else {
     const parsed = new Date(startDateOrCreatedAt);
@@ -29,7 +29,8 @@ export function calculateCurrentWeek(
       ? referenceDateISO
       : todayISO(new Date(), APP_TIMEZONE);
 
-  const daysSinceStart = Math.max(0, diffISODaysSigned(refISO, startISO));
+  const daysSinceStart = diffISODaysSigned(refISO, startISO);
+  if (daysSinceStart < 0) return 1;
   return Math.min(durationWeeks, Math.max(1, Math.floor(daysSinceStart / 7) + 1));
 }
 

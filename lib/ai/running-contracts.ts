@@ -239,3 +239,44 @@ export const runningPlanOutputSchema = {
     },
   },
 };
+
+/**
+ * Post-schema semantic validation for generated 4-week running plans.
+ */
+export function validateRunningPlanSemantics(
+  output: RunningPlanOutput,
+  expectedWeeklyRuns?: number | null
+): string[] {
+  const errors: string[] = [];
+  const sessionsByWeek = new Map<number, RunningSessionPrescription[]>();
+  for (let w = 1; w <= 4; w++) {
+    sessionsByWeek.set(w, []);
+  }
+
+  for (const session of output.plan.sessions) {
+    const bucket = sessionsByWeek.get(session.weekNumber);
+    if (bucket) {
+      bucket.push(session);
+    }
+    for (const seg of session.segments) {
+      if (seg.paceRangeSec && seg.paceRangeSec[0] > seg.paceRangeSec[1]) {
+        errors.push(
+          `Session "${session.title}" has inverted paceRangeSec [${seg.paceRangeSec[0]}, ${seg.paceRangeSec[1]}]`
+        );
+      }
+    }
+  }
+
+  for (let w = 1; w <= 4; w++) {
+    const count = sessionsByWeek.get(w)?.length ?? 0;
+    if (count === 0) {
+      errors.push(`Week ${w} has 0 scheduled running sessions; all 4 weeks must have sessions`);
+    } else if (expectedWeeklyRuns && expectedWeeklyRuns >= 1 && count > expectedWeeklyRuns + 1) {
+      errors.push(
+        `Week ${w} has ${count} sessions, exceeding athlete weekly target (${expectedWeeklyRuns})`
+      );
+    }
+  }
+
+  return errors;
+}

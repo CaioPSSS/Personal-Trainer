@@ -34,4 +34,4 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - Schema offline check: `npx prisma validate` & `npx prisma generate` (with localhost placeholder Postgres URLs) -> exit 0.
 - Typecheck: `npx tsc --noEmit` -> 0 errors.
 - Linter: `npx eslint app/ lib/ proxy.ts next.config.ts` & `npm run lint` -> 0 errors / 0 warnings.
-- Unit tests: `npx tsx --test` -> 101/101 tests passing.
+- Unit tests: `npx tsx --test` -> 126/126 tests passing.

@@ -8,6 +8,7 @@ import CoachInsights from './CoachInsights';
 import StrengthCoachHub from './StrengthCoachHub';
 import HypertrophyDailyTracker from './HypertrophyDailyTracker';
 import ExerciseHistoryModal from './ExerciseHistoryModal';
+import CycleRenewalPrompt from './CycleRenewalPrompt';
 import { ErrorBoundary } from './ErrorBoundary';
 import StrengthProgressChart from './charts/StrengthProgressChart';
 import { AthleteProfile as PrismaAthleteProfile, MesocyclePlan } from '@prisma/client';
@@ -152,9 +153,19 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
       }
 
       const data = await response.json();
+      const startLabel =
+        typeof data.startDate === 'string' && data.startDate.includes('-')
+          ? data.startDate.split('-').reverse().slice(0, 2).join('/')
+          : null;
+      const startHint = startLabel
+        ? data.rolledToNextWeek
+          ? ` — início programado para segunda-feira (${startLabel}) preservando a Semana 1 completa`
+          : ` — início em ${startLabel}`
+        : '';
       setCoachRunState('validated');
-      setCoachRunMessage(`Novo bloco gerado com sucesso (tentativas: ${data.attempts ?? 1}).`);
+      setCoachRunMessage(`Novo bloco gerado com sucesso${startHint} (tentativas: ${data.attempts ?? 1}).`);
       setCooldownTimeLeft(30);
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
       setTimeout(() => {
         router.refresh();
       }, 1550);
@@ -256,6 +267,15 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
         </section>
       ) : null}
 
+      {/* Automatic Cycle Renewal Suggestion for Strength */}
+      <CycleRenewalPrompt
+        scope="strength"
+        onRenewed={() => {
+          setAnalyticsRefreshKey((k) => k + 1);
+          router.refresh();
+        }}
+      />
+
       {/* 🧠 Master Coach AI Command Center */}
       {hasActiveMesocycle && (
         <ErrorBoundary
@@ -307,6 +327,7 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
             <HypertrophyDailyTracker
               onSaved={() => {
                 setAnalyticsRefreshKey((k) => k + 1);
+                window.dispatchEvent(new CustomEvent('calendar-refresh'));
                 router.refresh();
               }}
             />
