@@ -217,17 +217,28 @@ test('Strava Client: split metrics extraction maps kilometer splits with pace an
   assert.equal(mapStravaActivityToExecution(noSplitsRun).splits, null);
 });
 
-test('Strava Client: getAuthorizationUrl generates valid OAuth2 URL with proper scopes and client ID', () => {
-  const urlString = getAuthorizationUrl('http://localhost:3000');
-  const url = new URL(urlString);
+test('Strava Client: getAuthorizationUrl generates valid OAuth2 URL with proper scopes, state, and configured client ID', () => {
+  const prevClientId = process.env.STRAVA_CLIENT_ID;
+  try {
+    delete process.env.STRAVA_CLIENT_ID;
+    assert.throws(() => getAuthorizationUrl('http://localhost:3000'), /STRAVA_CLIENT_ID/);
 
-  assert.equal(url.origin, 'https://www.strava.com');
-  assert.equal(url.pathname, '/oauth/authorize');
-  assert.equal(url.searchParams.get('client_id'), '282597');
-  assert.equal(url.searchParams.get('response_type'), 'code');
-  assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:3000/api/strava/callback');
-  assert.equal(url.searchParams.get('scope'), 'read,activity:read_all');
-  assert.equal(url.searchParams.get('approval_prompt'), 'auto');
+    process.env.STRAVA_CLIENT_ID = '999001';
+    const urlString = getAuthorizationUrl('http://localhost:3000', 'csrf-state-token-123');
+    const url = new URL(urlString);
+
+    assert.equal(url.origin, 'https://www.strava.com');
+    assert.equal(url.pathname, '/oauth/authorize');
+    assert.equal(url.searchParams.get('client_id'), '999001');
+    assert.equal(url.searchParams.get('response_type'), 'code');
+    assert.equal(url.searchParams.get('redirect_uri'), 'http://localhost:3000/api/strava/callback');
+    assert.equal(url.searchParams.get('scope'), 'read,activity:read_all');
+    assert.equal(url.searchParams.get('approval_prompt'), 'auto');
+    assert.equal(url.searchParams.get('state'), 'csrf-state-token-123');
+  } finally {
+    if (prevClientId === undefined) delete process.env.STRAVA_CLIENT_ID;
+    else process.env.STRAVA_CLIENT_ID = prevClientId;
+  }
 });
 
 test('Strava Client: isRunActivity identifies run sports correctly', () => {

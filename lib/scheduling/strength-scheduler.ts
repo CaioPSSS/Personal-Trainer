@@ -1,15 +1,13 @@
-import type { PrismaClient } from '@prisma/client';
-import { todayISO, shiftISODate } from '@/lib/dates';
-
-// Lazy loader for PrismaClient to allow importing pure scheduler helpers in unit tests without Next.js path alias issues
-let prismaInstance: PrismaClient | null = null;
-async function getPrisma(): Promise<PrismaClient> {
-  if (!prismaInstance) {
-    const mod = await import('@/lib/prisma');
-    prismaInstance = mod.prisma;
-  }
-  return prismaInstance;
-}
+import { prisma } from '@/lib/prisma';
+import {
+  todayISO,
+  shiftISODate,
+  isISODate,
+  mondayOfISODate,
+  weekRangeOfISODate,
+  dayOfWeekMon0,
+  resolveISODate,
+} from '@/lib/dates';
 
 /**
  * Returns Monday (start of week) at 00:00:00 UTC for a given date.
@@ -127,8 +125,15 @@ export function isLowerBodyWorkout(workout: {
       'lunge',
       'knee_extension',
       'knee_flexion',
+      'quad_isolation',
+      'hamstring_isolation',
+      'calf',
       'calf_raise',
       'hip_thrust',
+      'glute',
+      'glute_isolation',
+      'adductor',
+      'abductor',
     ]);
     return workout.prescriptions.some((p) => {
       const mp = (p.movementPattern || '').toLowerCase();
@@ -509,79 +514,36 @@ export function solveOptimalWeeklyStrengthDistribution(params: {
   return { assignment: result, totalPenalty: bestCost };
 }
 
+interface RawCalendarEventRef {
+  id: string;
+  date: string;
+  eventType: string;
+  status: string;
+  title: string;
+  referenceId: string | null;
+  referenceModel: string | null;
+}
+
 /**
- * Rebalances a given calendar week dynamically.
- * Reads fixed events (completed strength, running, CrossFit), gathers planned strength workouts,
- * solves the optimal assignment avoiding leg interference with long runs and CrossFit,
- * and updates CalendarEvent records in the database.
+ * Shared batch enrichment helper for calendar events: eliminates N+1 queries and enriches
+ * RunningSession.sessionType + CrossTrainingActivity metadata uniformly across all schedulers.
  */
-export async function rebalanceWeekSchedule(
-  athleteProfileId: string = 'singleton',
-  anchorDate?: Date | string
-): Promise<{
-  success: boolean;
-  weekStart: string;
-  rebalancedCount: number;
-  events: Array<{ id: string; title: string; oldDate: string; newDate: string }>;
-}> {
-  const prisma = await getPrisma();
-
-  const targetDate = anchorDate ? new Date(anchorDate) : new Date();
-  const weekMonday = getMondayOfDate(targetDate);
-  const weekSunday = new Date(weekMonday);
-  weekSunday.setDate(weekMonday.getDate() + 6);
-
-  const startStr = formatISODate(weekMonday);
-  const endStr = formatISODate(weekSunday);
-
-  // 1. Fetch athlete profile preferences
-  const athlete = await prisma.athleteProfile.findUnique({
-    where: { id: athleteProfileId },
-  });
-  const availableDays = parseAvailableDayIndices(athlete?.availableDays);
-  const weeklyWorkoutsTarget = athlete?.weeklyWorkoutsTarget ?? null;
-
-  // 2. Fetch all events for this week
-  const weekEvents = await prisma.calendarEvent.findMany({
-    where: {
-      athleteProfileId,
-      date: { gte: startStr, lte: endStr },
-    },
-    orderBy: { date: 'asc' },
-  });
-
-  const today = todayISO();
-
-  // Separate fixed events from planned strength events
-  const fixedScheduleEvents: CalendarEventScheduleContext[] = [];
-  const plannedStrengthEvents: typeof weekEvents = [];
-  const nonPlannedEvents: Array<{ ev: (typeof weekEvents)[number]; dayIndex: number }> = [];
-
-  for (const ev of weekEvents) {
-    const evDate = new Date(`${ev.date}T00:00:00`);
-    const day = evDate.getDay();
-    const dayIndex = day === 0 ? 6 : day - 1; // 0=Mon, 6=Sun
-
-    // STRICT FORWARD-ONLY RULE:
-    // Only future planned events (date >= today) are candidates to be rescheduled.
-    // Past events (< today) are immutable and treated as fixed context.
-    if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
-      plannedStrengthEvents.push(ev);
-    } else {
-      nonPlannedEvents.push({ ev, dayIndex });
-    }
-  }
-
-  // Batch-fetch referenced RunningExecution, RunningSession, and CrossTrainingActivity records (eliminates N+1)
-  const runExecIds = nonPlannedEvents
-    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel === 'RunningExecution')
-    .map(({ ev }) => ev.referenceId!);
-  const runSessionIds = nonPlannedEvents
-    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel !== 'RunningExecution')
-    .map(({ ev }) => ev.referenceId!);
-  const ctIds = nonPlannedEvents
-    .filter(({ ev }) => ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId)
-    .map(({ ev }) => ev.referenceId!);
+async function enrichFixedEventsBatch(
+  events: RawCalendarEventRef[]
+): Promise<CalendarEventScheduleContext[]> {
+  const runExecIds = events
+    .filter((ev) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel === 'RunningExecution')
+    .map((ev) => ev.referenceId!);
+  const runSessionIds = events
+    .filter((ev) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel !== 'RunningExecution')
+    .map((ev) => ev.referenceId!);
+  const ctIds = events
+    .filter(
+      (ev) =>
+        ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) &&
+        ev.referenceId
+    )
+    .map((ev) => ev.referenceId!);
 
   const [runExecs, runSessions, ctActivities] = await Promise.all([
     runExecIds.length > 0
@@ -608,7 +570,7 @@ export async function rebalanceWeekSchedule(
   const runSessionMap = new Map(runSessions.map((s) => [s.id, s.sessionType]));
   const ctMap = new Map(ctActivities.map((c) => [c.id, c]));
 
-  for (const { ev, dayIndex } of nonPlannedEvents) {
+  return events.map((ev) => {
     let runningSessionType: string | undefined;
     let muscleGroups: string[] | undefined;
     let sessionRpe: number | null | undefined;
@@ -620,7 +582,10 @@ export async function rebalanceWeekSchedule(
           : runSessionMap.get(ev.referenceId);
     }
 
-    if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
+    if (
+      ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) &&
+      ev.referenceId
+    ) {
       const ct = ctMap.get(ev.referenceId);
       if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
         muscleGroups = ct.muscleGroups as string[];
@@ -628,10 +593,10 @@ export async function rebalanceWeekSchedule(
       sessionRpe = ct?.sessionRpe;
     }
 
-    fixedScheduleEvents.push({
+    return {
       id: ev.id,
       date: ev.date,
-      dayIndex,
+      dayIndex: dayOfWeekMon0(ev.date),
       eventType: ev.eventType,
       status: ev.status,
       title: ev.title,
@@ -639,8 +604,81 @@ export async function rebalanceWeekSchedule(
       runningSessionType,
       muscleGroups,
       sessionRpe,
-    });
+    };
+  });
+}
+
+/**
+ * Rebalances a given calendar week dynamically.
+ * Reads fixed events (completed strength, running, CrossFit), gathers planned strength workouts,
+ * solves the optimal assignment avoiding leg interference with long runs and CrossFit,
+ * and updates CalendarEvent records in the database.
+ */
+export async function rebalanceWeekSchedule(
+  athleteProfileId: string = 'singleton',
+  anchorDate?: Date | string
+): Promise<{
+  success: boolean;
+  weekStart: string;
+  rebalancedCount: number;
+  events: Array<{ id: string; title: string; oldDate: string; newDate: string }>;
+}> {
+  const anchorISO = resolveISODate(anchorDate);
+  const { startOfWeek: startStr, endOfWeek: endStr } = weekRangeOfISODate(anchorISO);
+  const [startYear, startMonth, startDay] = startStr.split('-').map(Number);
+  const weekMonday = new Date(startYear, startMonth - 1, startDay);
+
+  // 1. Fetch athlete profile preferences, active mesocycle prescriptions, and week events in parallel
+  const [athlete, activePlan, weekEvents] = await Promise.all([
+    prisma.athleteProfile.findUnique({
+      where: { id: athleteProfileId },
+    }),
+    prisma.mesocyclePlan.findFirst({
+      where: { athleteProfileId, status: 'active' },
+      include: {
+        workoutDays: {
+          include: {
+            prescriptions: {
+              select: { movementPattern: true, exerciseName: true },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.calendarEvent.findMany({
+      where: {
+        athleteProfileId,
+        date: { gte: startStr, lte: endStr },
+      },
+      orderBy: { date: 'asc' },
+    }),
+  ]);
+
+  const availableDays = parseAvailableDayIndices(athlete?.availableDays);
+  const weeklyWorkoutsTarget = athlete?.weeklyWorkoutsTarget ?? null;
+  const templateById = new Map((activePlan?.workoutDays ?? []).map((t) => [t.id, t]));
+  const templateByLabel = new Map(
+    (activePlan?.workoutDays ?? []).map((t) => [t.label.trim().toLowerCase(), t])
+  );
+
+  const today = todayISO();
+
+  // Separate fixed events from planned strength events
+  const plannedStrengthEvents: typeof weekEvents = [];
+  const nonPlannedRaw: typeof weekEvents = [];
+
+  for (const ev of weekEvents) {
+    // STRICT FORWARD-ONLY RULE:
+    // Only future planned events (date >= today) are candidates to be rescheduled.
+    if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
+      plannedStrengthEvents.push(ev);
+    } else {
+      nonPlannedRaw.push(ev);
+    }
   }
+
+  const fixedScheduleEvents = await enrichFixedEventsBatch(nonPlannedRaw);
 
   // Filter available days: only days >= today can receive workouts
   const forwardAvailableDays = availableDays.filter((dIdx) => {
@@ -657,7 +695,6 @@ export async function rebalanceWeekSchedule(
     };
   }
 
-  // Count already completed strength workouts in the week so total weekly target is respected
   const completedStrengthInWeek = fixedScheduleEvents.filter(
     (e) => e.eventType === 'strength' && e.status === 'completed'
   ).length;
@@ -667,20 +704,25 @@ export async function rebalanceWeekSchedule(
 
   const targetCount = Math.min(remainingTargetForWeek, plannedStrengthEvents.length);
   const excessEvents = plannedStrengthEvents.slice(targetCount);
-  if (excessEvents.length > 0) {
-    await prisma.calendarEvent.deleteMany({
-      where: { id: { in: excessEvents.map((e) => e.id) } },
-    });
-  }
 
   const workoutsToSchedule: StrengthWorkoutToSchedule[] = plannedStrengthEvents
     .slice(0, targetCount)
-    .map((ev) => ({
-      id: ev.id,
-      title: ev.title,
-      isLower: isLowerBodyWorkout({ title: ev.title, label: ev.title }),
-      sortOrder: ev.sortOrder,
-    }));
+    .map((ev) => {
+      const tpl =
+        (ev.referenceModel === 'WorkoutDayTemplate' && ev.referenceId
+          ? templateById.get(ev.referenceId)
+          : undefined) || templateByLabel.get(ev.title.trim().toLowerCase());
+      return {
+        id: ev.id,
+        title: ev.title,
+        isLower: isLowerBodyWorkout({
+          title: ev.title,
+          label: tpl?.label ?? ev.title,
+          prescriptions: tpl?.prescriptions,
+        }),
+        sortOrder: ev.sortOrder,
+      };
+    });
 
   const { assignment } = solveOptimalWeeklyStrengthDistribution({
     weekMonday,
@@ -691,12 +733,18 @@ export async function rebalanceWeekSchedule(
 
   const changes: Array<{ id: string; title: string; oldDate: string; newDate: string }> = [];
 
-  for (const sol of assignment) {
-    if (sol.dateStr < today) continue; // Safety guard
-    const originalEvent = plannedStrengthEvents.find((e) => e.id === sol.workoutId);
-    if (originalEvent) {
-      if (originalEvent.date !== sol.dateStr) {
-        await prisma.calendarEvent.update({
+  await prisma.$transaction(async (tx) => {
+    if (excessEvents.length > 0) {
+      await tx.calendarEvent.deleteMany({
+        where: { id: { in: excessEvents.map((e) => e.id) } },
+      });
+    }
+
+    for (const sol of assignment) {
+      if (sol.dateStr < today) continue;
+      const originalEvent = plannedStrengthEvents.find((e) => e.id === sol.workoutId);
+      if (originalEvent && originalEvent.date !== sol.dateStr) {
+        await tx.calendarEvent.update({
           where: { id: sol.workoutId },
           data: {
             date: sol.dateStr,
@@ -711,7 +759,7 @@ export async function rebalanceWeekSchedule(
         });
       }
     }
-  }
+  });
 
   console.log(
     `[Scheduler] Rebalanceamento da semana ${startStr} concluído: ${changes.length} treinos reorganizados.`
@@ -736,7 +784,6 @@ export async function scheduleMesocycleWorkouts(
   athleteProfileId: string,
   startDate?: Date
 ): Promise<void> {
-  const prisma = await getPrisma();
   const activePlan = await prisma.mesocyclePlan.findFirst({
     where: {
       athleteProfileId,
@@ -757,7 +804,6 @@ export async function scheduleMesocycleWorkouts(
     return;
   }
 
-  // Ensure athlete profile exists and load preferences
   let athlete = await prisma.athleteProfile.findUnique({
     where: { id: athleteProfileId },
   });
@@ -770,55 +816,52 @@ export async function scheduleMesocycleWorkouts(
   const availableDays = parseAvailableDayIndices(athlete.availableDays);
   const targetWorkoutsPerWeek = athlete.weeklyWorkoutsTarget ?? activePlan.workoutDays.length;
 
-  // Determine base Monday for scheduling
-  let baseDate = startDate;
-  if (!baseDate && activePlan.startDate) {
-    const parts = activePlan.startDate.split('-').map(Number);
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      baseDate = new Date(parts[0], parts[1] - 1, parts[2]);
-    }
-  }
-  if (!baseDate) {
-    baseDate = new Date();
-  }
+  const baseISO = startDate
+    ? resolveISODate(startDate)
+    : activePlan.startDate && isISODate(activePlan.startDate)
+      ? activePlan.startDate
+      : todayISO();
 
-  const baseMonday = getMondayOfDate(baseDate);
+  const baseMondayISO = mondayOfISODate(baseISO);
   const dayTemplates = activePlan.workoutDays;
   const numWeeks = activePlan.durationWeeks || (activePlan.weeks.length > 0 ? activePlan.weeks.length : 4);
   const today = todayISO();
 
+  const horizonEndISO = shiftISODate(baseMondayISO, numWeeks * 7);
+  const allHorizonEvents = await prisma.calendarEvent.findMany({
+    where: {
+      athleteProfileId,
+      date: { gte: baseMondayISO, lte: horizonEndISO },
+    },
+  });
+
+  // Batch-enrich running sessionType and cross-training muscleGroups/RPE across the full horizon
+  const enrichedHorizon = await enrichFixedEventsBatch(allHorizonEvents);
+
+  const createsToPersist: Array<{
+    athleteProfileId: string;
+    date: string;
+    eventType: string;
+    referenceModel: string;
+    referenceId: string;
+    title: string;
+    status: 'planned';
+    sortOrder: number;
+  }> = [];
+
   for (let weekIndex = 0; weekIndex < numWeeks; weekIndex++) {
-    const weekStart = new Date(baseMonday);
-    weekStart.setDate(baseMonday.getDate() + weekIndex * 7);
-    const weekEnd = new Date(weekStart);
-    weekEnd.setDate(weekStart.getDate() + 6);
+    const weekStartStr = shiftISODate(baseMondayISO, weekIndex * 7);
+    const weekEndStr = shiftISODate(weekStartStr, 6);
+    const [wsYear, wsMonth, wsDay] = weekStartStr.split('-').map(Number);
+    const weekStart = new Date(wsYear, wsMonth - 1, wsDay);
 
-    const weekStartStr = formatISODate(weekStart);
-    const weekEndStr = formatISODate(weekEnd);
+    const fixedEvents = enrichedHorizon.filter(
+      (ev) => ev.date >= weekStartStr && ev.date <= weekEndStr
+    );
+    const existingRawWeekEvents = allHorizonEvents.filter(
+      (ev) => ev.date >= weekStartStr && ev.date <= weekEndStr
+    );
 
-    // Fetch existing calendar events for this week (e.g. running sessions, cross-training, completed strength)
-    const existingWeekEvents = await prisma.calendarEvent.findMany({
-      where: {
-        athleteProfileId,
-        date: { gte: weekStartStr, lte: weekEndStr },
-      },
-    });
-
-    const fixedEvents: CalendarEventScheduleContext[] = existingWeekEvents.map((ev) => {
-      const d = new Date(`${ev.date}T00:00:00`);
-      const day = d.getDay();
-      return {
-        id: ev.id,
-        date: ev.date,
-        dayIndex: day === 0 ? 6 : day - 1,
-        eventType: ev.eventType,
-        status: ev.status,
-        title: ev.title,
-        referenceModel: ev.referenceModel,
-      };
-    });
-
-    // Pick templates for this week (rotating cyclically across weeks when targetWorkoutsPerWeek < dayTemplates.length)
     const countToSchedule = Math.min(targetWorkoutsPerWeek, dayTemplates.length);
     const templatesForWeek = Array.from({ length: countToSchedule }, (_, i) => {
       const templateIdx = (weekIndex * countToSchedule + i) % dayTemplates.length;
@@ -845,44 +888,40 @@ export async function scheduleMesocycleWorkouts(
 
     for (let tIdx = 0; tIdx < assignment.length; tIdx++) {
       const sol = assignment[tIdx];
-
-      // STRICT FORWARD-ONLY RULE:
-      // Never schedule planned strength events in the past (< today)
       if (sol.dateStr < today) {
         continue;
       }
 
       const template = templatesForWeek.find((t) => t.id === sol.workoutId) || templatesForWeek[tIdx];
 
-      // Check if any strength event already exists for this date and template
-      const existing = await prisma.calendarEvent.findFirst({
-        where: {
+      const alreadyExists = existingRawWeekEvents.some(
+        (ev) =>
+          ev.date === sol.dateStr &&
+          ev.eventType === 'strength' &&
+          (ev.referenceId === template.id ||
+            ev.title === template.label ||
+            ev.referenceModel === 'WorkoutExecution')
+      );
+
+      if (!alreadyExists) {
+        createsToPersist.push({
           athleteProfileId,
           date: sol.dateStr,
           eventType: 'strength',
-          OR: [
-            { referenceId: template.id },
-            { title: template.label },
-            { referenceModel: 'WorkoutExecution' },
-          ],
-        },
-      });
-
-      if (!existing) {
-        await prisma.calendarEvent.create({
-          data: {
-            athleteProfileId,
-            date: sol.dateStr,
-            eventType: 'strength',
-            referenceModel: 'WorkoutDayTemplate',
-            referenceId: template.id,
-            title: template.label,
-            status: 'planned',
-            sortOrder: tIdx,
-          },
+          referenceModel: 'WorkoutDayTemplate',
+          referenceId: template.id,
+          title: template.label,
+          status: 'planned',
+          sortOrder: tIdx,
         });
       }
     }
+  }
+
+  if (createsToPersist.length > 0) {
+    await prisma.$transaction(async (tx) => {
+      await tx.calendarEvent.createMany({ data: createsToPersist });
+    });
   }
 
   // Ensure no duplicates exist after scheduling
@@ -894,7 +933,6 @@ export async function scheduleMesocycleWorkouts(
  * keeping only the earliest created event for each date/title combination.
  */
 export async function cleanupDuplicateStrengthEvents(athleteProfileId: string): Promise<number> {
-  const prisma = await getPrisma();
   const plannedEvents = await prisma.calendarEvent.findMany({
     where: {
       athleteProfileId,
@@ -933,9 +971,6 @@ export async function cleanupDuplicateStrengthEvents(athleteProfileId: string): 
  * @param athleteProfileId - ID of the athlete profile (e.g. 'singleton')
  */
 export async function syncPlannedCalendarEvents(athleteProfileId: string): Promise<void> {
-  const prisma = await getPrisma();
-
-  // 1. Purge any duplicate planned strength events
   await cleanupDuplicateStrengthEvents(athleteProfileId);
 
   const activePlan = await prisma.mesocyclePlan.findFirst({
@@ -953,7 +988,6 @@ export async function syncPlannedCalendarEvents(athleteProfileId: string): Promi
     return;
   }
 
-  // Count all strength events (both planned templates and completed executions)
   const existingEventsCount = await prisma.calendarEvent.count({
     where: {
       athleteProfileId,
@@ -982,7 +1016,6 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
   rebalancedCount: number;
   message: string;
 }> {
-  const prisma = await getPrisma();
   const athleteProfileId = params.athleteProfileId || 'singleton';
   const today = todayISO();
 
@@ -990,7 +1023,6 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
     throw new Error('Não é permitido reagendar ou selecionar templates para datas passadas.');
   }
 
-  // 1. Fetch active mesocycle plan and its templates
   const activePlan = await prisma.mesocyclePlan.findFirst({
     where: {
       athleteProfileId,
@@ -1013,161 +1045,49 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
     throw new Error(`Template com ID "${params.templateId}" não encontrado no mesociclo ativo.`);
   }
 
-  // 2. Compute week boundaries for target date
-  const targetDateObj = new Date(`${params.date}T00:00:00`);
-  const targetDay = targetDateObj.getDay();
-  const targetDayIndex = targetDay === 0 ? 6 : targetDay - 1; // 0=Mon, 6=Sun
+  const targetDayIndex = dayOfWeekMon0(params.date);
+  const { startOfWeek: startStr, endOfWeek: endStr } = weekRangeOfISODate(params.date);
+  const [wmYear, wmMonth, wmDay] = startStr.split('-').map(Number);
+  const weekMonday = new Date(wmYear, wmMonth - 1, wmDay);
 
-  const weekMonday = getMondayOfDate(targetDateObj);
-  const weekSunday = new Date(weekMonday);
-  weekSunday.setDate(weekMonday.getDate() + 6);
-
-  const startStr = formatISODate(weekMonday);
-  const endStr = formatISODate(weekSunday);
-
-  // 3. Fetch athlete availability preferences
-  const athlete = await prisma.athleteProfile.findUnique({
-    where: { id: athleteProfileId },
-  });
-  const availableDays = parseAvailableDayIndices(athlete?.availableDays);
-  const weeklyWorkoutsTarget = athlete?.weeklyWorkoutsTarget ?? activePlan.workoutDays.length;
-
-  // 4. Update or create the CalendarEvent for the selected date
-  const existingOnDate = await prisma.calendarEvent.findFirst({
-    where: {
-      athleteProfileId,
-      date: params.date,
-      eventType: 'strength',
-    },
-  });
-
-  let selectedEventId: string;
-  if (existingOnDate) {
-    const updated = await prisma.calendarEvent.update({
-      where: { id: existingOnDate.id },
-      data: {
-        referenceId: chosenTemplate.id,
-        referenceModel: 'WorkoutDayTemplate',
-        title: chosenTemplate.label,
-        status: existingOnDate.status === 'completed' ? 'completed' : 'planned',
-      },
-    });
-    selectedEventId = updated.id;
-  } else {
-    const created = await prisma.calendarEvent.create({
-      data: {
+  const [athlete, existingOnDate, allWeekEvents] = await Promise.all([
+    prisma.athleteProfile.findUnique({ where: { id: athleteProfileId } }),
+    prisma.calendarEvent.findFirst({
+      where: {
         athleteProfileId,
         date: params.date,
         eventType: 'strength',
-        referenceId: chosenTemplate.id,
-        referenceModel: 'WorkoutDayTemplate',
-        title: chosenTemplate.label,
-        status: 'planned',
-        sortOrder: 0,
       },
-    });
-    selectedEventId = created.id;
-  }
+    }),
+    prisma.calendarEvent.findMany({
+      where: {
+        athleteProfileId,
+        date: { gte: startStr, lte: endStr },
+      },
+      orderBy: { date: 'asc' },
+    }),
+  ]);
 
-  // 5. Gather all other events for this week (running, cross-training, completed strength)
-  const weekEvents = await prisma.calendarEvent.findMany({
-    where: {
-      athleteProfileId,
-      date: { gte: startStr, lte: endStr },
-      id: { not: selectedEventId },
-    },
-    orderBy: { date: 'asc' },
-  });
+  const availableDays = parseAvailableDayIndices(athlete?.availableDays);
+  const weeklyWorkoutsTarget = athlete?.weeklyWorkoutsTarget ?? activePlan.workoutDays.length;
 
-  const fixedScheduleEvents: CalendarEventScheduleContext[] = [];
+  const selectedEventIdPre = existingOnDate?.id ?? 'pending-selected-event';
+  const weekEvents = allWeekEvents.filter((ev) => ev.id !== existingOnDate?.id);
+
   const existingPlannedStrengthEvents: typeof weekEvents = [];
-  const nonPlannedEvents: Array<{ ev: (typeof weekEvents)[number]; dayIndex: number }> = [];
+  const nonPlannedRaw: typeof weekEvents = [];
 
   for (const ev of weekEvents) {
-    const evDate = new Date(`${ev.date}T00:00:00`);
-    const day = evDate.getDay();
-    const dayIndex = day === 0 ? 6 : day - 1;
-
-    // STRICT FORWARD-ONLY RULE: only future planned strength events (>= today) can be moved
     if (ev.eventType === 'strength' && ev.status === 'planned' && ev.date >= today) {
       existingPlannedStrengthEvents.push(ev);
     } else {
-      nonPlannedEvents.push({ ev, dayIndex });
+      nonPlannedRaw.push(ev);
     }
   }
 
-  const runExecIds = nonPlannedEvents
-    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel === 'RunningExecution')
-    .map(({ ev }) => ev.referenceId!);
-  const runSessionIds = nonPlannedEvents
-    .filter(({ ev }) => ev.eventType === 'running' && ev.referenceId && ev.referenceModel !== 'RunningExecution')
-    .map(({ ev }) => ev.referenceId!);
-  const ctIds = nonPlannedEvents
-    .filter(({ ev }) => ['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId)
-    .map(({ ev }) => ev.referenceId!);
-
-  const [runExecs, runSessions, ctActivities] = await Promise.all([
-    runExecIds.length > 0
-      ? prisma.runningExecution.findMany({
-          where: { id: { in: runExecIds } },
-          select: { id: true, runningSession: { select: { sessionType: true } } },
-        })
-      : Promise.resolve([]),
-    runSessionIds.length > 0
-      ? prisma.runningSession.findMany({
-          where: { id: { in: runSessionIds } },
-          select: { id: true, sessionType: true },
-        })
-      : Promise.resolve([]),
-    ctIds.length > 0
-      ? prisma.crossTrainingActivity.findMany({
-          where: { id: { in: ctIds } },
-          select: { id: true, muscleGroups: true, sessionRpe: true },
-        })
-      : Promise.resolve([]),
-  ]);
-
-  const runExecMap = new Map(runExecs.map((r) => [r.id, r.runningSession?.sessionType]));
-  const runSessionMap = new Map(runSessions.map((s) => [s.id, s.sessionType]));
-  const ctMap = new Map(ctActivities.map((c) => [c.id, c]));
-
-  for (const { ev, dayIndex } of nonPlannedEvents) {
-    let runningSessionType: string | undefined;
-    let muscleGroups: string[] | undefined;
-    let sessionRpe: number | null | undefined;
-
-    if (ev.eventType === 'running' && ev.referenceId) {
-      runningSessionType =
-        ev.referenceModel === 'RunningExecution'
-          ? runExecMap.get(ev.referenceId)
-          : runSessionMap.get(ev.referenceId);
-    }
-
-    if (['crossfit', 'swimming', 'cycling', 'martial_arts', 'other'].includes(ev.eventType) && ev.referenceId) {
-      const ct = ctMap.get(ev.referenceId);
-      if (ct?.muscleGroups && Array.isArray(ct.muscleGroups)) {
-        muscleGroups = ct.muscleGroups as string[];
-      }
-      sessionRpe = ct?.sessionRpe;
-    }
-
-    fixedScheduleEvents.push({
-      id: ev.id,
-      date: ev.date,
-      dayIndex,
-      eventType: ev.eventType,
-      status: ev.status,
-      title: ev.title,
-      referenceModel: ev.referenceModel,
-      runningSessionType,
-      muscleGroups,
-      sessionRpe,
-    });
-  }
-
-  // Also add the selected workout as a fixed strength event on params.date!
+  const fixedScheduleEvents = await enrichFixedEventsBatch(nonPlannedRaw);
   fixedScheduleEvents.push({
-    id: selectedEventId,
+    id: selectedEventIdPre,
     date: params.date,
     dayIndex: targetDayIndex,
     eventType: 'strength',
@@ -1176,16 +1096,12 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
     referenceModel: 'WorkoutDayTemplate',
   });
 
-  // 6. Determine remaining templates to schedule in the week following the AI split order
-  const pastOrCompletedStrengthCount = nonPlannedEvents.filter(
-    ({ ev }) => ev.eventType === 'strength' && (ev.status === 'completed' || ev.date < today)
+  const pastOrCompletedStrengthCount = nonPlannedRaw.filter(
+    (ev) => ev.eventType === 'strength' && (ev.status === 'completed' || ev.date < today)
   ).length;
   const totalCountForWeek = Math.min(weeklyWorkoutsTarget, activePlan.workoutDays.length);
   const remainingCount = Math.max(0, totalCountForWeek - 1 - pastOrCompletedStrengthCount);
 
-  let rebalancedCount = 0;
-
-  // Candidate days for remaining workouts: availableDays excluding targetDayIndex AND strictly >= today
   const forwardAvailableDays = availableDays.filter(
     (d) => d !== targetDayIndex && shiftISODate(startStr, d) >= today
   );
@@ -1193,97 +1109,125 @@ export async function applyWorkoutTemplateSelectionAndRebalance(params: {
     (d) => d !== targetDayIndex && shiftISODate(startStr, d) >= today
   );
 
-  if (remainingCount > 0 && allForwardDays.length > 0) {
-    const allTemplates = activePlan.workoutDays;
-    const numTemplates = allTemplates.length;
-    const chosenIndex = allTemplates.findIndex((t) => t.id === chosenTemplate.id);
+  let rebalancedCount = 0;
 
-    const cappedRemaining = Math.min(remainingCount, allForwardDays.length);
-    // Sequence the remaining templates in cyclic split order: next in line after chosenTemplate
-    const remainingTemplates: typeof allTemplates = [];
-    for (let step = 1; step <= cappedRemaining; step++) {
-      const nextIdx = (chosenIndex + step) % numTemplates;
-      remainingTemplates.push(allTemplates[nextIdx]);
-    }
-
-    const validCandidateDays =
-      forwardAvailableDays.length >= remainingTemplates.length
-        ? forwardAvailableDays
-        : allForwardDays;
-
-    const workoutsToSchedule: StrengthWorkoutToSchedule[] = remainingTemplates.map((t) => ({
-      id: t.id,
-      title: t.label,
-      isLower: isLowerBodyWorkout({
-        title: t.label,
-        label: t.label,
-        prescriptions: t.prescriptions,
-      }),
-      sortOrder: t.dayOrder,
-    }));
-
-    const { assignment } = solveOptimalWeeklyStrengthDistribution({
-      weekMonday,
-      availableDays: validCandidateDays,
-      workouts: workoutsToSchedule,
-      fixedEvents: fixedScheduleEvents,
-    });
-
-    // 7. Update or create CalendarEvent for each assigned remaining workout
-    const usedEventIds = new Set<string>([selectedEventId]);
-
-    for (let i = 0; i < assignment.length; i++) {
-      const sol = assignment[i];
-      const template = remainingTemplates.find((t) => t.id === sol.workoutId) || remainingTemplates[i];
-
-      // Match an existing planned strength event in this week if possible
-      const match = existingPlannedStrengthEvents.find(
-        (e) => !usedEventIds.has(e.id) && (e.referenceId === template.id || e.title === template.label)
-      ) || existingPlannedStrengthEvents.find((e) => !usedEventIds.has(e.id));
-
-      if (match) {
-        usedEventIds.add(match.id);
-        await prisma.calendarEvent.update({
-          where: { id: match.id },
-          data: {
-            date: sol.dateStr,
-            referenceId: template.id,
-            referenceModel: 'WorkoutDayTemplate',
-            title: template.label,
-            status: 'planned',
-            originalDate: match.originalDate || match.date,
-            sortOrder: i + 1,
-          },
-        });
-        rebalancedCount++;
-      } else {
-        const created = await prisma.calendarEvent.create({
-          data: {
-            athleteProfileId,
-            date: sol.dateStr,
-            eventType: 'strength',
-            referenceId: template.id,
-            referenceModel: 'WorkoutDayTemplate',
-            title: template.label,
-            status: 'planned',
-            sortOrder: i + 1,
-          },
-        });
-        usedEventIds.add(created.id);
-        rebalancedCount++;
-      }
-    }
-
-    // 8. Delete any orphaned planned strength events in this week that are no longer part of the schedule
-    const orphanedEvents = existingPlannedStrengthEvents.filter((e) => !usedEventIds.has(e.id));
-    if (orphanedEvents.length > 0) {
-      await prisma.calendarEvent.deleteMany({
-        where: { id: { in: orphanedEvents.map((e) => e.id) } },
+  await prisma.$transaction(async (tx) => {
+    if (existingOnDate) {
+      await tx.calendarEvent.update({
+        where: { id: existingOnDate.id },
+        data: {
+          referenceId: chosenTemplate.id,
+          referenceModel: 'WorkoutDayTemplate',
+          title: chosenTemplate.label,
+          status: existingOnDate.status === 'completed' ? 'completed' : 'planned',
+        },
+      });
+    } else {
+      await tx.calendarEvent.create({
+        data: {
+          athleteProfileId,
+          date: params.date,
+          eventType: 'strength',
+          referenceId: chosenTemplate.id,
+          referenceModel: 'WorkoutDayTemplate',
+          title: chosenTemplate.label,
+          status: 'planned',
+          sortOrder: 0,
+        },
       });
     }
-  }
 
-  // Ensure no duplicate strength events exist after rebalance
+    if (remainingCount > 0 && allForwardDays.length > 0) {
+      const allTemplates = activePlan.workoutDays;
+      const numTemplates = allTemplates.length;
+      const chosenIndex = allTemplates.findIndex((t) => t.id === chosenTemplate.id);
+
+      const cappedRemaining = Math.min(remainingCount, allForwardDays.length);
+      const remainingTemplates: typeof allTemplates = [];
+      for (let step = 1; step <= cappedRemaining; step++) {
+        const nextIdx = (chosenIndex + step) % numTemplates;
+        remainingTemplates.push(allTemplates[nextIdx]);
+      }
+
+      const validCandidateDays =
+        forwardAvailableDays.length >= remainingTemplates.length
+          ? forwardAvailableDays
+          : allForwardDays;
+
+      const workoutsToSchedule: StrengthWorkoutToSchedule[] = remainingTemplates.map((t) => ({
+        id: t.id,
+        title: t.label,
+        isLower: isLowerBodyWorkout({
+          title: t.label,
+          label: t.label,
+          prescriptions: t.prescriptions,
+        }),
+        sortOrder: t.dayOrder,
+      }));
+
+      const { assignment } = solveOptimalWeeklyStrengthDistribution({
+        weekMonday,
+        availableDays: validCandidateDays,
+        workouts: workoutsToSchedule,
+        fixedEvents: fixedScheduleEvents,
+      });
+
+      const usedEventIds = new Set<string>([selectedEventIdPre]);
+
+      for (let i = 0; i < assignment.length; i++) {
+        const sol = assignment[i];
+        const template =
+          remainingTemplates.find((t) => t.id === sol.workoutId) || remainingTemplates[i];
+
+        const match =
+          existingPlannedStrengthEvents.find(
+            (e) =>
+              !usedEventIds.has(e.id) &&
+              (e.referenceId === template.id || e.title === template.label)
+          ) || existingPlannedStrengthEvents.find((e) => !usedEventIds.has(e.id));
+
+        if (match) {
+          usedEventIds.add(match.id);
+          await tx.calendarEvent.update({
+            where: { id: match.id },
+            data: {
+              date: sol.dateStr,
+              referenceId: template.id,
+              referenceModel: 'WorkoutDayTemplate',
+              title: template.label,
+              status: 'planned',
+              originalDate: match.originalDate || match.date,
+              sortOrder: i + 1,
+            },
+          });
+          rebalancedCount++;
+        } else {
+          const created = await tx.calendarEvent.create({
+            data: {
+              athleteProfileId,
+              date: sol.dateStr,
+              eventType: 'strength',
+              referenceId: template.id,
+              referenceModel: 'WorkoutDayTemplate',
+              title: template.label,
+              status: 'planned',
+              sortOrder: i + 1,
+            },
+          });
+          usedEventIds.add(created.id);
+          rebalancedCount++;
+        }
+      }
+
+      const orphanedEvents = existingPlannedStrengthEvents.filter((e) => !usedEventIds.has(e.id));
+      if (orphanedEvents.length > 0) {
+        await tx.calendarEvent.deleteMany({
+          where: { id: { in: orphanedEvents.map((e) => e.id) } },
+        });
+      }
+    }
+  });
+
   await cleanupDuplicateStrengthEvents(athleteProfileId);
 
   return {

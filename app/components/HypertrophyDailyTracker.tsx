@@ -16,6 +16,8 @@ import {
   VolumeX,
   Smartphone,
   TrendingUp,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { useFormDraft } from '@/app/hooks/useFormDraft';
 import { useWakeLock } from '@/app/hooks/useWakeLock';
@@ -25,6 +27,7 @@ import { calculateEstimated1RM } from '@/lib/analytics/hypertrophy-analytics';
 import PostWorkoutSummaryModal, { PostWorkoutSummaryModalProps } from './PostWorkoutSummaryModal';
 import ExerciseHistoryModal from './ExerciseHistoryModal';
 import { ExercisePreviousPerformanceData } from '@/lib/progression/load-calculator';
+import { formatMovementPattern } from '@/lib/labels';
 
 interface SwapSuggestionItem {
   title: string;
@@ -95,6 +98,8 @@ interface HypertrophyDailyTrackerProps {
 }
 
 interface DraftState {
+  templateId?: string;
+  durationMinutes?: string;
   exercises: ExerciseInput[];
   sleepHours: string;
   fatigueLevel: string;
@@ -133,8 +138,10 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [suggestions, setSuggestions] = useState<SwapSuggestionItem[]>([]);
   const [swapError, setSwapError] = useState<string | null>(null);
   const [swapFromCache, setSwapFromCache] = useState(false);
+  const [swapSource, setSwapSource] = useState<'cache' | 'ai' | 'fallback' | null>(null);
   const [activeSwapSuggestionId, setActiveSwapSuggestionId] = useState<string | null>(null);
   const [applyingSwapTitle, setApplyingSwapTitle] = useState<string | null>(null);
+  const [reloadTrigger, setReloadTrigger] = useState(0);
 
   // Form states
   const [sleepHours, setSleepHours] = useState('');
@@ -150,6 +157,17 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
   const [restoredFromDraft, setRestoredFromDraft] = useState(false);
   const [hasExistingWorkout, setHasExistingWorkout] = useState(false);
   const [sessionRpe, setSessionRpe] = useState('');
+  const [durationMinutes, setDurationMinutes] = useState('60');
+  const [readiness, setReadiness] = useState<{
+    score: number;
+    status: 'green' | 'yellow' | 'red';
+    label: string;
+    recommendation: string;
+  } | null>(null);
+  const [showExtraExerciseForm, setShowExtraExerciseForm] = useState(false);
+  const [extraExerciseName, setExtraExerciseName] = useState('');
+  const [extraMovementPattern, setExtraMovementPattern] = useState('horizontal_push');
+  const [extraTargetSets, setExtraTargetSets] = useState('3');
   
   const [previousPerformances, setPreviousPerformances] = useState<Record<string, string>>({});
   const [progressionData, setProgressionData] = useState<Record<string, ExercisePreviousPerformanceData>>({});
@@ -201,6 +219,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         setSwappingIndex(null);
         setSuggestions([]);
         setSwapError(null);
+        setSwapFromCache(false);
+        setSwapSource(null);
       }
     };
     window.addEventListener('keydown', handleEsc);
@@ -236,6 +256,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         setProgressionData(progs);
         setIsDeload(data.isDeload || false);
         setCurrentWeekNumber(data.currentWeekNumber || 1);
+        setReadiness(data.readiness || null);
 
         // Prepopulate Wellness if exists, else reset to defaults
         if (data.existingWellness) {
@@ -270,20 +291,33 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setSessionRpe('');
         }
 
-        // Set Active Template
+        // Set Active Template (prefer saved workoutDayTemplateId on existingWorkout)
         let currentTemplate: WorkoutDayTemplate | null = null;
-        if (data.existingWorkout && data.existingWorkout.exerciseExecutions?.length > 0) {
-          // If already logged, identify the template from prescription
+        if (data.existingWorkout?.workoutDayTemplateId) {
+          currentTemplate =
+            (data.templates || []).find(
+              (t: WorkoutDayTemplate) => t.id === data.existingWorkout.workoutDayTemplateId
+            ) || null;
+        }
+        if (!currentTemplate && data.existingWorkout && data.existingWorkout.exerciseExecutions?.length > 0) {
+          // Fallback: identify the template from first exercise prescription
           const firstEx = data.existingWorkout.exerciseExecutions[0];
           const presId = firstEx.exercisePrescriptionId;
-          currentTemplate = data.templates.find((t: WorkoutDayTemplate) =>
+          currentTemplate = (data.templates || []).find((t: WorkoutDayTemplate) =>
             t.prescriptions.some((p) => p.id === presId)
           ) || data.workoutToday;
-        } else {
+        } else if (!currentTemplate) {
           currentTemplate = data.workoutToday;
         }
 
         setSelectedTemplate(currentTemplate);
+        setDurationMinutes(
+          data.existingWorkout?.durationMinutes != null
+            ? String(data.existingWorkout.durationMinutes)
+            : currentTemplate?.estimatedDurationMin != null
+              ? String(currentTemplate.estimatedDurationMin)
+              : '60'
+        );
 
         // Prepopulate Exercises
         if (data.existingWorkout && data.existingWorkout.exerciseExecutions?.length > 0) {
@@ -345,9 +379,15 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setExercises(initializedExs);
         }
 
-        // Check for local drafts (only if there is no submitted workout on the server for this day)
+        // Check for local drafts (only if there is no submitted workout and template matches)
         const draft = loadDraft(selectedDate);
-        if (draft && (!data.existingWorkout || data.existingWorkout.exerciseExecutions?.length === 0)) {
+        const draftTemplateMatches =
+          !draft?.templateId || !currentTemplate || draft.templateId === currentTemplate.id;
+        if (
+          draft &&
+          draftTemplateMatches &&
+          (!data.existingWorkout || data.existingWorkout.exerciseExecutions?.length === 0)
+        ) {
           setExercises(draft.exercises);
           setSleepHours(draft.sleepHours);
           setFatigueLevel(draft.fatigueLevel);
@@ -357,6 +397,9 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
           setBodyWeightKg(draft.bodyWeightKg);
           setWellnessNotes(draft.wellnessNotes);
           setSessionRpe(draft.sessionRpe || '');
+          if (draft.durationMinutes) {
+            setDurationMinutes(draft.durationMinutes);
+          }
           setRestoredFromDraft(true);
         } else {
           setRestoredFromDraft(false);
@@ -370,12 +413,14 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     };
 
     void loadDateData();
-  }, [selectedDate, loadDraft]);
+  }, [selectedDate, loadDraft, reloadTrigger]);
 
   // Auto-save form drafts to localStorage
   useEffect(() => {
     if (!activeMesocycleId || loading) return;
     saveDraft({
+      templateId: selectedTemplate?.id,
+      durationMinutes,
       exercises,
       sleepHours,
       fatigueLevel,
@@ -387,6 +432,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       sessionRpe,
     }, selectedDate);
   }, [
+    selectedTemplate?.id,
+    durationMinutes,
     exercises,
     sleepHours,
     fatigueLevel,
@@ -402,11 +449,13 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     saveDraft
   ]);
 
-  // When manually changing the template template in dropdown
+  // When manually changing the template in dropdown
   const handleTemplateChange = async (templateId: string) => {
     const template = templates.find((t) => t.id === templateId);
     if (!template) return;
     setSelectedTemplate(template);
+    setDurationMinutes(String(template.estimatedDurationMin || 60));
+    setRestoredFromDraft(false);
 
     const initializedExs: ExerciseInput[] = template.prescriptions.map((p) => {
       const prog = progressionData[p.id];
@@ -526,6 +575,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     if (forceRefresh) {
       setSuggestions([]);
       setSwapFromCache(false);
+      setSwapSource(null);
     }
 
     try {
@@ -533,7 +583,6 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
         },
         body: JSON.stringify({
           mode: 'exercise_swap',
@@ -558,6 +607,9 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       if (data.success && Array.isArray(data.output?.recommendations)) {
         setSuggestions(data.output.recommendations);
         setSwapFromCache(Boolean(data.fromCache));
+        setSwapSource(
+          data.source || (data.usedFallback ? 'fallback' : data.fromCache ? 'cache' : 'ai')
+        );
         setActiveSwapSuggestionId(data.swapSuggestionId || null);
         if (!data.fromCache) {
           setSwapCooldownTimeLeft(15);
@@ -582,9 +634,13 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
 
     setApplyingSwapTitle(sug.title);
 
-    // Update current workout session state immediately
+    // Update current workout session state immediately & clear stale prefilled loadKg on unlogged sets
     originalEx.substitutedFrom = canonicalOriginalName;
     originalEx.exerciseName = sug.title;
+    originalEx.sets = originalEx.sets.map((s) => ({
+      ...s,
+      loadKg: s.reps.trim() === '' ? '' : s.loadKg,
+    }));
     updated[targetIdx] = originalEx;
     setExercises(updated);
 
@@ -593,7 +649,6 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
         },
         body: JSON.stringify({
           swapSuggestionId: activeSwapSuggestionId,
@@ -612,32 +667,61 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         const patchData = await res.json();
 
         // Update progression badge & prefill load if historical performance exists for the replacement exercise
-        if (originalEx.exercisePrescriptionId && patchData.replacementProgression) {
-          setProgressionData((prev) => ({
-            ...prev,
-            [originalEx.exercisePrescriptionId]: patchData.replacementProgression,
-          }));
-          if (patchData.replacementPreviousPerformanceText) {
-            setPreviousPerformances((prev) => ({
+        if (originalEx.exercisePrescriptionId) {
+          const rxId = originalEx.exercisePrescriptionId;
+          if (patchData.replacementProgression) {
+            setProgressionData((prev) => ({
               ...prev,
-              [originalEx.exercisePrescriptionId]: patchData.replacementPreviousPerformanceText,
+              [rxId]: patchData.replacementProgression,
             }));
-          }
-          const suggestedKg = patchData.replacementProgression.suggestedLoadKg;
-          if (suggestedKg > 0) {
-            setExercises((prevExs) => {
-              const nextExs = [...prevExs];
-              const target = nextExs[targetIdx];
-              if (target) {
-                nextExs[targetIdx] = {
-                  ...target,
-                  sets: target.sets.map((s) => ({
-                    ...s,
-                    loadKg: s.reps === '' ? String(suggestedKg) : s.loadKg,
-                  })),
-                };
-              }
-              return nextExs;
+            if (patchData.replacementPreviousPerformanceText) {
+              setPreviousPerformances((prev) => ({
+                ...prev,
+                [rxId]: patchData.replacementPreviousPerformanceText,
+              }));
+            } else {
+              setPreviousPerformances((prev) => {
+                const next = { ...prev };
+                delete next[rxId];
+                return next;
+              });
+            }
+            const suggestedKg = patchData.replacementProgression.suggestedLoadKg;
+            if (suggestedKg > 0) {
+              setExercises((prevExs) => {
+                const nextExs = [...prevExs];
+                const target = nextExs[targetIdx];
+                if (target) {
+                  nextExs[targetIdx] = {
+                    ...target,
+                    sets: target.sets.map((s) => ({
+                      ...s,
+                      loadKg: s.reps === '' ? String(suggestedKg) : s.loadKg,
+                    })),
+                  };
+                }
+                return nextExs;
+              });
+            }
+          } else {
+            // Replacement exercise has no historical records: reset badge/details cleanly
+            setProgressionData((prev) => ({
+              ...prev,
+              [rxId]: {
+                lastLoadKg: 0,
+                suggestedLoadKg: 0,
+                deltaKg: 0,
+                lastReps: 0,
+                lastRpe: null,
+                action: 'maintain',
+                reason: 'Primeira execução do exercício substituto. Defina a carga inicial.',
+                progressionReason: 'Primeira execução do exercício substituto. Defina a carga inicial.',
+              },
+            }));
+            setPreviousPerformances((prev) => {
+              const next = { ...prev };
+              delete next[rxId];
+              return next;
             });
           }
         }
@@ -685,6 +769,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       setSwappingIndex(null);
       setSuggestions([]);
       setSwapFromCache(false);
+      setSwapSource(null);
       setMessage({
         type: 'success',
         text:
@@ -735,14 +820,59 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
     }
   };
 
+  const handleAddExtraExercise = () => {
+    const trimmed = extraExerciseName.trim();
+    if (!trimmed) return;
+    const targetSets = Math.min(8, Math.max(1, parseInt(extraTargetSets, 10) || 3));
+    const newExercise: ExerciseInput = {
+      exercisePrescriptionId: '',
+      exerciseName: trimmed,
+      movementPattern: extraMovementPattern,
+      sortOrder: exercises.length + 1,
+      notes: 'Exercício extra adicionado pelo atleta',
+      sets: Array.from({ length: targetSets }).map((_, i) => ({
+        setNumber: i + 1,
+        loadKg: '',
+        reps: '',
+        rpe: '',
+        isFailure: false,
+      })),
+    };
+    setExercises((prev) => [...prev, newExercise]);
+    setExtraExerciseName('');
+    setExtraTargetSets('3');
+    setShowExtraExerciseForm(false);
+  };
+
+  const handleRemoveExtraExercise = (exIdx: number) => {
+    setExercises((prev) => prev.filter((_, idx) => idx !== exIdx));
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setMessage(null);
 
-    const hasLoggedSets = exercises.some((ex) =>
-      ex.sets.some((s) => s.reps !== '' || s.loadKg !== '')
-    );
+    const isValidSet = (s: SetInput) => {
+      const parsed = Number(s.reps);
+      return s.reps.trim() !== '' && Number.isFinite(parsed) && parsed > 0;
+    };
+
+    const exercisesWithValidSets = exercises
+      .map((ex) => ({
+        ...ex,
+        validSets: ex.sets.filter(isValidSet),
+      }))
+      .filter((ex) => ex.validSets.length > 0);
+
+    if (exercisesWithValidSets.length === 0) {
+      setMessage({
+        type: 'error',
+        text: "Preencha as repetições (> 0) em pelo menos uma série antes de finalizar o treino. Para salvar apenas sono/peso/bem-estar, use o botão 'Salvar Métricas de Recuperação'.",
+      });
+      setSubmitting(false);
+      return;
+    }
 
     // Payload construction
     const payload = {
@@ -757,31 +887,30 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         bodyWeightKg,
         notes: wellnessNotes,
       },
-      workout: selectedTemplate && hasLoggedSets
+      workout: selectedTemplate
         ? {
             workoutDayTemplateId: selectedTemplate.id,
             sessionRpe: sessionRpe ? parseFloat(sessionRpe) : null,
-            durationMinutes: selectedTemplate.estimatedDurationMin,
+            durationMinutes:
+              Number(durationMinutes) > 0
+                ? Number(durationMinutes)
+                : selectedTemplate.estimatedDurationMin,
             notes: '',
-            exercises: exercises
-              .filter((ex) => ex.sets.some((s) => s.reps !== '' || s.loadKg !== '')) // Only send exercises that have logs
-              .map((ex) => ({
-                exercisePrescriptionId: ex.exercisePrescriptionId,
-                exerciseName: ex.exerciseName,
-                movementPattern: ex.movementPattern,
-                sortOrder: ex.sortOrder,
-                notes: ex.notes,
-                substitutedFrom: ex.substitutedFrom || null,
-                sets: ex.sets
-                  .filter((s) => s.reps !== '')
-                  .map((s) => ({
-                    setNumber: s.setNumber,
-                    loadKg: s.loadKg || null,
-                    reps: s.reps,
-                    rpe: s.rpe || null,
-                    isFailure: s.isFailure,
-                  })),
+            exercises: exercisesWithValidSets.map((ex) => ({
+              exercisePrescriptionId: ex.exercisePrescriptionId || null,
+              exerciseName: ex.exerciseName,
+              movementPattern: ex.movementPattern,
+              sortOrder: ex.sortOrder,
+              notes: ex.notes,
+              substitutedFrom: ex.substitutedFrom || null,
+              sets: ex.validSets.map((s) => ({
+                setNumber: s.setNumber,
+                loadKg: s.loadKg || null,
+                reps: s.reps,
+                rpe: s.rpe || null,
+                isFailure: s.isFailure,
               })),
+            })),
           }
         : null,
     };
@@ -794,7 +923,8 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       });
 
       if (!response.ok) {
-        throw new Error('Falha ao enviar registro de treino.');
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha ao enviar registro de treino.');
       }
 
       const data = await response.json();
@@ -889,6 +1019,18 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
         </div>
       )}
 
+      {readiness?.status === 'red' && (
+        <div className="bg-rose-500/10 border border-rose-500/35 p-4 rounded-2xl flex items-start gap-3 shadow-sm">
+          <AlertTriangle className="h-5 w-5 text-rose-400 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-sm text-rose-300 font-bold uppercase tracking-wider">
+              Prontidão Baixa Detectada ({readiness.score}/100 — {readiness.label})
+            </p>
+            <p className="text-xs text-rose-200/90 mt-1">{readiness.recommendation}</p>
+          </div>
+        </div>
+      )}
+
       {/* Date and Selector Card */}
       <div className="bg-slate-800 border border-slate-700/80 p-5 rounded-2xl shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -951,9 +1093,9 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
             onClick={() => {
               clearDraft(selectedDate);
               setRestoredFromDraft(false);
-              setSelectedDate(selectedDate);
+              setReloadTrigger((n) => n + 1);
             }}
-            className="text-xs text-slate-400 hover:text-rose-300 border border-slate-700 px-2.5 py-1 rounded-lg transition"
+            className="text-xs text-slate-400 hover:text-rose-300 border border-slate-700 px-2.5 py-1 rounded-lg transition cursor-pointer"
           >
             Descartar
           </button>
@@ -1147,7 +1289,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                   }`}
                   title="Iniciar cronômetro de descanso automaticamente ao preencher RPE ou Falha"
                 >
-                  ⏱️ Auto-Timer: {autoStartRest ? 'ON' : 'OFF'}
+                  ⏱️ Timer Automático: {autoStartRest ? 'Ativado' : 'Desativado'}
                 </button>
                 <button
                   type="button"
@@ -1183,7 +1325,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                       <div className="flex flex-col sm:flex-row justify-between sm:items-start gap-2 mb-3">
                         <div>
                           <span className="text-xs text-slate-400 block uppercase font-mono tracking-wider">
-                            Padrão: {ex.movementPattern}
+                            Padrão: {formatMovementPattern(ex.movementPattern)}
                           </span>
                           <div className="flex items-center gap-2 flex-wrap mt-0.5">
                             <button
@@ -1203,6 +1345,16 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                                 return (
                                   <span className="inline-flex items-center gap-1 text-[11px] text-indigo-300 font-semibold bg-indigo-500/15 border border-indigo-500/30 px-2.5 py-0.5 rounded-full">
                                     Primeira sessão
+                                  </span>
+                                );
+                              }
+                              if (prog.action === 'deload' || prog.deltaKg < 0) {
+                                return (
+                                  <span
+                                    title={prog.reason || prog.progressionReason}
+                                    className="inline-flex items-center gap-1 text-[11px] text-amber-300 font-semibold bg-amber-500/20 border border-amber-500/40 px-2.5 py-0.5 rounded-full"
+                                  >
+                                    Deload: {prog.suggestedLoadKg} kg ({prog.deltaKg} kg)
                                   </span>
                                 );
                               }
@@ -1269,18 +1421,31 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                             )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleSwapExerciseClick(exIdx, false)}
-                          className="flex items-center gap-1 text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 transition px-2.5 py-1.5 rounded-lg font-bold w-fit cursor-pointer"
-                        >
-                          <Sparkles className="h-3 w-3" />
-                          <span>
-                            {prescription?.substitutionHints?.savedSuggestions?.length
-                              ? 'Substituir Exercício (Salvo)'
-                              : 'Substituir Exercício'}
-                          </span>
-                        </button>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => handleSwapExerciseClick(exIdx, false)}
+                            className="flex items-center gap-1 text-[10px] text-cyan-400 border border-cyan-500/20 bg-cyan-500/5 hover:bg-cyan-500/15 transition px-2.5 py-1.5 rounded-lg font-bold w-fit cursor-pointer"
+                          >
+                            <Sparkles className="h-3 w-3" />
+                            <span>
+                              {prescription?.substitutionHints?.savedSuggestions?.length
+                                ? 'Substituir Exercício (Salvo)'
+                                : 'Substituir Exercício'}
+                            </span>
+                          </button>
+                          {!ex.exercisePrescriptionId && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveExtraExercise(exIdx)}
+                              className="flex items-center gap-1 text-[10px] text-rose-400 border border-rose-500/20 bg-rose-500/5 hover:bg-rose-500/15 transition px-2 py-1.5 rounded-lg font-bold cursor-pointer"
+                              title="Remover exercício extra"
+                            >
+                              <Trash className="h-3 w-3" />
+                              <span>Remover</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       {/* Mobile layout: Card stack */}
@@ -1534,26 +1699,142 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                 })}
               </div>
             )}
+
+            {/* Add Extra Exercise Section */}
+            <div className="mt-4 pt-4 border-t border-slate-700/70">
+              {!showExtraExerciseForm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowExtraExerciseForm(true)}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-indigo-300 bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 px-3.5 py-2 rounded-xl transition cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>+ Adicionar Exercício Extra</span>
+                </button>
+              ) : (
+                <div className="bg-slate-900/70 border border-slate-700 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
+                      Novo Exercício Extra na Sessão
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowExtraExerciseForm(false)}
+                      className="text-xs text-slate-400 hover:text-slate-200 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <label htmlFor="extra-exercise-name" className="text-[11px] text-slate-400 block mb-1">
+                        Nome do Exercício *
+                      </label>
+                      <input
+                        id="extra-exercise-name"
+                        type="text"
+                        value={extraExerciseName}
+                        onChange={(e) => setExtraExerciseName(e.target.value)}
+                        placeholder="Ex: Elevação Lateral com Halteres"
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="extra-movement-pattern" className="text-[11px] text-slate-400 block mb-1">
+                        Padrão de Movimento
+                      </label>
+                      <select
+                        id="extra-movement-pattern"
+                        value={extraMovementPattern}
+                        onChange={(e) => setExtraMovementPattern(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 outline-none focus:border-indigo-400 cursor-pointer"
+                      >
+                        {[
+                          'horizontal_push',
+                          'vertical_push',
+                          'horizontal_pull',
+                          'vertical_pull',
+                          'squat',
+                          'hinge',
+                          'lunge',
+                          'biceps_curl',
+                          'triceps_extension',
+                          'lateral_raise',
+                          'calf',
+                          'core',
+                        ].map((pat) => (
+                          <option key={pat} value={pat}>
+                            {formatMovementPattern(pat)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="extra-target-sets" className="text-[11px] text-slate-400 block mb-1">
+                        Séries Iniciais
+                      </label>
+                      <input
+                        id="extra-target-sets"
+                        type="number"
+                        min="1"
+                        max="8"
+                        value={extraTargetSets}
+                        onChange={(e) => setExtraTargetSets(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 font-mono outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleAddExtraExercise}
+                      disabled={!extraExerciseName.trim()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition cursor-pointer disabled:opacity-50"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Adicionar Exercício</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Submit button bar */}
           <div className="bg-slate-800 border border-slate-700/80 p-4 rounded-2xl shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3 w-full sm:w-auto">
-              <label htmlFor="session-rpe" className="text-xs text-slate-400 font-bold whitespace-nowrap">RPE da Sessão</label>
-              <select
-                id="session-rpe"
-                value={sessionRpe}
-                onChange={(e) => setSessionRpe(e.target.value)}
-                className="bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-1.5 text-xs font-semibold focus:border-indigo-400 outline-none cursor-pointer"
-              >
-                <option value="">—</option>
-                <option value="10">10 (Máximo)</option>
-                <option value="9">9 (Muito duro)</option>
-                <option value="8">8 (Duro)</option>
-                <option value="7">7 (Moderado)</option>
-                <option value="6">6 (Leve)</option>
-                <option value="5">5 (Fácil)</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-4 w-full sm:w-auto">
+              <div className="flex items-center gap-2.5">
+                <label htmlFor="session-rpe" className="text-xs text-slate-400 font-bold whitespace-nowrap">RPE da Sessão</label>
+                <select
+                  id="session-rpe"
+                  value={sessionRpe}
+                  onChange={(e) => setSessionRpe(e.target.value)}
+                  className="bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-1.5 text-xs font-semibold focus:border-indigo-400 outline-none cursor-pointer"
+                >
+                  <option value="">—</option>
+                  <option value="10">10 (Máximo)</option>
+                  <option value="9">9 (Muito duro)</option>
+                  <option value="8">8 (Duro)</option>
+                  <option value="7">7 (Moderado)</option>
+                  <option value="6">6 (Leve)</option>
+                  <option value="5">5 (Fácil)</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label htmlFor="session-duration" className="text-xs text-slate-400 font-bold whitespace-nowrap">
+                  Duração (min)
+                </label>
+                <input
+                  id="session-duration"
+                  type="number"
+                  min="5"
+                  max="240"
+                  step="5"
+                  value={durationMinutes}
+                  onChange={(e) => setDurationMinutes(e.target.value)}
+                  className="w-20 bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-2.5 py-1.5 text-xs font-mono font-semibold text-center focus:border-indigo-400 outline-none"
+                />
+              </div>
             </div>
             <button
               type="submit"
@@ -1577,7 +1858,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
       </div>
       {/* 🔄 Modal de Substituição de Exercício (Assistant AI) */}
       {swappingIndex !== null && (
-        <div 
+        <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8"
           onClick={() => {
             if (applyingSwapTitle) return;
@@ -1585,9 +1866,13 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
             setSuggestions([]);
             setSwapError(null);
             setSwapFromCache(false);
+            setSwapSource(null);
           }}
         >
-          <div 
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="swap-modal-title"
             className="w-full max-w-lg rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
@@ -1597,7 +1882,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                   <Sparkles className="h-5 w-5 animate-pulse" />
                   <span className="text-xs uppercase tracking-[0.2em] font-bold">Assistant Coach AI</span>
                 </div>
-                <h3 className="text-lg font-bold text-slate-100 mt-2">
+                <h3 id="swap-modal-title" className="text-lg font-bold text-slate-100 mt-2">
                   Substituir:{' '}
                   <span className="text-indigo-300">
                     &ldquo;{exercises[swappingIndex]?.substitutedFrom || exercises[swappingIndex]?.exerciseName}&rdquo;
@@ -1609,19 +1894,45 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                     : 'Alternativas equivalentes de mesmo padrão biomecânico e setup rápido.'}
                 </p>
               </div>
-              {swapFromCache && !loadingSuggestions && (
+              <div className="flex items-center gap-2 shrink-0">
+                {swapFromCache && !loadingSuggestions && (
+                  <button
+                    type="button"
+                    disabled={swapCooldownTimeLeft > 0}
+                    onClick={() => handleSwapExerciseClick(swappingIndex, true)}
+                    className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 px-3 py-1.5 rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                    title="Solicitar novas sugestões à IA"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    <span>{swapCooldownTimeLeft > 0 ? `Aguarde ${swapCooldownTimeLeft}s` : 'Novas opções IA'}</span>
+                  </button>
+                )}
                 <button
                   type="button"
-                  disabled={swapCooldownTimeLeft > 0}
-                  onClick={() => handleSwapExerciseClick(swappingIndex, true)}
-                  className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 px-3 py-1.5 rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                  title="Solicitar novas sugestões à IA"
+                  disabled={Boolean(applyingSwapTitle)}
+                  aria-label="Fechar modal de substituição"
+                  onClick={() => {
+                    setSwappingIndex(null);
+                    setSuggestions([]);
+                    setSwapError(null);
+                    setSwapFromCache(false);
+                    setSwapSource(null);
+                  }}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition cursor-pointer disabled:opacity-50"
                 >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                  <span>{swapCooldownTimeLeft > 0 ? `Aguarde ${swapCooldownTimeLeft}s` : 'Novas opções IA'}</span>
+                  <X className="h-4 w-4" />
                 </button>
-              )}
+              </div>
             </div>
+
+            {swapSource === 'fallback' && !loadingSuggestions && !swapError && (
+              <div className="bg-amber-500/10 border border-amber-500/30 px-3.5 py-2.5 rounded-xl flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                <p className="text-xs text-amber-200 font-medium">
+                  IA externa indisponível no momento — sugestões geradas pelo catálogo biomecânico offline compatível com seus equipamentos.
+                </p>
+              </div>
+            )}
 
             {swapFromCache && !loadingSuggestions && !swapError && (
               <div className="bg-emerald-500/10 border border-emerald-500/25 px-3.5 py-2.5 rounded-xl flex items-center justify-between gap-2">
@@ -1730,6 +2041,7 @@ export default function HypertrophyDailyTracker({ onSaved }: HypertrophyDailyTra
                   setSuggestions([]);
                   setSwapError(null);
                   setSwapFromCache(false);
+                  setSwapSource(null);
                 }}
                 className="bg-slate-950 text-slate-400 border border-slate-800 hover:bg-slate-900 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer"
               >

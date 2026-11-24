@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { Prisma } from '@prisma/client';
 import { calculateKarvonenZones } from '@/lib/ai/running-prompts';
 import { dayOfWeekName } from '@/lib/dates';
@@ -27,7 +28,11 @@ function parsePaceToSeconds(val: unknown): number | null {
   return null;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const profile = await prisma.runningProfile.findUnique({
       where: { id: 'singleton' },
@@ -66,41 +71,69 @@ export async function GET() {
 
       const eventBySessionId = new Map(calendarEvents.map((ev) => [ev.referenceId, ev]));
       let hasUpdates = false;
+      const pendingSessionUpdates: Array<{ id: string; scheduledDate: string; dayOfWeek: string }> = [];
+      const pendingMissingCalendarCreates: Array<{
+        athleteProfileId: string;
+        date: string;
+        eventType: string;
+        referenceId: string;
+        referenceModel: string;
+        title: string;
+        status: 'planned';
+        colorCode: string;
+        sortOrder: number;
+      }> = [];
 
       for (const session of activeSessions) {
         const calEvent = eventBySessionId.get(session.id);
-        // Expose calendarEventId for direct UI interactions
         (session as unknown as Record<string, unknown>).calendarEventId = calEvent?.id || null;
 
         if (calEvent && calEvent.date && calEvent.date !== session.scheduledDate) {
           const newDayOfWeek = dayOfWeekName(calEvent.date);
-          await prisma.runningSession.update({
-            where: { id: session.id },
-            data: {
-              scheduledDate: calEvent.date,
-              dayOfWeek: newDayOfWeek,
-            },
+          pendingSessionUpdates.push({
+            id: session.id,
+            scheduledDate: calEvent.date,
+            dayOfWeek: newDayOfWeek,
           });
           session.scheduledDate = calEvent.date;
           session.dayOfWeek = newDayOfWeek;
           hasUpdates = true;
         } else if (!calEvent && session.status === 'planned') {
-          // Restore missing planned CalendarEvent to keep models in lockstep
-          const restoredEvent = await prisma.calendarEvent.create({
-            data: {
-              athleteProfileId: 'singleton',
-              date: session.scheduledDate,
-              eventType: 'running',
-              referenceId: session.id,
-              referenceModel: 'RunningSession',
-              title: session.title,
-              status: 'planned',
-              colorCode: '#10b981',
-              sortOrder: 1,
-            },
+          pendingMissingCalendarCreates.push({
+            athleteProfileId: 'singleton',
+            date: session.scheduledDate,
+            eventType: 'running',
+            referenceId: session.id,
+            referenceModel: 'RunningSession',
+            title: session.title,
+            status: 'planned',
+            colorCode: '#10b981',
+            sortOrder: 1,
           });
-          (session as unknown as Record<string, unknown>).calendarEventId = restoredEvent.id;
         }
+      }
+
+      if (pendingSessionUpdates.length > 0 || pendingMissingCalendarCreates.length > 0) {
+        after(async () => {
+          try {
+            await prisma.$transaction(async (tx) => {
+              for (const upd of pendingSessionUpdates) {
+                await tx.runningSession.update({
+                  where: { id: upd.id },
+                  data: {
+                    scheduledDate: upd.scheduledDate,
+                    dayOfWeek: upd.dayOfWeek,
+                  },
+                });
+              }
+              if (pendingMissingCalendarCreates.length > 0) {
+                await tx.calendarEvent.createMany({ data: pendingMissingCalendarCreates });
+              }
+            });
+          } catch (syncErr) {
+            console.warn('[Running Profile GET] Falha na reconciliação via after():', syncErr);
+          }
+        });
       }
 
       if (hasUpdates) {
@@ -206,6 +239,10 @@ function normalizeAvailableDays(val: unknown): { isValid: boolean; days: string[
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
 
@@ -270,11 +307,21 @@ export async function POST(req: NextRequest) {
       ...(hrZones ? { hrZones: hrZones as unknown as Prisma.InputJsonValue } : {}),
     };
 
+    await prisma.athleteProfile.upsert({
+      where: { id: 'singleton' },
+      update: {},
+      create: { id: 'singleton', sessionDurationMin: 60 },
+    });
+
     const profile = await prisma.runningProfile.upsert({
       where: { id: 'singleton' },
-      update: dataToSave,
+      update: {
+        athleteProfileId: 'singleton',
+        ...dataToSave,
+      },
       create: {
         id: 'singleton',
+        athleteProfileId: 'singleton',
         ...dataToSave,
       },
       include: {

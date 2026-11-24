@@ -6,6 +6,8 @@ import {
   computeWeeklyMuscleVolume,
   computePersonalRecordsHallOfFame,
   computeMesocycleComparison,
+  computeStreakMetrics,
+  filterQualifyingPerformanceRuns,
 } from './hypertrophy-analytics';
 import {
   computeDailyReadinessScore,
@@ -207,5 +209,73 @@ describe('Multi-Sport Analytics & New Features Suite (#3, #4, #10, #15, #16, #23
     assert.ok(ics.includes('DTSTART;VALUE=DATE:20261108'));
     assert.ok(ics.includes('DTEND;VALUE=DATE:20261109'));
     assert.ok(ics.includes('Supino Reto'));
+  });
+
+  it('tracks secondarySets and effectiveSets (0.5x weighting) across compound lifts', () => {
+    const report = computeWeeklyMuscleVolume({
+      weekWorkouts: [
+        {
+          exerciseExecutions: [
+            {
+              exerciseName: 'Supino Reto com Barra',
+              setExecutions: Array.from({ length: 6 }, () => ({ reps: 8, loadKg: 90 })),
+            },
+            {
+              exerciseName: 'Remada Baixa',
+              setExecutions: Array.from({ length: 4 }, () => ({ reps: 10, loadKg: 70 })),
+            },
+          ],
+        },
+      ],
+      weekCrossTraining: [],
+    });
+
+    const chest = report.find((r) => r.key === 'chest');
+    const triceps = report.find((r) => r.key === 'triceps');
+    const back = report.find((r) => r.key === 'back');
+    const biceps = report.find((r) => r.key === 'biceps');
+
+    assert.ok(chest && triceps && back && biceps);
+    assert.equal(chest.directSets, 6);
+    assert.equal(chest.secondarySets, 0);
+    assert.equal(chest.effectiveSets, 6);
+
+    assert.equal(triceps.directSets, 0);
+    assert.equal(triceps.secondarySets, 6);
+    assert.equal(triceps.effectiveSets, 3);
+
+    assert.equal(back.directSets, 4);
+    assert.equal(biceps.directSets, 0);
+    assert.equal(biceps.secondarySets, 4);
+    assert.equal(biceps.effectiveSets, 2);
+  });
+
+  it('computes currentStreak and all-time historical recordStreak via computeStreakMetrics', () => {
+    const metrics = computeStreakMetrics(
+      ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-11-08', '2026-11-09'],
+      '2026-11-09'
+    );
+    assert.equal(metrics.currentStreak, 2);
+    assert.equal(metrics.recordStreak, 4);
+
+    assert.deepEqual(computeStreakMetrics([], '2026-11-09'), {
+      currentStreak: 0,
+      recordStreak: 0,
+    });
+  });
+
+  it('excludes easy, recovery, and low-RPE runs in filterQualifyingPerformanceRuns', () => {
+    const filtered = filterQualifyingPerformanceRuns([
+      { distanceKm: 8, avgPaceSec: 360, sessionType: 'easy', sessionRpe: 5 },
+      { distanceKm: 5, avgPaceSec: 390, sessionType: 'recovery', sessionRpe: 3 },
+      { distanceKm: 6, avgPaceSec: 350, sessionType: 'tempo', sessionRpe: 4 },
+      { distanceKm: 0.5, avgPaceSec: 270, sessionType: 'intervals', sessionRpe: 9 },
+      { distanceKm: 10, avgPaceSec: 295, sessionType: 'tempo', sessionRpe: 8 },
+      { distanceKm: 5, avgPaceSec: 265, sessionType: 'race_pace', sessionRpe: 9 },
+    ]);
+
+    assert.equal(filtered.length, 2);
+    assert.equal(filtered[0].distanceKm, 10);
+    assert.equal(filtered[1].distanceKm, 5);
   });
 });

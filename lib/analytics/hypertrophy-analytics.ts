@@ -1,9 +1,12 @@
 import { normalizeTextKey } from '@/lib/ai/exercise-swap';
+import { isISODate, shiftISODate } from '@/lib/dates';
 
 export interface MuscleGroupVolumeItem {
   muscleGroup: string;
   key: string;
   directSets: number;
+  secondarySets: number;
+  effectiveSets: number;
   mev: number;
   mavMin: number;
   mavMax: number;
@@ -279,9 +282,11 @@ export function computeWeeklyMuscleVolume(params: {
 }): MuscleGroupVolumeItem[] {
   const { weekWorkouts, weekCrossTraining } = params;
 
-  const setCounts = new Map<string, number>();
+  const directCounts = new Map<string, number>();
+  const secondaryCounts = new Map<string, number>();
   for (const landmark of MUSCLE_LANDMARKS) {
-    setCounts.set(landmark.key, 0);
+    directCounts.set(landmark.key, 0);
+    secondaryCounts.set(landmark.key, 0);
   }
 
   for (const workout of weekWorkouts) {
@@ -289,8 +294,11 @@ export function computeWeeklyMuscleVolume(params: {
       const validSets = ex.setExecutions.filter((s) => (s.reps ?? 0) > 0).length;
       if (validSets === 0) continue;
 
-      const { primary } = classifyExerciseMuscleGroup(ex.exerciseName, ex.movementPattern);
-      setCounts.set(primary, (setCounts.get(primary) ?? 0) + validSets);
+      const { primary, secondary } = classifyExerciseMuscleGroup(ex.exerciseName, ex.movementPattern);
+      directCounts.set(primary, (directCounts.get(primary) ?? 0) + validSets);
+      if (secondary && secondary !== primary) {
+        secondaryCounts.set(secondary, (secondaryCounts.get(secondary) ?? 0) + validSets);
+      }
     }
   }
 
@@ -311,27 +319,31 @@ export function computeWeeklyMuscleVolume(params: {
   }
 
   return MUSCLE_LANDMARKS.map((landmark) => {
-    const directSets = setCounts.get(landmark.key) ?? 0;
+    const directSets = directCounts.get(landmark.key) ?? 0;
+    const secondarySets = secondaryCounts.get(landmark.key) ?? 0;
+    const effectiveSets = Math.round((directSets + secondarySets * 0.5) * 10) / 10;
     const cfCount = crossFitHits.get(landmark.key) ?? 0;
 
     let status: MuscleGroupVolumeItem['status'] = 'below_mev';
     let statusLabel = 'Abaixo do MEV';
 
-    if (directSets > landmark.mrv) {
+    if (effectiveSets > landmark.mrv) {
       status = 'exceeding_mrv';
       statusLabel = 'Acima do MRV (Risco Overreaching)';
-    } else if (directSets >= landmark.mavMax) {
+    } else if (effectiveSets >= landmark.mavMax) {
       status = 'approaching_mrv';
       statusLabel = 'Limite Superior MAV/MRV';
-    } else if (directSets >= landmark.mev) {
+    } else if (effectiveSets >= landmark.mev) {
       status = 'optimal_mav';
-      statusLabel = directSets >= landmark.mavMin ? 'Zona Ótima (MAV)' : 'Manutenção / MEV Atingido';
+      statusLabel = effectiveSets >= landmark.mavMin ? 'Zona Ótima (MAV)' : 'Manutenção / MEV Atingido';
     }
 
     return {
       muscleGroup: landmark.muscleGroup,
       key: landmark.key,
       directSets,
+      secondarySets,
+      effectiveSets,
       mev: landmark.mev,
       mavMin: landmark.mavMin,
       mavMax: landmark.mavMax,
@@ -341,6 +353,79 @@ export function computeWeeklyMuscleVolume(params: {
       hasCrossFitOverlap: cfCount > 0,
       crossFitSessionsCount: cfCount,
     };
+  });
+}
+
+/**
+ * Computes current active streak (from `today` or `today - 1`) and all-time historical record streak.
+ */
+export function computeStreakMetrics(
+  completedDates: Iterable<string>,
+  today: string
+): { currentStreak: number; recordStreak: number } {
+  const uniqueDates = Array.from(
+    new Set(
+      Array.from(completedDates).filter((d): d is string => isISODate(d))
+    )
+  ).sort();
+
+  if (uniqueDates.length === 0) {
+    return { currentStreak: 0, recordStreak: 0 };
+  }
+
+  const dateSet = new Set(uniqueDates);
+
+  let currentStreak = 0;
+  let cursor = dateSet.has(today) ? today : shiftISODate(today, -1);
+  while (dateSet.has(cursor)) {
+    currentStreak += 1;
+    cursor = shiftISODate(cursor, -1);
+  }
+
+  let recordStreak = 1;
+  let running = 1;
+  for (let i = 1; i < uniqueDates.length; i += 1) {
+    if (shiftISODate(uniqueDates[i - 1], 1) === uniqueDates[i]) {
+      running += 1;
+      if (running > recordStreak) {
+        recordStreak = running;
+      }
+    } else {
+      running = 1;
+    }
+  }
+
+  return {
+    currentStreak,
+    recordStreak: Math.max(currentStreak, recordStreak),
+  };
+}
+
+/**
+ * Excludes low-intensity regenerative runs (`easy`, `recovery`, or RPE <= 4) from
+ * Riegel/VDOT performance extrapolation curves so easy mileage does not regress pace trends.
+ */
+export function filterQualifyingPerformanceRuns<
+  T extends {
+    distanceKm: number;
+    durationSeconds?: number | null;
+    avgPaceSec?: number | null;
+    sessionType?: string | null;
+    sessionRpe?: number | null;
+  },
+>(runs: T[]): T[] {
+  return runs.filter((run) => {
+    if (!run.avgPaceSec || run.avgPaceSec <= 0 || !run.distanceKm || run.distanceKm < 1) {
+      return false;
+    }
+    const type = (run.sessionType || '').toLowerCase();
+    if (type === 'easy' || type === 'recovery') {
+      return false;
+    }
+    if (typeof run.sessionRpe === 'number' && run.sessionRpe > 0 && run.sessionRpe <= 4) {
+      return false;
+    }
+    return true;
   });
 }
 

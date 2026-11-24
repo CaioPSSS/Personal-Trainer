@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { isAuthorized } from '@/lib/auth';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import {
   DayOfWeek,
   RunningPlanOutput,
@@ -10,8 +10,9 @@ import {
 } from '@/lib/ai/running-contracts';
 import { buildRunningCoachPrompts } from '@/lib/ai/running-prompts';
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
+import { fetchHybridCoachingContext } from '@/lib/ai/hybrid-context';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
-import { todayISO } from '@/lib/dates';
+import { todayISO, shiftISODate, mondayOfISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -35,22 +36,6 @@ const ALL_CANONICAL_DAYS: DayOfWeek[] = [
   'saturday',
   'sunday',
 ];
-
-function getMondayOfDate(d: Date): Date {
-  const date = new Date(d);
-  date.setHours(0, 0, 0, 0);
-  const day = date.getDay(); // 0 is Sunday, 1 is Monday...
-  const diff = day === 0 ? -6 : 1 - day;
-  date.setDate(date.getDate() + diff);
-  return date;
-}
-
-function formatISODate(d: Date): string {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 function dayDistance(dayA: string, dayB: string): number {
   const offsetA = DAY_OFFSETS[dayA.toLowerCase()] ?? 0;
@@ -112,20 +97,15 @@ function computeSessionDate(
 ): string {
   const resolvedDay = resolveSessionDay(dayOfWeek, availableDays, usedDaysInWeek);
   const dayOffset = DAY_OFFSETS[resolvedDay] ?? 0;
-  const now = new Date();
-  const isCurrentMonth = now.getMonth() + 1 === planMonth && now.getFullYear() === planYear;
+  const today = todayISO();
+  const [currentYear, currentMonth] = today.split('-').map(Number);
+  const isCurrentMonth = currentMonth === planMonth && currentYear === planYear;
 
-  let baseMonday: Date;
-  if (isCurrentMonth) {
-    baseMonday = getMondayOfDate(now);
-  } else {
-    const firstOfMonth = new Date(planYear, planMonth - 1, 1);
-    baseMonday = getMondayOfDate(firstOfMonth);
-  }
-
-  const sessionDate = new Date(baseMonday);
-  sessionDate.setDate(baseMonday.getDate() + (weekNumber - 1) * 7 + dayOffset);
-  return formatISODate(sessionDate);
+  const anchorISO = isCurrentMonth
+    ? today
+    : `${String(planYear).padStart(4, '0')}-${String(planMonth).padStart(2, '0')}-01`;
+  const baseMondayISO = mondayOfISODate(anchorISO);
+  return shiftISODate(baseMondayISO, (weekNumber - 1) * 7 + dayOffset);
 }
 
 function computeSessionSchedule(
@@ -147,7 +127,11 @@ function computeSessionSchedule(
   return { scheduledDate, resolvedDay };
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const activePlan = await prisma.runningPlan.findFirst({
       where: {
@@ -224,17 +208,13 @@ export async function POST(req: NextRequest) {
       // Empty or no body passed
     }
 
-    const now = new Date();
-    const targetMonth = body.month ?? (now.getMonth() + 1);
-    const targetYear = body.year ?? now.getFullYear();
+    const today = todayISO();
+    const [currentYear, currentMonth] = today.split('-').map(Number);
+    const targetMonth = body.month ?? currentMonth;
+    const targetYear = body.year ?? currentYear;
 
-    const sixtyDaysAgo = new Date();
-    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
-    const sixtyDaysAgoStr = formatISODate(sixtyDaysAgo);
-
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const thirtyDaysAgoStr = formatISODate(thirtyDaysAgo);
+    const sixtyDaysAgoStr = shiftISODate(today, -60);
+    const thirtyDaysAgoStr = shiftISODate(today, -30);
 
     // 2. Query recent running executions, brain entries, cross-training, strength workouts, active plan adherence & recurring cross-training
     const [
@@ -244,6 +224,7 @@ export async function POST(req: NextRequest) {
       recentWorkouts,
       activePlan,
       athleteRecord,
+      hybridContext,
     ] = await Promise.all([
       prisma.runningExecution.findMany({
         where: {
@@ -292,6 +273,7 @@ export async function POST(req: NextRequest) {
         where: { id: 'singleton' },
         select: { recurringCrossTraining: true },
       }),
+      fetchHybridCoachingContext(today),
     ]);
 
     // 3. Apply temporal memory decay: 1.0 (current), 0.7 (month -1), 0.4 (month -2)
@@ -408,6 +390,7 @@ export async function POST(req: NextRequest) {
       recentStrengthWorkouts,
       planAdherenceSummary,
       recurringCrossTraining,
+      readinessSummary: hybridContext.readinessSummary,
       targetMonth,
       targetYear,
     });
@@ -485,6 +468,37 @@ export async function POST(req: NextRequest) {
             where: { id: { in: sessionIdsToDelete } },
           });
         }
+      }
+
+      // Clean up future planned sessions from OTHER active plans (prevents orphan sessions on month rollover)
+      const otherActiveFutureSessions = await tx.runningSession.findMany({
+        where: {
+          status: 'planned',
+          scheduledDate: { gte: today },
+          runningPlan: {
+            runningProfileId: 'singleton',
+            status: 'active',
+            NOT: {
+              month: output.plan.month,
+              year: output.plan.year,
+            },
+          },
+        },
+        select: { id: true },
+      });
+
+      const otherSessionIdsToDelete = otherActiveFutureSessions.map((s) => s.id);
+      if (otherSessionIdsToDelete.length > 0) {
+        await tx.calendarEvent.deleteMany({
+          where: {
+            referenceId: { in: otherSessionIdsToDelete },
+            referenceModel: 'RunningSession',
+            status: 'planned',
+          },
+        });
+        await tx.runningSession.deleteMany({
+          where: { id: { in: otherSessionIdsToDelete } },
+        });
       }
 
       // Mark any other active running plans as completed
@@ -621,9 +635,11 @@ export async function POST(req: NextRequest) {
       return { plan, sessions: createdSessions };
     });
 
-    // 8. Harmonize multi-sport calendar by rebalancing strength workouts around running sessions
+    // 8. Harmonize multi-sport calendar across the 4-week horizon by rebalancing strength workouts
     try {
-      await rebalanceWeekSchedule('singleton');
+      for (const offset of [0, 7, 14, 21]) {
+        await rebalanceWeekSchedule('singleton', shiftISODate(today, offset));
+      }
     } catch (rebalanceError) {
       console.warn('[Running Generate] Falha ao rebalancear calendário multi-esportes:', rebalanceError);
     }
@@ -640,7 +656,7 @@ export async function POST(req: NextRequest) {
     console.error('[Running Generate] Erro ao gerar plano:', error);
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : 'Falha ao gerar plano com IA de corrida.',
+        error: 'Falha ao gerar plano com IA de corrida.',
       },
       { status: 500 }
     );

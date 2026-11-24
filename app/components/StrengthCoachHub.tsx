@@ -12,7 +12,11 @@ import {
   ShieldCheck,
   ChevronRight,
   RefreshCw,
+  AlertTriangle,
 } from 'lucide-react';
+import { getLocalISODate } from '@/lib/dateUtils';
+import HealthDisclaimer from '@/app/components/HealthDisclaimer';
+import type { MultiSportRadarResult } from '@/lib/scheduling/multi-sport-radar';
 
 export interface MesocycleData {
   id: string;
@@ -56,6 +60,8 @@ export default function StrengthCoachHub({
   const [fetchedMesocycle, setFetchedMesocycle] = useState<MesocycleData | null>(null);
   const [fetchedCoachBrain, setFetchedCoachBrain] = useState<CoachBrainData | null>(null);
   const [fetchedRuns, setFetchedRuns] = useState<UpcomingRun[]>([]);
+  const [multiSportRadar, setMultiSportRadar] = useState<MultiSportRadarResult | null>(null);
+  const [isRebalancing, setIsRebalancing] = useState(false);
   const [loading, setLoading] = useState(!initialMesocycle);
 
   const mesocycle = initialMesocycle || fetchedMesocycle;
@@ -112,7 +118,7 @@ export default function StrengthCoachHub({
 
         // Fetch upcoming running events for radar
         if (!hasRuns) {
-          const todayStr = new Date().toISOString().split('T')[0];
+          const todayStr = getLocalISODate();
           const calRes = await fetch(`/api/calendar?startDate=${todayStr}`);
           if (calRes.ok) {
             const calData = await calRes.json();
@@ -134,6 +140,14 @@ export default function StrengthCoachHub({
             }
           }
         }
+        // Fetch live multi-sport radar analytics
+        const analyticsRes = await fetch('/api/analytics');
+        if (analyticsRes.ok) {
+          const analyticsJson = await analyticsRes.json();
+          if (isMounted && analyticsJson?.multiSportRadar) {
+            setMultiSportRadar(analyticsJson.multiSportRadar);
+          }
+        }
       } catch (err) {
         console.error('[StrengthCoachHub] Erro ao carregar dados do Master Coach:', err);
       } finally {
@@ -147,6 +161,32 @@ export default function StrengthCoachHub({
       isMounted = false;
     };
   }, [hasMesocycle, hasBrain, hasRuns]);
+
+  const handleRebalanceWeek = async () => {
+    if (isRebalancing) return;
+    setIsRebalancing(true);
+    try {
+      const res = await fetch('/api/schedule/rebalance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (res.ok) {
+        window.dispatchEvent(new CustomEvent('calendar-refresh'));
+        const analyticsRes = await fetch('/api/analytics');
+        if (analyticsRes.ok) {
+          const analyticsJson = await analyticsRes.json();
+          if (analyticsJson?.multiSportRadar) {
+            setMultiSportRadar(analyticsJson.multiSportRadar);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[StrengthCoachHub] Erro ao rebalancear semana:', err);
+    } finally {
+      setIsRebalancing(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -360,29 +400,76 @@ export default function StrengthCoachHub({
       </div>
 
       {/* 4. Multi-Sport Synergy Radar */}
-      <div className="rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-cyan-950/30 via-slate-900/70 to-indigo-950/30 p-4.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-        <div className="flex items-start gap-3">
-          <div className="p-2 bg-cyan-500/10 text-cyan-300 rounded-xl border border-cyan-500/20 shrink-0 mt-0.5">
-            <Zap className="h-4 w-4" />
-          </div>
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-cyan-300 uppercase tracking-wider text-[11px]">
-                Radar Multi-Esportes & Concorrência
-              </span>
-              <ShieldCheck className="h-3.5 w-3.5 text-cyan-400" />
+      {(() => {
+        const radarStatus = multiSportRadar?.status ?? 'synergy';
+        const radarContainerClass =
+          radarStatus === 'conflict'
+            ? 'border-rose-500/35 bg-gradient-to-r from-rose-950/30 via-slate-900/70 to-slate-900'
+            : radarStatus === 'warning'
+              ? 'border-amber-500/35 bg-gradient-to-r from-amber-950/30 via-slate-900/70 to-slate-900'
+              : 'border-cyan-500/30 bg-gradient-to-r from-cyan-950/30 via-slate-900/70 to-indigo-950/30';
+        const radarTitleColor =
+          radarStatus === 'conflict'
+            ? 'text-rose-300'
+            : radarStatus === 'warning'
+              ? 'text-amber-300'
+              : 'text-cyan-300';
+        return (
+          <div className={`rounded-2xl border p-4.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs ${radarContainerClass}`}>
+            <div className="flex items-start gap-3">
+              <div className={`p-2 rounded-xl border shrink-0 mt-0.5 ${
+                radarStatus === 'conflict'
+                  ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                  : radarStatus === 'warning'
+                    ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                    : 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20'
+              }`}>
+                {radarStatus === 'synergy' ? <Zap className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className={`font-bold uppercase tracking-wider text-[11px] ${radarTitleColor}`}>
+                    {multiSportRadar?.headline || 'Radar Multi-Esportes & Concorrência'}
+                  </span>
+                  <ShieldCheck className={`h-3.5 w-3.5 ${radarTitleColor}`} />
+                </div>
+                <p className="text-slate-300 leading-relaxed">
+                  {multiSportRadar?.summary || synergyRadarText}
+                </p>
+                {multiSportRadar?.conflicts && multiSportRadar.conflicts.length > 0 && (
+                  <ul className="space-y-0.5 text-[11px] text-slate-300 list-disc pl-4">
+                    {multiSportRadar.conflicts.slice(0, 3).map((conflict, idx) => (
+                      <li key={idx}>{conflict.description}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-            <p className="text-slate-300 leading-relaxed">{synergyRadarText}</p>
-          </div>
-        </div>
 
-        {upcomingRuns.length > 0 && (
-          <div className="shrink-0 flex items-center gap-1.5 text-[11px] font-mono text-cyan-300/80 bg-slate-950/60 px-3 py-1.5 rounded-xl border border-cyan-500/20">
-            <Calendar className="h-3 w-3 text-cyan-400" />
-            <span>{upcomingRuns.length} corrida(s) prevista(s)</span>
+            <div className="flex items-center gap-2 shrink-0">
+              {radarStatus !== 'synergy' && (
+                <button
+                  type="button"
+                  onClick={handleRebalanceWeek}
+                  disabled={isRebalancing}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/40 text-indigo-200 text-[11px] font-bold transition cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3 w-3 ${isRebalancing ? 'animate-spin' : ''}`} />
+                  <span>{isRebalancing ? 'Rebalanceando...' : 'Rebalancear Semana'}</span>
+                </button>
+              )}
+              {upcomingRuns.length > 0 && (
+                <div className="flex items-center gap-1.5 text-[11px] font-mono text-cyan-300/80 bg-slate-950/60 px-3 py-1.5 rounded-xl border border-cyan-500/20">
+                  <Calendar className="h-3 w-3 text-cyan-400" />
+                  <span>{upcomingRuns.length} corrida(s) prevista(s)</span>
+                </div>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+        );
+      })()}
+
+      <HealthDisclaimer compact />
     </div>
   );
 }

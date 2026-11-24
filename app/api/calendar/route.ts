@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { Prisma } from '@prisma/client';
 import { syncPlannedCalendarEvents } from '@/lib/scheduling/strength-scheduler';
 import { syncPlannedCrossTraining } from '@/lib/scheduling/cross-training-scheduler';
@@ -8,15 +9,27 @@ import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker'
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: NextRequest) {
-  try {
-    // Automatically ensure planned mesocycle strength and recurring cross-training are populated
-    await Promise.allSettled([
-      syncPlannedCalendarEvents('singleton'),
-      syncPlannedCrossTraining('singleton'),
-    ]);
+const CALENDAR_SYNC_TTL_MS = 15_000;
+const lastSyncByAthlete = new Map<string, number>();
 
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
+  try {
     const { searchParams } = new URL(req.url);
+    const forceSync = searchParams.get('forceSync') === '1';
+    const nowMs = Date.now();
+    const lastSyncMs = lastSyncByAthlete.get('singleton') ?? 0;
+
+    if (forceSync || nowMs - lastSyncMs >= CALENDAR_SYNC_TTL_MS) {
+      lastSyncByAthlete.set('singleton', nowMs);
+      await Promise.allSettled([
+        syncPlannedCalendarEvents('singleton'),
+        syncPlannedCrossTraining('singleton'),
+      ]);
+    }
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
 
@@ -82,6 +95,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const {
@@ -98,6 +115,14 @@ export async function POST(req: NextRequest) {
     if (!date || !eventType || !title) {
       return NextResponse.json(
         { error: 'Campos date, eventType e title são obrigatórios.' },
+        { status: 400 }
+      );
+    }
+
+    const allowedStatuses = ['planned', 'completed', 'skipped'] as const;
+    if (!allowedStatuses.includes(status)) {
+      return NextResponse.json(
+        { error: 'Status inválido. Use planned, completed ou skipped.' },
         { status: 400 }
       );
     }
@@ -135,6 +160,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
+    lastSyncByAthlete.delete(athlete.id);
     return NextResponse.json({ event: newEvent }, { status: 201 });
   } catch (error) {
     console.error('Erro ao criar evento do calendário:', error);
@@ -146,6 +172,10 @@ export async function POST(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const { eventId, sessionId, newDate, date } = body;
@@ -278,6 +308,7 @@ export async function PATCH(req: NextRequest) {
       });
     }
 
+    lastSyncByAthlete.delete(existing.athleteProfileId);
     return NextResponse.json({ event: updated });
   } catch (error) {
     console.error('Erro ao atualizar evento do calendário:', error);

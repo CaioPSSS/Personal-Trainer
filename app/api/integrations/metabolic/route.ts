@@ -1,16 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import {
   fetchDailyNutrition,
   reconcileEcosystemRange,
   getSyncConfig,
   fetchFromMetabolicTracker,
 } from '@/lib/integrations/metabolic-tracker';
-import { todayISO, shiftISODate } from '@/lib/dates';
+import { isISODate, todayISO, shiftISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const date = searchParams.get('date');
@@ -18,9 +23,12 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get('endDate');
 
     if (date) {
+      if (!isISODate(date)) {
+        return NextResponse.json({ error: 'Parâmetro date deve estar no formato YYYY-MM-DD.' }, { status: 400 });
+      }
       // 1. Tenta buscar do cache local em WellnessDaily
       const cached = await prisma.wellnessDaily.findUnique({
-        where: { date },
+        where: { athleteProfileId_date: { athleteProfileId: 'singleton', date } },
       });
 
       if (cached && (cached.caloriesConsumed != null || cached.calorieTarget != null)) {
@@ -48,6 +56,9 @@ export async function GET(request: NextRequest) {
     }
 
     if (startDate && endDate) {
+      if (!isISODate(startDate) || !isISODate(endDate)) {
+        return NextResponse.json({ error: 'startDate e endDate devem estar no formato YYYY-MM-DD.' }, { status: 400 });
+      }
       const logs = await prisma.wellnessDaily.findMany({
         where: {
           athleteProfileId: 'singleton',
@@ -77,6 +88,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await request.json().catch(() => ({}));
     const action = body.action || 'reconcile';
@@ -105,11 +120,11 @@ export async function POST(request: NextRequest) {
           url,
         });
       } catch (connErr) {
+        console.warn('[Metabolic Integration] Falha no test_connection:', connErr);
         return NextResponse.json({
           success: false,
           status: 'offline',
           url,
-          error: connErr instanceof Error ? connErr.message : String(connErr),
         });
       }
     }
@@ -118,8 +133,15 @@ export async function POST(request: NextRequest) {
     const defaultEnd = todayISO();
     const defaultStart = shiftISODate(defaultEnd, -14);
 
-    const startDate = body.startDate || defaultStart;
-    const endDate = body.endDate || defaultEnd;
+    const startDate = body.startDate ?? defaultStart;
+    const endDate = body.endDate ?? defaultEnd;
+
+    if (!isISODate(startDate) || !isISODate(endDate)) {
+      return NextResponse.json(
+        { error: 'startDate e endDate devem estar no formato YYYY-MM-DD.' },
+        { status: 400 }
+      );
+    }
 
     const result = await reconcileEcosystemRange(startDate, endDate);
 

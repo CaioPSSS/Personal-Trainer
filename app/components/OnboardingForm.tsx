@@ -58,7 +58,7 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit, isSu
           <input
             required
             type="text"
-            placeholder="Ex: Caio"
+            placeholder="Ex: Seu nome ou apelido"
             className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none"
             value={setupForm.displayName}
             onChange={(e) => setSetupForm({ ...setupForm, displayName: e.target.value })}
@@ -144,7 +144,7 @@ export default function OnboardingForm({ setupForm, setSetupForm, onSubmit, isSu
             <span>Contexto de Vida e Objetivos (Opcional, mas recomendado)</span>
           </label>
           <textarea
-            placeholder="Conte para a IA sobre sua rotina. Ex: Sou residente médico, tenho dias muito estressantes, durmo mal em plantões, gostaria de focar mais em hipertrofia de braços neste mês..."
+            placeholder="Conte para a IA sobre sua rotina, horários disponíveis, qualidade do sono, nível de estresse e prioridades para este bloco..."
             rows={4}
             className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white focus:border-indigo-500 outline-none resize-none"
             value={setupForm.athleteContext}

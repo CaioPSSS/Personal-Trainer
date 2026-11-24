@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     let anchorDate: string | undefined;
     try {
@@ -21,7 +26,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Falha ao rebalancear semana.',
+        error: 'Falha ao rebalancear semana.',
       },
       { status: 500 }
     );

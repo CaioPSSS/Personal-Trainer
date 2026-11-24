@@ -86,20 +86,21 @@ export async function repairRunningRecords(lookbackDays = 120): Promise<RunningR
       if (deletedIds.has(manual.id)) continue;
       if (!isLikelySameRun(strava, manual)) continue;
 
-      await prisma.runningExecution.update({
-        where: { id: strava.id },
-        data: {
-          runningSessionId: strava.runningSessionId ?? manual.runningSessionId,
-          sessionRpe: strava.sessionRpe ?? manual.sessionRpe,
-          notes: manual.notes ?? strava.notes,
-        },
+      await prisma.$transaction(async (tx) => {
+        await tx.runningExecution.update({
+          where: { id: strava.id },
+          data: {
+            runningSessionId: strava.runningSessionId ?? manual.runningSessionId,
+            sessionRpe: strava.sessionRpe ?? manual.sessionRpe,
+            notes: manual.notes ?? strava.notes,
+          },
+        });
+        await tx.calendarEvent.deleteMany({
+          where: { athleteProfileId: 'singleton', referenceId: manual.id },
+        });
+        await tx.runningExecution.delete({ where: { id: manual.id } });
       });
       strava.runningSessionId = strava.runningSessionId ?? manual.runningSessionId;
-
-      await prisma.calendarEvent.deleteMany({
-        where: { athleteProfileId: 'singleton', referenceId: manual.id },
-      });
-      await prisma.runningExecution.delete({ where: { id: manual.id } });
       deletedIds.add(manual.id);
       affected.add(manual.date);
       report.duplicatesMerged++;
@@ -117,31 +118,42 @@ export async function repairRunningRecords(lookbackDays = 120): Promise<RunningR
     }
   }
 
-  // 5. Exactly one completed calendar card per run, on the run's date, with its calories
-  const finalRuns = await prisma.runningExecution.findMany({
-    where: { runningProfileId: 'singleton', date: { gte: since } },
-  });
+  // 5. Exactly one completed calendar card per run (batch-fetched calendar events, eliminating N+1)
+  const [finalRuns, recentRunningEvents] = await Promise.all([
+    prisma.runningExecution.findMany({
+      where: { runningProfileId: 'singleton', date: { gte: since } },
+    }),
+    prisma.calendarEvent.findMany({
+      where: {
+        athleteProfileId: 'singleton',
+        eventType: 'running',
+        date: { gte: since },
+      },
+    }),
+  ]);
   const finalRunIds = new Set(finalRuns.map((r) => r.id));
 
+  const cardsByRefId = new Map<string, typeof recentRunningEvents>();
+  for (const ev of recentRunningEvents) {
+    if (!ev.referenceId) continue;
+    const list = cardsByRefId.get(ev.referenceId) ?? [];
+    list.push(ev);
+    cardsByRefId.set(ev.referenceId, list);
+  }
+
   for (const run of finalRuns) {
-    const [runCards, sessionCards] = await Promise.all([
-      prisma.calendarEvent.findMany({
-        where: { athleteProfileId: 'singleton', referenceId: run.id },
-      }),
-      run.runningSessionId
-        ? prisma.calendarEvent.count({
-            where: {
-              athleteProfileId: 'singleton',
-              referenceId: run.runningSessionId,
-              referenceModel: 'RunningSession',
-            },
-          })
-        : Promise.resolve(0),
-    ]);
+    const runCards = (cardsByRefId.get(run.id) ?? []).filter(
+      (ev) => ev.referenceModel === 'RunningExecution' || ev.referenceId === run.id
+    );
+    const sessionCards = run.runningSessionId
+      ? (cardsByRefId.get(run.runningSessionId) ?? []).filter(
+          (ev) => ev.referenceModel === 'RunningSession'
+        )
+      : [];
 
     const consistent =
       runCards.length === 1 &&
-      sessionCards === 0 &&
+      sessionCards.length === 0 &&
       runCards[0].date === run.date &&
       runCards[0].status === 'completed' &&
       runCards[0].caloriesBurned === run.caloriesBurned;
@@ -158,23 +170,32 @@ export async function repairRunningRecords(lookbackDays = 120): Promise<RunningR
     affected.add(run.date);
   }
 
-  // 6. Completed running cards pointing to runs that no longer exist
-  const runCardsInWindow = await prisma.calendarEvent.findMany({
-    where: {
-      athleteProfileId: 'singleton',
-      eventType: 'running',
-      referenceModel: 'RunningExecution',
-      date: { gte: since },
-    },
-    select: { id: true, referenceId: true, date: true },
-  });
+  // 6. Completed running cards pointing to runs that no longer exist (batched check)
+  const runCardsInWindow = recentRunningEvents.filter(
+    (c) => c.referenceModel === 'RunningExecution'
+  );
+  const candidateMissingRunIds = Array.from(
+    new Set(
+      runCardsInWindow
+        .map((c) => c.referenceId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0 && !finalRunIds.has(id))
+    )
+  );
+  const stillExistingOutsideWindow =
+    candidateMissingRunIds.length > 0
+      ? await prisma.runningExecution.findMany({
+          where: { id: { in: candidateMissingRunIds } },
+          select: { id: true },
+        })
+      : [];
+  const existingRunIdSet = new Set([
+    ...Array.from(finalRunIds),
+    ...stillExistingOutsideWindow.map((r) => r.id),
+  ]);
+
   const danglingIds: string[] = [];
   for (const card of runCardsInWindow) {
-    if (card.referenceId && finalRunIds.has(card.referenceId)) continue;
-    const exists = card.referenceId
-      ? await prisma.runningExecution.count({ where: { id: card.referenceId } })
-      : 0;
-    if (exists === 0) {
+    if (!card.referenceId || !existingRunIdSet.has(card.referenceId)) {
       danglingIds.push(card.id);
       affected.add(card.date);
     }

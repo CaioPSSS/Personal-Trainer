@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
 import { todayISO } from '@/lib/dates';
@@ -7,6 +8,10 @@ import { todayISO } from '@/lib/dates';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '30', 10)));
@@ -39,6 +44,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
 
@@ -76,8 +85,8 @@ export async function POST(req: NextRequest) {
     });
     await prisma.runningProfile.upsert({
       where: { id: 'singleton' },
-      update: {},
-      create: { id: 'singleton' },
+      update: { athleteProfileId: 'singleton' },
+      create: { id: 'singleton', athleteProfileId: 'singleton' },
     });
 
     // Resolve athlete weight and compute running calories

@@ -1,15 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { Prisma } from '@prisma/client';
 import {
   syncPlannedCrossTraining,
   RecurringCrossTrainingRule,
   normalizeDayOfWeek,
 } from '@/lib/scheduling/cross-training-scheduler';
+import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
+import { shiftISODate, todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const athlete = await prisma.athleteProfile.findUnique({
       where: { id: 'singleton' },
@@ -28,6 +35,10 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const rawRules = Array.isArray(body.rules) ? body.rules : [];
@@ -69,10 +80,23 @@ export async function POST(req: NextRequest) {
     // Synchronize planned events into future calendar (strictly >= today)
     const syncResult = await syncPlannedCrossTraining('singleton');
 
+    // Rebalance strength workouts across the next 4 weeks around recurring cross-training commitments
+    const today = todayISO();
+    const rebalancedWeeks = [];
+    for (const offset of [0, 7, 14, 21]) {
+      try {
+        const res = await rebalanceWeekSchedule('singleton', shiftISODate(today, offset));
+        rebalancedWeeks.push(res);
+      } catch (err) {
+        console.warn('[Recurring Cross-Training POST] Falha ao rebalancear semana:', err);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       rules: validatedRules,
       syncResult,
+      rebalancedWeeks,
     });
   } catch (error) {
     console.error('[Recurring Cross-Training POST] Erro ao salvar regras:', error);

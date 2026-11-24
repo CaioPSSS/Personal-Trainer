@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyDeloadToPrescription,
   calculateProgressiveOverload,
   isCompoundExercise,
   roundToHalfKg,
@@ -280,4 +281,67 @@ test('Progressive Overload: isCompoundExercise identification accuracy', () => {
   assert.equal(isCompoundExercise('Custom Exercise', 'horizontal_push'), true);
   assert.equal(isCompoundExercise('Custom Exercise', 'biceps_curl'), false);
   assert.equal(isCompoundExercise('Custom Exercise', 'knee_extension'), false);
+});
+
+test('Progressive Overload: active deload week reduces load by ~15% and cuts sets/RPE', () => {
+  const perf: PreviousExercisePerformance = {
+    exerciseName: 'Agachamento Livre',
+    movementPattern: 'squat',
+    isCompound: true,
+    targetRepMin: 8,
+    targetRepMax: 10,
+    targetRpeMin: 7,
+    targetRpeMax: 8.5,
+    isDeload: true,
+    completedSets: [
+      { setNumber: 1, loadKg: 100, reps: 10, rpe: 8 },
+      { setNumber: 2, loadKg: 100, reps: 10, rpe: 8 },
+    ],
+  };
+
+  const result = calculateProgressiveOverload(perf);
+  assert.equal(result.action, 'deload');
+  assert.equal(result.previousMaxLoadKg, 100);
+  assert.equal(result.suggestedLoadKg, 85);
+  assert.equal(result.deltaKg, -15);
+  assert.match(result.progressionReason, /deload/i);
+
+  const rx = {
+    targetSets: 4,
+    targetRpeMin: 7.5,
+    targetRpeMax: 9.0,
+    advancedTechnique: 'drop_set',
+  };
+  const deloadRx = applyDeloadToPrescription(rx, true);
+  assert.equal(deloadRx.targetSets, 2);
+  assert.equal(deloadRx.targetRpeMin, 5.5);
+  assert.equal(deloadRx.targetRpeMax, 7.0);
+  assert.equal(deloadRx.advancedTechnique, null);
+
+  // Unchanged when not deload
+  assert.deepEqual(applyDeloadToPrescription(rx, false), rx);
+});
+
+test('Progressive Overload: multi-set rep drop-off holds load even when top set hit targetMax', () => {
+  // Set 1 hits ceiling (10 reps) at moderate RPE, but subsequent sets collapse sharply (4 and 5 reps)
+  const severeDropPerf: PreviousExercisePerformance = {
+    exerciseName: 'Supino Reto com Barra',
+    movementPattern: 'horizontal_push',
+    isCompound: true,
+    targetRepMin: 8,
+    targetRepMax: 10,
+    targetRpeMin: 7,
+    targetRpeMax: 8,
+    completedSets: [
+      { setNumber: 1, loadKg: 90, reps: 10, rpe: 8 },
+      { setNumber: 2, loadKg: 90, reps: 4, rpe: 9 },
+      { setNumber: 3, loadKg: 90, reps: 5, rpe: 9 },
+    ],
+  };
+
+  const result = calculateProgressiveOverload(severeDropPerf);
+  assert.equal(result.action, 'maintain');
+  assert.equal(result.suggestedLoadKg, 90);
+  assert.equal(result.deltaKg, 0);
+  assert.match(result.progressionReason, /queda de rendimento/i);
 });

@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import SettingsClient from '@/app/components/SettingsClient';
+import { STRAVA_CONFIG } from '@/lib/strava/client';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +29,7 @@ export default async function SettingsPage() {
     : null;
   const athleteStravaId = stravaIntegration?.athleteStravaId ?? null;
   const stravaScope = stravaIntegration?.scope ?? null;
+  const stravaClientConfigured = Boolean(STRAVA_CONFIG.clientId);
 
   return (
     <SettingsClient
@@ -37,6 +39,7 @@ export default async function SettingsPage() {
       stravaLastSync={stravaLastSync}
       athleteStravaId={athleteStravaId}
       stravaScope={stravaScope}
+      stravaClientConfigured={stravaClientConfigured}
     />
   );
 }

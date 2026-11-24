@@ -15,6 +15,7 @@ import {
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts, buildMasterCoachPrompts } from '@/lib/ai/prompts';
 import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
+import { fetchHybridCoachingContext } from '@/lib/ai/hybrid-context';
 import { saveMasterPlanToDb } from '@/lib/db/hypertrophyMappers';
 import { scheduleMesocycleWorkouts } from '@/lib/scheduling/strength-scheduler';
 import { Prisma } from '@prisma/client';
@@ -37,16 +38,18 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const fourteenDaysAgoStr = shiftISODate(todayISO(), -14);
+    const today = todayISO();
+    const thirtyDaysAgoStr = shiftISODate(today, -30);
 
     const [
       athleteProfile,
       recentWorkouts,
       recentWellness,
-      previousBrain,
+      recentBrains,
       activeMesocycle,
       recentCrossTraining,
       swapSuggestions,
+      hybridContext,
     ] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
@@ -66,8 +69,9 @@ export async function POST(request: NextRequest) {
         orderBy: { date: 'desc' },
         take: 56,
       }),
-      prisma.coachBrainEntry.findFirst({
+      prisma.coachBrainEntry.findMany({
         orderBy: { createdAt: 'desc' },
+        take: 3,
       }),
       prisma.mesocyclePlan.findFirst({
         where: {
@@ -85,7 +89,7 @@ export async function POST(request: NextRequest) {
       prisma.crossTrainingActivity.findMany({
         where: {
           athleteProfileId: 'singleton',
-          date: { gte: fourteenDaysAgoStr },
+          date: { gte: thirtyDaysAgoStr },
         },
         orderBy: { date: 'desc' },
       }),
@@ -93,7 +97,19 @@ export async function POST(request: NextRequest) {
         orderBy: { createdAt: 'desc' },
         take: 60,
       }),
+      fetchHybridCoachingContext(today),
     ]);
+
+    const brainDecayWeights = [1.0, 0.7, 0.4];
+    const previousCoachBrains = recentBrains.map((entry, idx) => ({
+      version: entry.version,
+      decayWeight: brainDecayWeights[idx] ?? 0.2,
+      hypotheses: entry.hypotheses,
+      retrospective: entry.retrospective,
+      createdAt: entry.createdAt.toISOString(),
+    }));
+    const previousBrain = recentBrains[0] ?? null;
+    const isBaselinePhase = recentWorkouts.length < 3;
 
     const exerciseSubstitutionSummary = buildExerciseSubstitutionSummary({
       swapSuggestions,
@@ -106,7 +122,7 @@ export async function POST(request: NextRequest) {
     let analystModelUsed = 'bypass';
     let analystAttempts = 0;
 
-    if (recentWorkouts.length < 3) {
+    if (isBaselinePhase) {
       const permanentNotes = exerciseSubstitutionSummary.permanentSwaps.map(
         (s) => `Respect permanent substitution: use "${s.replacementExercise}" instead of "${s.originalExercise}"`
       );
@@ -131,6 +147,10 @@ export async function POST(request: NextRequest) {
         activeMesocycle,
         recentWorkouts,
         recentWellness,
+        runningSummary: hybridContext.runningSummary,
+        crossTrainingSummary:
+          recentCrossTraining.length > 0 ? recentCrossTraining : hybridContext.crossTrainingSummary,
+        readinessSummary: hybridContext.readinessSummary,
         exerciseSubstitutionSummary,
       });
 
@@ -178,9 +198,14 @@ export async function POST(request: NextRequest) {
       athleteProfile,
       analystReport: analystData,
       previousCoachBrain: previousBrain,
+      previousCoachBrains,
       recentWorkouts,
       recentWellness,
-      crossTrainingSummary: recentCrossTraining,
+      crossTrainingSummary:
+        recentCrossTraining.length > 0 ? recentCrossTraining : hybridContext.crossTrainingSummary,
+      runningSummary: hybridContext.runningSummary,
+      readinessSummary: hybridContext.readinessSummary,
+      isBaselinePhase,
       exerciseSubstitutionSummary,
     });
 
@@ -220,7 +245,11 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id);
+    const createdPlan = await saveMasterPlanToDb('singleton', result.data, runLog.id, {
+      movementRestrictions: athleteProfile?.movementRestrictions,
+      injuryHistory: hybridContext.runningProfile?.injuryHistory,
+      availableEquipment: athleteProfile?.availableEquipment,
+    });
 
     // Deterministically schedule workouts across the active mesocycle into CalendarEvent
     await scheduleMesocycleWorkouts('singleton');
@@ -237,22 +266,25 @@ export async function POST(request: NextRequest) {
     console.error('[Master Coach] Error during generation:', error);
     const message = error instanceof Error ? error.message : String(error);
 
-    await prisma.aiRunLog.create({
-      data: {
-        runType: 'master_coach_generation',
-        mode: 'mesocycle_generation',
-        status: 'failed',
-        primaryModel: masterCascade[0] ?? 'unknown',
-        fallbackModel: masterCascade[1] ?? null,
-        errorMessage: message,
-      },
-    });
+    try {
+      await prisma.aiRunLog.create({
+        data: {
+          runType: 'master_coach_generation',
+          mode: 'mesocycle_generation',
+          status: 'failed',
+          primaryModel: masterCascade[0] ?? 'unknown',
+          fallbackModel: masterCascade[1] ?? null,
+          errorMessage: message,
+        },
+      });
+    } catch (logErr) {
+      console.error('[Master Coach] Failed to persist AiRunLog:', logErr);
+    }
 
     return NextResponse.json(
       {
         success: false,
         error: 'Failed to generate mesocycle plan.',
-        detail: message,
       },
       { status: 500 },
     );

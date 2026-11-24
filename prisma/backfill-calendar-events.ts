@@ -69,6 +69,13 @@ export async function backfillCalendarEvents(): Promise<{
     const planTitle = workout.mesocyclePlan?.title;
     const title = templateLabel || planTitle || 'Treino de Força';
 
+    const normalizedStatus =
+      workout.status === 'skipped'
+        ? ('skipped' as const)
+        : workout.status === 'in_progress'
+          ? ('planned' as const)
+          : ('completed' as const);
+
     return {
       athleteProfileId: workout.athleteProfileId || 'singleton',
       date: workout.date,
@@ -76,7 +83,7 @@ export async function backfillCalendarEvents(): Promise<{
       referenceId: workout.id,
       referenceModel: 'WorkoutExecution',
       title,
-      status: workout.status || 'completed',
+      status: normalizedStatus,
       sortOrder: 0,
       originalDate: workout.date,
       createdAt: workout.createdAt,

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,6 +10,10 @@ export const dynamic = 'force-dynamic';
  * for quick matching in calendar and running views.
  */
 export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const { searchParams } = new URL(req.url);
     const date = searchParams.get('date');
@@ -86,6 +91,10 @@ export async function GET(req: NextRequest) {
  * harmonizing CalendarEvent records to avoid duplicate cards.
  */
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const { action = 'link', executionId, sessionId } = body;
@@ -98,7 +107,6 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'unlink') {
-      // 1. Unlink execution
       const execution = await prisma.runningExecution.findUnique({
         where: { id: executionId },
       });
@@ -112,87 +120,86 @@ export async function POST(req: NextRequest) {
 
       const previousSessionId = execution.runningSessionId;
 
-      await prisma.runningExecution.update({
-        where: { id: executionId },
-        data: { runningSessionId: null },
-      });
-
-      // If the previous session has no other linked executions, revert to 'planned'
-      if (previousSessionId) {
-        const remaining = await prisma.runningExecution.count({
-          where: {
-            runningSessionId: previousSessionId,
-            id: { not: executionId },
-          },
+      await prisma.$transaction(async (tx) => {
+        await tx.runningExecution.update({
+          where: { id: executionId },
+          data: { runningSessionId: null },
         });
 
-        if (remaining === 0) {
-          const session = await prisma.runningSession.update({
-            where: { id: previousSessionId },
-            data: { status: 'planned' },
-          });
-
-          // Restore or recreate planned CalendarEvent for the session
-          const existingSessionEvent = await prisma.calendarEvent.findFirst({
+        if (previousSessionId) {
+          const remaining = await tx.runningExecution.count({
             where: {
-              athleteProfileId: 'singleton',
-              eventType: 'running',
-              referenceId: session.id,
-              referenceModel: 'RunningSession',
+              runningSessionId: previousSessionId,
+              id: { not: executionId },
             },
           });
 
-          if (existingSessionEvent) {
-            await prisma.calendarEvent.update({
-              where: { id: existingSessionEvent.id },
-              data: {
-                status: 'planned',
-                title: session.title,
-                date: session.scheduledDate,
-                colorCode: null,
-              },
+          if (remaining === 0) {
+            const session = await tx.runningSession.update({
+              where: { id: previousSessionId },
+              data: { status: 'planned' },
             });
-          } else {
-            await prisma.calendarEvent.create({
-              data: {
+
+            const existingSessionEvent = await tx.calendarEvent.findFirst({
+              where: {
                 athleteProfileId: 'singleton',
-                date: session.scheduledDate,
                 eventType: 'running',
                 referenceId: session.id,
                 referenceModel: 'RunningSession',
-                title: session.title,
-                status: 'planned',
               },
             });
+
+            if (existingSessionEvent) {
+              await tx.calendarEvent.update({
+                where: { id: existingSessionEvent.id },
+                data: {
+                  status: 'planned',
+                  title: session.title,
+                  date: session.scheduledDate,
+                  colorCode: null,
+                },
+              });
+            } else {
+              await tx.calendarEvent.create({
+                data: {
+                  athleteProfileId: 'singleton',
+                  date: session.scheduledDate,
+                  eventType: 'running',
+                  referenceId: session.id,
+                  referenceModel: 'RunningSession',
+                  title: session.title,
+                  status: 'planned',
+                },
+              });
+            }
           }
         }
-      }
 
-      // Ensure execution has its own completed event on the calendar
-      const existingExecutionEvent = await prisma.calendarEvent.findFirst({
-        where: {
-          athleteProfileId: 'singleton',
-          eventType: 'running',
-          referenceId: executionId,
-          referenceModel: 'RunningExecution',
-        },
-      });
-
-      const execTitle = execution.notes || (execution.source === 'strava' ? 'Corrida (Strava)' : 'Corrida Manual');
-      if (!existingExecutionEvent) {
-        await prisma.calendarEvent.create({
-          data: {
+        const existingExecutionEvent = await tx.calendarEvent.findFirst({
+          where: {
             athleteProfileId: 'singleton',
-            date: execution.date,
             eventType: 'running',
-            referenceId: execution.id,
+            referenceId: executionId,
             referenceModel: 'RunningExecution',
-            title: `${execTitle} (${execution.distanceKm.toFixed(1)} km)`,
-            status: 'completed',
-            colorCode: '#10b981',
           },
         });
-      }
+
+        const execTitle = execution.notes || (execution.source === 'strava' ? 'Corrida (Strava)' : 'Corrida Manual');
+        if (!existingExecutionEvent) {
+          await tx.calendarEvent.create({
+            data: {
+              athleteProfileId: 'singleton',
+              date: execution.date,
+              eventType: 'running',
+              referenceId: execution.id,
+              referenceModel: 'RunningExecution',
+              title: `${execTitle} (${execution.distanceKm.toFixed(1)} km)`,
+              status: 'completed',
+              colorCode: '#10b981',
+            },
+          });
+        }
+      });
 
       return NextResponse.json({
         success: true,
@@ -229,95 +236,92 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 1. Link RunningExecution to RunningSession
-    const updatedExecution = await prisma.runningExecution.update({
-      where: { id: executionId },
-      data: { runningSessionId: sessionId },
-    });
-
-    // 2. Mark RunningSession as completed
-    const updatedSession = await prisma.runningSession.update({
-      where: { id: sessionId },
-      data: { status: 'completed' },
-    });
-
-    // 3. Harmonize CalendarEvents: eliminate duplicate cards on the calendar
-    const sessionEvent = await prisma.calendarEvent.findFirst({
-      where: {
-        athleteProfileId: 'singleton',
-        eventType: 'running',
-        referenceId: sessionId,
-      },
-    });
-
-    const executionEvent = await prisma.calendarEvent.findFirst({
-      where: {
-        athleteProfileId: 'singleton',
-        eventType: 'running',
-        referenceId: executionId,
-      },
-    });
-
-    const displayTitle = execution.notes
-      ? `${execution.notes} (${execution.distanceKm.toFixed(1)} km)`
-      : `${session.title} (${execution.distanceKm.toFixed(1)} km)`;
-
-    if (sessionEvent && executionEvent) {
-      // Both exist: unify into the execution event and delete the redundant session event
-      await prisma.calendarEvent.update({
-        where: { id: executionEvent.id },
-        data: {
-          title: displayTitle,
-          status: 'completed',
-          colorCode: '#10b981',
-          date: execution.date,
-          caloriesBurned: execution.caloriesBurned,
-        },
+    const { updatedExecution, updatedSession } = await prisma.$transaction(async (tx) => {
+      const updExec = await tx.runningExecution.update({
+        where: { id: executionId },
+        data: { runningSessionId: sessionId },
       });
-      await prisma.calendarEvent.delete({
-        where: { id: sessionEvent.id },
+
+      const updSess = await tx.runningSession.update({
+        where: { id: sessionId },
+        data: { status: 'completed' },
       });
-    } else if (sessionEvent) {
-      // Only session event exists: update it to completed execution reference
-      await prisma.calendarEvent.update({
-        where: { id: sessionEvent.id },
-        data: {
-          referenceId: execution.id,
-          referenceModel: 'RunningExecution',
-          title: displayTitle,
-          status: 'completed',
-          colorCode: '#10b981',
-          date: execution.date,
-          caloriesBurned: execution.caloriesBurned,
-        },
-      });
-    } else if (executionEvent) {
-      // Only execution event exists
-      await prisma.calendarEvent.update({
-        where: { id: executionEvent.id },
-        data: {
-          title: displayTitle,
-          status: 'completed',
-          colorCode: '#10b981',
-          caloriesBurned: execution.caloriesBurned,
-        },
-      });
-    } else {
-      // Neither existed: create single completed calendar event
-      await prisma.calendarEvent.create({
-        data: {
+
+      const sessionEvent = await tx.calendarEvent.findFirst({
+        where: {
           athleteProfileId: 'singleton',
-          date: execution.date,
           eventType: 'running',
-          referenceId: execution.id,
-          referenceModel: 'RunningExecution',
-          title: displayTitle,
-          status: 'completed',
-          colorCode: '#10b981',
-          caloriesBurned: execution.caloriesBurned,
+          referenceId: sessionId,
         },
       });
-    }
+
+      const executionEvent = await tx.calendarEvent.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          eventType: 'running',
+          referenceId: executionId,
+        },
+      });
+
+      const displayTitle = execution.notes
+        ? `${execution.notes} (${execution.distanceKm.toFixed(1)} km)`
+        : `${session.title} (${execution.distanceKm.toFixed(1)} km)`;
+
+      if (sessionEvent && executionEvent) {
+        await tx.calendarEvent.update({
+          where: { id: executionEvent.id },
+          data: {
+            title: displayTitle,
+            status: 'completed',
+            colorCode: '#10b981',
+            date: execution.date,
+            caloriesBurned: execution.caloriesBurned,
+          },
+        });
+        await tx.calendarEvent.delete({
+          where: { id: sessionEvent.id },
+        });
+      } else if (sessionEvent) {
+        await tx.calendarEvent.update({
+          where: { id: sessionEvent.id },
+          data: {
+            referenceId: execution.id,
+            referenceModel: 'RunningExecution',
+            title: displayTitle,
+            status: 'completed',
+            colorCode: '#10b981',
+            date: execution.date,
+            caloriesBurned: execution.caloriesBurned,
+          },
+        });
+      } else if (executionEvent) {
+        await tx.calendarEvent.update({
+          where: { id: executionEvent.id },
+          data: {
+            title: displayTitle,
+            status: 'completed',
+            colorCode: '#10b981',
+            caloriesBurned: execution.caloriesBurned,
+          },
+        });
+      } else {
+        await tx.calendarEvent.create({
+          data: {
+            athleteProfileId: 'singleton',
+            date: execution.date,
+            eventType: 'running',
+            referenceId: execution.id,
+            referenceModel: 'RunningExecution',
+            title: displayTitle,
+            status: 'completed',
+            colorCode: '#10b981',
+            caloriesBurned: execution.caloriesBurned,
+          },
+        });
+      }
+
+      return { updatedExecution: updExec, updatedSession: updSess };
+    });
 
     return NextResponse.json({
       success: true,

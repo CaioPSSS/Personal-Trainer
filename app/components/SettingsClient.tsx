@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   User,
   Settings as SettingsIcon,
@@ -19,8 +20,12 @@ import {
   Sparkles,
   Check,
   Flame,
+  LogOut,
+  Save,
+  Link2,
 } from 'lucide-react';
 import { useToast } from '@/app/components/ToastProvider';
+import HealthDisclaimer from '@/app/components/HealthDisclaimer';
 
 interface RunningProfileInfo {
   id?: string;
@@ -54,12 +59,14 @@ interface SettingsClientProps {
     birthDate?: string | null;
     biologicalSex?: string | null;
     bodyFatPercent?: number | null;
+    metabolicTrackerUrl?: string | null;
   } | null;
   runningProfile?: RunningProfileInfo | null;
   stravaConnected: boolean;
   stravaLastSync?: string | null;
   athleteStravaId?: number | null;
   stravaScope?: string | null;
+  stravaClientConfigured?: boolean;
 }
 
 function formatPaceSec(paceSec?: number | null): string {
@@ -106,6 +113,14 @@ const WEEK_DAYS = [
 const TARGET_WORKOUT_OPTIONS = [2, 3, 4, 5, 6];
 const RUNNING_TARGET_OPTIONS = [2, 3, 4, 5];
 
+const EQUIPMENT_OPTIONS = [
+  { id: 'barbell', label: 'Barra Livre' },
+  { id: 'dumbbells', label: 'Halteres' },
+  { id: 'cables', label: 'Polias / Cabos' },
+  { id: 'machines', label: 'Máquinas' },
+  { id: 'bodyweight', label: 'Peso Corporal' },
+];
+
 const OBJECTIVE_LABELS: Record<string, string> = {
   improve_5k_pace: 'Melhorar Pace nos 5K',
   complete_10k: 'Completar 10K com Consistência',
@@ -127,10 +142,41 @@ export default function SettingsClient({
   stravaLastSync: initialLastSync,
   athleteStravaId,
   stravaScope,
+  stravaClientConfigured = false,
 }: SettingsClientProps) {
+  const router = useRouter();
   const { success, error: toastError, info } = useToast();
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(initialLastSync ?? null);
+
+  // Editable Athlete Profile & Equipment state
+  const [displayName, setDisplayName] = useState<string>(athleteProfile?.displayName || '');
+  const [trainingAgeYears, setTrainingAgeYears] = useState<string>(
+    athleteProfile?.trainingAgeYears != null ? String(athleteProfile.trainingAgeYears) : ''
+  );
+  const [sessionDurationMin, setSessionDurationMin] = useState<string>(
+    athleteProfile?.sessionDurationMin != null ? String(athleteProfile.sessionDurationMin) : '60'
+  );
+  const [selectedEquipment, setSelectedEquipment] = useState<string[]>(() => {
+    const raw = athleteProfile?.availableEquipment;
+    if (Array.isArray(raw) && raw.length > 0) {
+      return raw.map((item) => String(item).trim()).filter(Boolean);
+    }
+    return ['barbell', 'dumbbells', 'cables', 'machines', 'bodyweight'];
+  });
+  const [movementRestrictionsText, setMovementRestrictionsText] = useState<string>(() => {
+    const raw = athleteProfile?.movementRestrictions;
+    if (Array.isArray(raw)) {
+      return raw.map((item) => String(item).trim()).filter(Boolean).join(', ');
+    }
+    return typeof raw === 'string' ? raw : '';
+  });
+  const [athleteContext, setAthleteContext] = useState<string>(athleteProfile?.athleteContext || '');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [metabolicTrackerUrl, setMetabolicTrackerUrl] = useState<string>(
+    athleteProfile?.metabolicTrackerUrl || ''
+  );
+  const [isSavingMetabolicUrl, setIsSavingMetabolicUrl] = useState(false);
 
   // Available days & workout target state
   const initialDays = useMemo(() => {
@@ -287,11 +333,78 @@ export default function SettingsClient({
         return;
       }
       success('Dados antropométricos e metabólicos salvos com sucesso!', 'Metabolismo Atualizado');
+      router.refresh();
     } catch (err) {
       console.error(err);
       toastError('Erro ao salvar dados físicos.');
     } finally {
       setIsSavingPhysical(false);
+    }
+  };
+
+  const handleToggleEquipment = (eqId: string) => {
+    setSelectedEquipment((prev) => {
+      if (prev.includes(eqId)) {
+        if (prev.length <= 1) return prev;
+        return prev.filter((item) => item !== eqId);
+      }
+      return [...prev, eqId];
+    });
+  };
+
+  const handleSaveProfile = async () => {
+    setIsSavingProfile(true);
+    info('Salvando perfil de treino e equipamentos...', 'Perfil do Atleta');
+    try {
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          displayName: displayName.trim() || null,
+          trainingAgeYears: trainingAgeYears.trim() !== '' ? Number(trainingAgeYears) : null,
+          sessionDurationMin: sessionDurationMin.trim() !== '' ? Number(sessionDurationMin) : 60,
+          availableEquipment: selectedEquipment,
+          movementRestrictions: movementRestrictionsText.trim() || null,
+          athleteContext: athleteContext.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toastError(data.error || 'Falha ao salvar perfil do atleta.');
+        return;
+      }
+      success('Perfil de hipertrofia e segurança atualizado com sucesso!', 'Perfil Salvo');
+      router.refresh();
+    } catch (err) {
+      console.error(err);
+      toastError('Erro de rede ao salvar perfil do atleta.');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleSaveMetabolicUrl = async () => {
+    setIsSavingMetabolicUrl(true);
+    try {
+      const res = await fetch('/api/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          metabolicTrackerUrl: metabolicTrackerUrl.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toastError(data.error || 'URL do Rastreador Metabólico inválida.');
+        return;
+      }
+      setMetabolicTrackerUrl(data.profile?.metabolicTrackerUrl || '');
+      success('URL do Rastreador Metabólico atualizada!', 'Integração Salva');
+      router.refresh();
+    } catch {
+      toastError('Erro ao salvar URL do Rastreador Metabólico.');
+    } finally {
+      setIsSavingMetabolicUrl(false);
     }
   };
 
@@ -334,6 +447,7 @@ export default function SettingsClient({
         'Calendário Rebalanceado'
       );
       window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      router.refresh();
     } catch (err) {
       console.error(err);
       toastError('Erro ao salvar preferências de treino.');
@@ -466,49 +580,138 @@ export default function SettingsClient({
         </div>
       </div>
 
-      {/* Athlete Profile Summary */}
-      <div className="glass-card p-6 space-y-4 border-slate-800">
-        <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
-          <User className="w-4 h-4 text-indigo-400" />
-          <h2 className="text-sm font-bold text-slate-100">Perfil de Hipertrofia & Musculação</h2>
+      {/* Athlete Profile Editor */}
+      <div className="glass-card p-6 space-y-5 border-slate-800">
+        <div className="flex items-center justify-between pb-3 border-b border-slate-800 flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <User className="w-4 h-4 text-indigo-400" />
+            <h2 className="text-sm font-bold text-slate-100">Perfil de Hipertrofia & Musculação</h2>
+          </div>
+          <span className="text-[11px] text-slate-400">
+            Alimenta geração de fichas, filtro biomecânico e segurança da IA
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-xs">
-          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1">
-            <span className="text-slate-400 font-medium">Nome do Atleta</span>
-            <p className="text-sm font-bold text-slate-200">
-              {athleteProfile?.displayName || 'Caio Souza'}
-            </p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-display-name" className="text-slate-400 font-medium block">
+              Nome do Atleta
+            </label>
+            <input
+              id="settings-display-name"
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="Seu nome ou apelido"
+              className="w-full bg-slate-950/70 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 text-xs outline-none focus:border-indigo-500"
+            />
           </div>
 
-          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1">
-            <span className="text-slate-400 font-medium flex items-center gap-1">
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-training-age" className="text-slate-400 font-medium flex items-center gap-1">
               <Clock className="w-3 h-3 text-indigo-400" />
-              Tempo de Treino
-            </span>
-            <p className="text-sm font-bold text-slate-200">
-              {athleteProfile?.trainingAgeYears
-                ? `${athleteProfile.trainingAgeYears} anos`
-                : 'Intermediário / Avançado'}
-            </p>
+              <span>Tempo de Treino (anos)</span>
+            </label>
+            <input
+              id="settings-training-age"
+              type="number"
+              min="0"
+              max="80"
+              step="0.5"
+              value={trainingAgeYears}
+              onChange={(e) => setTrainingAgeYears(e.target.value)}
+              placeholder="Ex: 3"
+              className="w-full bg-slate-950/70 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 text-xs font-mono outline-none focus:border-indigo-500"
+            />
           </div>
 
-          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1">
-            <span className="text-slate-400 font-medium flex items-center gap-1">
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-session-duration" className="text-slate-400 font-medium flex items-center gap-1">
               <Dumbbell className="w-3 h-3 text-indigo-400" />
-              Duração Alvo por Sessão
-            </span>
-            <p className="text-sm font-bold text-slate-200">
-              {athleteProfile?.sessionDurationMin || 60} minutos
-            </p>
+              <span>Duração Alvo por Sessão (min)</span>
+            </label>
+            <input
+              id="settings-session-duration"
+              type="number"
+              min="15"
+              max="240"
+              step="5"
+              value={sessionDurationMin}
+              onChange={(e) => setSessionDurationMin(e.target.value)}
+              className="w-full bg-slate-950/70 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 text-xs font-mono outline-none focus:border-indigo-500"
+            />
           </div>
         </div>
 
-        <div className="bg-slate-900/40 rounded-xl p-3.5 border border-slate-800/60 space-y-1.5 text-xs text-slate-300">
-          <div className="font-semibold text-slate-200">Equipamentos & Academia:</div>
-          <p className="text-slate-400">
-            Catálogo SmartFit: Crossover, Halteres monobloco, Máquinas articuladas, Smith Machine, Leg Press 45°, Cadeira Extensora, Mesa Flexora.
-          </p>
+        <div className="space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-slate-200">Equipamentos Disponíveis:</span>
+            <span className="text-[11px] text-slate-400">
+              {selectedEquipment.length} selecionado(s)
+            </span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {EQUIPMENT_OPTIONS.map((opt) => {
+              const isChecked = selectedEquipment.includes(opt.id);
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => handleToggleEquipment(opt.id)}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                    isChecked
+                      ? 'bg-indigo-500/15 border-indigo-500/45 text-indigo-200'
+                      : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <Check className={`w-3.5 h-3.5 ${isChecked ? 'text-indigo-400 opacity-100' : 'opacity-20'}`} />
+                  <span>{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-restrictions" className="text-slate-300 font-medium block">
+              Restrições / Lesões / Dores Articulares
+            </label>
+            <input
+              id="settings-restrictions"
+              type="text"
+              value={movementRestrictionsText}
+              onChange={(e) => setMovementRestrictionsText(e.target.value)}
+              placeholder="Ex: lombar, ombro esquerdo, joelho direito (separado por vírgula)"
+              className="w-full bg-slate-950/70 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 text-xs outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800/80 space-y-1.5">
+            <label htmlFor="settings-context" className="text-slate-300 font-medium block">
+              Contexto de Rotina & Preferências para o Coach
+            </label>
+            <textarea
+              id="settings-context"
+              rows={2}
+              value={athleteContext}
+              onChange={(e) => setAthleteContext(e.target.value)}
+              placeholder="Descreva sua rotina, horários, sono e foco de treino..."
+              className="w-full bg-slate-950/70 border border-slate-700 rounded-lg px-2.5 py-2 text-slate-100 text-xs outline-none focus:border-indigo-500 resize-y"
+            />
+          </div>
+        </div>
+
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={handleSaveProfile}
+            disabled={isSavingProfile}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold shadow-md shadow-indigo-600/25 transition disabled:opacity-50 cursor-pointer"
+          >
+            <Save className={`w-3.5 h-3.5 ${isSavingProfile ? 'animate-pulse' : ''}`} />
+            <span>{isSavingProfile ? 'Salvando Perfil...' : 'Salvar Perfil & Equipamentos'}</span>
+          </button>
         </div>
       </div>
 
@@ -651,7 +854,7 @@ export default function SettingsClient({
               <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
                 Disponibilidade Semanal & Meta de Treinos
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                  Smart Scheduler
+                  Agendador Inteligente
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
@@ -990,12 +1193,14 @@ export default function SettingsClient({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
               <span className="text-slate-400 block mb-1">Strava Client ID</span>
-              <span className="font-mono text-slate-200 font-bold">282597</span>
+              <span className="font-mono text-slate-200 font-bold">
+                {stravaClientConfigured ? 'Configurado via Servidor' : 'Não configurado'}
+              </span>
             </div>
             <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
               <span className="text-slate-400 block mb-1">Strava Athlete ID</span>
               <span className="font-mono text-slate-200 font-bold">
-                {athleteStravaId ?? 129158587}
+                {athleteStravaId ?? '—'}
               </span>
             </div>
             <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
@@ -1078,6 +1283,35 @@ export default function SettingsClient({
         </div>
 
         <div className="space-y-3 text-xs">
+          <div className="bg-slate-900/60 rounded-xl p-3.5 border border-slate-800 space-y-2">
+            <label htmlFor="settings-metabolic-url" className="text-slate-300 font-semibold flex items-center gap-1.5">
+              <Link2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>URL Base do Rastreador Metabólico (HTTPS)</span>
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                id="settings-metabolic-url"
+                type="url"
+                value={metabolicTrackerUrl}
+                onChange={(e) => setMetabolicTrackerUrl(e.target.value)}
+                placeholder="https://seu-rastreador.vercel.app"
+                className="flex-1 bg-slate-950/70 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 text-xs font-mono outline-none focus:border-emerald-500"
+              />
+              <button
+                type="button"
+                onClick={handleSaveMetabolicUrl}
+                disabled={isSavingMetabolicUrl}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-semibold transition cursor-pointer disabled:opacity-50"
+              >
+                <Save className="w-3.5 h-3.5" />
+                <span>{isSavingMetabolicUrl ? 'Salvando...' : 'Salvar URL'}</span>
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Endereços internos/privados são bloqueados automaticamente por proteção SSRF. Deixe vazio para usar o padrão de servidor (`METABOLIC_TRACKER_URL`).
+            </p>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="bg-slate-900/60 rounded-xl p-3 border border-slate-800">
               <span className="text-slate-400 block mb-1">Destino dos Treinos</span>
@@ -1128,13 +1362,33 @@ export default function SettingsClient({
         </div>
       </div>
 
+      {/* Aviso de Saúde & Uso Responsável */}
+      <HealthDisclaimer />
+
       {/* Security & System Info */}
-      <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/30 flex items-center justify-between text-xs text-slate-500">
+      <div className="p-4 rounded-xl border border-slate-800 bg-slate-900/30 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-slate-400" />
-          <span>Segurança de Dados e Armazenamento Local Singleton</span>
+          <span>Sessão Protegida por Cookie Assinado (HttpOnly)</span>
         </div>
-        <span>Personal Trainer v2.0 Multi-Sport</span>
+        <div className="flex items-center gap-3">
+          <span>Personal Trainer v2.0 Multi-Sport</span>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+              } catch {
+                // ignore
+              }
+              window.location.assign('/login');
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-rose-500/15 hover:border-rose-500/30 text-slate-300 hover:text-rose-300 font-semibold transition cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sair</span>
+          </button>
+        </div>
       </div>
     </div>
   );

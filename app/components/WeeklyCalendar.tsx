@@ -14,6 +14,8 @@ import {
   GripVertical,
   Plus,
   Sparkles,
+  ArrowLeftRight,
+  X,
 } from 'lucide-react';
 import { useToast } from './ToastProvider';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
@@ -37,6 +39,7 @@ export interface CalendarEventDTO {
   sortOrder: number;
   caloriesBurned?: number | null;
   originalDate?: string | null;
+  skipStrategy?: string | null;
 }
 
 interface RunningExecutionCandidate {
@@ -128,6 +131,11 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
     date?: string | null;
   } | null>(null);
   const [isLinkOpen, setIsLinkOpen] = useState(false);
+
+  // Touch & keyboard move modal state
+  const [moveTarget, setMoveTarget] = useState<CalendarEventDTO | null>(null);
+  const [customMoveDate, setCustomMoveDate] = useState('');
+  const [isMovingEvent, setIsMovingEvent] = useState(false);
 
   // Debrief state
   const [debriefSession, setDebriefSession] = useState<RunningSessionCandidate | null>(null);
@@ -247,7 +255,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
 
   const handleRebalanceWeek = async () => {
     setIsRebalancing(true);
-    info('Otimizando distribuição semanal com base em corridas e CrossFit...', 'Smart Scheduler');
+    info('Otimizando distribuição semanal com base em corridas e CrossFit...', 'Agendador Inteligente');
     try {
       const res = await fetch('/api/schedule/rebalance', {
         method: 'POST',
@@ -289,6 +297,7 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
         if (res.ok) {
           const data = await res.json();
           setEvents(data.events || []);
+          setWellnessList(Array.isArray(data.wellness) ? data.wellness : []);
         }
       } catch (err) {
         console.error('Falha ao carregar eventos:', err);
@@ -307,6 +316,61 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
       window.removeEventListener('calendar-refresh', handleCustomRefresh);
     };
   }, [startDateStr, endDateStr]);
+
+  useEffect(() => {
+    if (!moveTarget) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isMovingEvent) {
+        setMoveTarget(null);
+      }
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [moveTarget, isMovingEvent]);
+
+  const moveEventToDate = async (
+    eventId: string,
+    sourceDate: string | undefined,
+    targetDate: string
+  ): Promise<boolean> => {
+    if (!eventId || !targetDate || sourceDate === targetDate) return false;
+
+    setIsMovingEvent(true);
+    try {
+      const isOutsideWeek = targetDate < startDateStr || targetDate > endDateStr;
+      if (isOutsideWeek) {
+        setCurrentWeekStart(getStartOfWeek(new Date(`${targetDate}T12:00:00`)));
+      } else {
+        setEvents((prev) =>
+          prev.map((ev) => (ev.id === eventId ? { ...ev, date: targetDate } : ev))
+        );
+      }
+
+      const res = await fetch('/api/calendar', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId, newDate: targetDate }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Falha ao reagendar treino');
+      }
+
+      success(`Treino remarcado para ${targetDate}`, 'Reagendado');
+      window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      await refreshCalendar();
+      return true;
+    } catch (err) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : 'Não foi possível reagendar o treino.';
+      error(msg, 'Erro');
+      await refreshCalendar();
+      return false;
+    } finally {
+      setIsMovingEvent(false);
+    }
+  };
 
   const handlePrevWeek = () => {
     setCurrentWeekStart((prev) => {
@@ -883,6 +947,19 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    setMoveTarget(event);
+                                    setCustomMoveDate(event.date);
+                                  }}
+                                  className="inline-flex items-center gap-0.5 text-indigo-300 hover:text-indigo-200 transition-colors px-1.5 py-0.5 rounded hover:bg-indigo-500/15 cursor-pointer"
+                                  title="Mover treino para outro dia"
+                                  aria-label={`Mover ${event.title} para outro dia`}
+                                >
+                                  <ArrowLeftRight className="w-2.5 h-2.5" />
+                                  <span>Mover</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
                                     setSkipTarget(event);
                                     setIsSkipOpen(true);
                                   }}
@@ -983,9 +1060,106 @@ export default function WeeklyCalendar({ onToggleMonthly, isMonthlyOpen }: Weekl
           })()}
         </div>
         <div className="text-[11px] text-slate-500 italic">
-          💡 Dica: Arraste os treinos planejados entre os dias para reagendar.
+          💡 Dica: Arraste os treinos ou toque em &quot;Mover&quot; para reagendar entre os dias.
         </div>
       </div>
+
+      {/* Touch & Keyboard Reschedule Modal */}
+      {moveTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="move-event-title"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+        >
+          <div className="relative w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/95 p-6 shadow-2xl backdrop-blur-xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                  <ArrowLeftRight className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 id="move-event-title" className="text-base font-bold text-slate-100">
+                    Mover Treino
+                  </h3>
+                  <p className="text-xs text-slate-400 truncate max-w-[240px]">
+                    {moveTarget.title} ({moveTarget.date})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isMovingEvent}
+                onClick={() => setMoveTarget(null)}
+                aria-label="Fechar modal de reagendamento"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                Atalho Rápido (Semana Atual)
+              </span>
+              <div className="grid grid-cols-7 gap-1.5">
+                {weekDays.map((day) => {
+                  const isCurrentDay = day.dateStr === moveTarget.date;
+                  const isPastDay = day.dateStr < todayStr;
+                  return (
+                    <button
+                      key={day.dateStr}
+                      type="button"
+                      disabled={isMovingEvent || isCurrentDay || isPastDay}
+                      onClick={async () => {
+                        const ok = await moveEventToDate(moveTarget.id, moveTarget.date, day.dateStr);
+                        if (ok) setMoveTarget(null);
+                      }}
+                      className={`flex flex-col items-center justify-center py-2 px-1 rounded-xl border text-xs transition cursor-pointer disabled:cursor-not-allowed ${
+                        isCurrentDay
+                          ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200 font-bold'
+                          : isPastDay
+                            ? 'bg-slate-950/40 border-slate-800/60 text-slate-600 opacity-50'
+                            : 'bg-slate-950/80 border-slate-700 hover:border-indigo-400 hover:bg-indigo-500/15 text-slate-200'
+                      }`}
+                    >
+                      <span className="text-[10px] text-slate-400">{day.label}</span>
+                      <span className="font-bold">{day.dayNumber}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-800/80">
+              <label htmlFor="move-custom-date" className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                Ou Escolha Qualquer Data
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="move-custom-date"
+                  type="date"
+                  min={todayStr}
+                  value={customMoveDate}
+                  onChange={(e) => setCustomMoveDate(e.target.value)}
+                  className="flex-1 bg-slate-950 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-xs font-semibold focus:border-indigo-400 outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={isMovingEvent || !customMoveDate || customMoveDate === moveTarget.date}
+                  onClick={async () => {
+                    const ok = await moveEventToDate(moveTarget.id, moveTarget.date, customMoveDate);
+                    if (ok) setMoveTarget(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {isMovingEvent ? 'Movendo...' : 'Confirmar Data'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Skip Workout Dialog */}
       <SkipWorkoutDialog

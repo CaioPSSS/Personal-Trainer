@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { calculateEstimated1RM } from '@/lib/analytics/hypertrophy-analytics';
 import { isSameExerciseName } from '@/lib/ai/exercise-swap';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const exerciseName = searchParams.get('name')?.trim();
@@ -14,7 +19,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'name query param is required.' }, { status: 400 });
     }
 
-    const allExecutions = await prisma.exerciseExecution.findMany({
+    const recentExecutionsDesc = await prisma.exerciseExecution.findMany({
       where: {
         workoutExecution: {
           athleteProfileId: 'singleton',
@@ -34,16 +39,19 @@ export async function GET(request: NextRequest) {
       },
       orderBy: {
         workoutExecution: {
-          date: 'asc',
+          date: 'desc',
         },
       },
+      take: 400,
     });
 
-    const matched = allExecutions.filter(
-      (ex) =>
-        isSameExerciseName(ex.exerciseName, exerciseName) ||
-        (ex.substitutedFrom && isSameExerciseName(ex.substitutedFrom, exerciseName))
-    );
+    const matched = recentExecutionsDesc
+      .filter(
+        (ex) =>
+          isSameExerciseName(ex.exerciseName, exerciseName) ||
+          (ex.substitutedFrom && isSameExerciseName(ex.substitutedFrom, exerciseName))
+      )
+      .sort((a, b) => a.workoutExecution.date.localeCompare(b.workoutExecution.date));
 
     let allTimeMaxLoadKg = 0;
     let allTimeBest1RM = 0;

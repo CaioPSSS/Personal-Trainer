@@ -140,9 +140,6 @@ export default function RunningOnboardingForm({
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
-      if (process.env.NEXT_PUBLIC_INTERNAL_SECRET) {
-        headers['x-internal-token'] = process.env.NEXT_PUBLIC_INTERNAL_SECRET;
-      }
 
       // Step 1: Save Running Profile
       const profileRes = await fetch('/api/running/profile', {

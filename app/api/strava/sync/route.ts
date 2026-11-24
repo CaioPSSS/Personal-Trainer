@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import {
   fetchDetailedActivity,
   getAthleteActivities,
   isRunActivity,
+  STRAVA_CONFIG,
   syncActivityRecord,
 } from '@/lib/strava/client';
 import { repairRunningRecords } from '@/lib/running/reconcile';
@@ -14,7 +16,11 @@ export const dynamic = 'force-dynamic';
 /**
  * Returns Strava integration status and last synchronization date.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const integration = await prisma.stravaIntegration.findUnique({
       where: { id: 'singleton' },
@@ -22,6 +28,7 @@ export async function GET() {
 
     return NextResponse.json({
       connected: !!integration?.accessToken,
+      clientConfigured: Boolean(STRAVA_CONFIG.clientId),
       athleteStravaId: integration?.athleteStravaId ?? null,
       scope: integration?.scope ?? null,
       lastSyncAt: integration?.lastSyncAt?.toISOString() ?? null,
@@ -42,6 +49,10 @@ export async function GET() {
  * and pushes consolidated daily totals to Meu Rastreador Metabólico.
  */
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json().catch(() => ({}));
     const fullResync = Boolean(body?.fullResync);
@@ -179,7 +190,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Falha na sincronização do Strava.',
+        error: 'Falha na sincronização do Strava.',
       },
       { status: 500 }
     );

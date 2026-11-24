@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, AlertTriangle, CalendarClock, Slash } from 'lucide-react';
 import { useToast } from './ToastProvider';
 
@@ -24,6 +24,15 @@ export default function SkipWorkoutDialog({
 }: SkipWorkoutDialogProps) {
   const { success, error } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen || isSubmitting) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isOpen, isSubmitting, onClose]);
 
   if (!isOpen || !event) return null;
 
@@ -86,6 +95,7 @@ export default function SkipWorkoutDialog({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition"
           >
             <X className="w-5 h-5" />

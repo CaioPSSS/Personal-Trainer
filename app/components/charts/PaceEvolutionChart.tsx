@@ -25,6 +25,7 @@ export interface PaceDataPoint {
 
 interface PaceEvolutionChartProps {
   data?: PaceDataPoint[];
+  loading?: boolean;
 }
 
 function formatPace(sec?: number | null): string {
@@ -34,24 +35,36 @@ function formatPace(sec?: number | null): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function PaceEvolutionChart({ data: initialData }: PaceEvolutionChartProps) {
+export default function PaceEvolutionChart({
+  data: initialData,
+  loading: externalLoading = false,
+}: PaceEvolutionChartProps) {
   const isClient = useIsClient();
-  const [data, setData] = useState<PaceDataPoint[]>(initialData ?? []);
-  const [isLoading, setIsLoading] = useState(!initialData);
+  const [fetchedData, setFetchedData] = useState<PaceDataPoint[]>([]);
+  const [fetching, setFetching] = useState(initialData === undefined && !externalLoading);
 
   useEffect(() => {
-    // Only fetch if no initial data was provided
-    if (initialData !== undefined) return;
+    // Skip self-fetch whenever parent supplies data or owns the loading lifecycle
+    if (initialData !== undefined || externalLoading) return;
     let active = true;
     fetch('/api/analytics')
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
-        if (active && json?.paceData) setData(json.paceData);
+        if (active && Array.isArray(json?.paceData)) {
+          setFetchedData(json.paceData);
+        }
       })
       .catch((err) => console.error('[PaceEvolutionChart]', err))
-      .finally(() => { if (active) setIsLoading(false); });
-    return () => { active = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .finally(() => {
+        if (active) setFetching(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialData, externalLoading]);
+
+  const data = initialData ?? fetchedData;
+  const isLoading = externalLoading || (initialData === undefined && fetching);
 
   if (!isClient || isLoading) {
     return (

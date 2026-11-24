@@ -2,7 +2,7 @@
 
 ## Architecture
 The platform expands from a hypertrophy-only tracking application into a unified multi-sport training ecosystem encompassing:
-1. **Hypertrophy Engine** (preserved 100%): Mesocycles, daily workout tracker, smart exercise swaps, OpenRouter cascade, and SmartFit catalog.
+1. **Hypertrophy Engine**: Mesocycles, daily workout tracker, smart exercise swaps, OpenRouter cascade, dynamic profile-driven equipment catalog, and deterministic biomechanical safety filter (`lib/ai/safety-filter.ts`).
 2. **Running Coach AI & Endurance Engine**: Periodized 4-week running plans following Jack Daniels VDOT, Pete Pfitzinger periodization, 80/20 polarized distribution, Karvonen HR zones, 9 canonical session types, and `RunningBrainEntry` temporal memory decay (1.0 -> 0.7 -> 0.4).
 3. **Strava Integration**: OAuth2 authentication (`activity:read_all` scope), token refresh lifecycle, webhook push subscriptions for `Run` activities, manual 30-day sync fallback, and split metric ingestion.
 4. **Cross-Training Engine**: Rapid logging for CrossFit, swimming, cycling, yoga, martial arts with RPE and muscle group targeting, automatically feeding context to the Master Coach AI without diluting hypertrophy goals.
@@ -51,13 +51,13 @@ The platform expands from a hypertrophy-only tracking application into a unified
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | Data Architecture & Schema Expansion | Features 1-3: Prisma schema models, relations, and calendar backfill script | none | PLANNED |
-| M2 | App Layout, Navigation & Interactive Calendar | Features 4-10: Route group `app/(main)/`, `BottomNav`, desktop sidebar, `WeeklyCalendar`, `MonthlyCalendar`, `SkipWorkoutDialog`, calendar APIs | M1 | PLANNED |
-| M3 | Deterministic Scheduling & Cross-Training | Features 11-14: Strength scheduler, cross-training modal/API, Master Coach prompt update, workout completion sync | M1, M2 | PLANNED |
-| M4 | Running Coach AI & Onboarding | Features 15-19: `RunningPlanOutput` schema, Running Coach cascade, decay memory, onboarding form, profile & execution APIs | M1 | PLANNED |
-| M5 | Strava OAuth, Webhook & Running Hub | Features 20-25: Strava client, OAuth routes, webhook endpoint, manual sync, `/running` page, `/settings` page | M1, M4 | PLANNED |
-| M6 | Visual Polish, Analytics, Streaks & Toasts | Features 26-29: Recharts charts, `/api/analytics`, `ToastProvider`, `StreakCounter`, `WeeklyVolumeBar`, glassmorphism polish | M2, M3, M5 | PLANNED |
-| M7 | Final Acceptance & Build Verification | Feature 30: Full automated verification (`prisma validate`, `prisma generate`, `tsc`, `lint`, `build`) and end-to-end check | M1-M6 | PLANNED |
+| M1 | Data Architecture & Schema Expansion | Prisma enums (`PlanStatus`, `ScheduleStatus`, `WorkoutExecutionStatus`, `RunningSource`, `SkipStrategy`), composite `WellnessDaily` PK, migrations & backfill script | none | COMPLETED |
+| M2 | App Layout, Navigation & Interactive Calendar | Route group `app/(main)/`, `BottomNav`, desktop sidebar, `WeeklyCalendar`, `MonthlyCalendar`, `SkipWorkoutDialog`, `UnskipWorkoutDialog`, `.ics` feed, calendar APIs | M1 | COMPLETED |
+| M3 | Deterministic Scheduling & Cross-Training | Collision-aware strength scheduler, `multi-sport-radar.ts`, cross-training modal/API/recurring rules, hybrid Master Coach prompt context, workout completion sync | M1, M2 | COMPLETED |
+| M4 | Running Coach AI & Onboarding | `RunningPlanOutput` schema (Ajv), Running Coach cascade with `RunningBrainEntry` decay, onboarding form, profile & execution APIs | M1 | COMPLETED |
+| M5 | Strava OAuth, Webhook & Running Hub | Strava client (timeouts + reconciliation transactions), OAuth routes, webhook endpoint, manual sync, `/running` page, `/settings` editable profile & SSRF-safe integrations | M1, M4 | COMPLETED |
+| M6 | Visual Polish, Analytics, Readiness & A11y | Recharts charts with single-fetch parent hydration, `/api/analytics` bounded queries + fractional effective sets, `ToastProvider`, dynamic `StreakCounter`, `WeeklyVolumeBar`, ARIA dialog accessibility & non-clinical disclaimers | M2, M3, M5 | COMPLETED |
+| M7 | Audit Remediation & Verification | Full P0–P3 remediation, security/timezone (`America/Sao_Paulo`) hardening, genuine unit test suites, and clean `prisma validate`/`tsc`/`lint`/`test` verification | M1-M6 | COMPLETED |
 
 ---
 
@@ -67,26 +67,31 @@ The platform expands from a hypertrophy-only tracking application into a unified
 - Model:
   ```prisma
   model CalendarEvent {
-    id               String   @id @default(cuid())
+    id               String         @id @default(cuid())
     athleteProfileId String
-    date             String   // "YYYY-MM-DD"
-    eventType        String   // "strength" | "running" | "crossfit" | "swimming" | "rest" | "other"
+    date             String         // "YYYY-MM-DD"
+    eventType        String         // "strength" | "running" | "crossfit" | "swimming" | "rest" | "other"
     referenceId      String?
-    referenceModel   String?  // "WorkoutExecution" | "WorkoutDayTemplate" | "RunningSession" | "CrossTrainingActivity"
+    referenceModel   String?        // "WorkoutExecution" | "WorkoutDayTemplate" | "RunningSession" | "CrossTrainingActivity"
     title            String
-    status           String   @default("planned") // "planned" | "completed" | "skipped"
+    status           ScheduleStatus @default(planned)
     colorCode        String?
-    sortOrder        Int      @default(0)
+    sortOrder        Int            @default(0)
     originalDate     String?
-    createdAt        DateTime @default(now())
-    updatedAt        DateTime @updatedAt
+    skipStrategy     SkipStrategy?
+    createdAt        DateTime       @default(now())
+    updatedAt        DateTime       @updatedAt
   }
   ```
 - API `/api/calendar`:
-  - `GET ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`: Returns `CalendarEvent[]`
-  - `PATCH`: Body `{ eventId: string, newDate: string }`: Updates `date`, records `originalDate`
+  - `GET ?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD`: Returns `CalendarEvent[]` + nutrition snapshot (with 15s sync TTL cache)
+  - `PATCH`: Body `{ eventId?: string, sessionId?: string, newDate: string }`: Updates `date`, records `originalDate`
 - API `/api/calendar/skip`:
-  - `POST`: Body `{ eventId: string, strategy: "skip_only" | "skip_and_reschedule" }`
+  - `POST`: Body `{ eventId: string, strategy: "skip_only" | "skip_and_reschedule" }` (collision-aware reschedule in `$transaction`)
+- API `/api/calendar/unskip`:
+  - `POST`: Body `{ eventId: string, strategy?: "auto" | "restore_schedule" | "unskip_only" }`
+- API `/api/schedule/rebalance`:
+  - `POST`: Body `{ anchorDate?: string }`
 
 ### 2. `RunningPlanOutput` AI Contract (`lib/ai/running-contracts.ts`)
 ```typescript
@@ -138,7 +143,7 @@ export interface RunningPlanOutput {
 ```
 
 ### 3. Strava Token & Sync Contracts
-- OAuth URL: `https://www.strava.com/oauth/authorize?client_id=282597&response_type=code&redirect_uri=${APP_URL}/api/strava/callback&approval_prompt=auto&scope=read,activity:read_all`
+- OAuth URL: `https://www.strava.com/oauth/authorize?client_id=${STRAVA_CLIENT_ID}&response_type=code&redirect_uri=${APP_URL}/api/strava/callback&approval_prompt=auto&scope=read,activity:read_all` (with HMAC-signed `state` cookie verification)
 - Webhook GET: query `{ 'hub.mode': 'subscribe', 'hub.verify_token': verifyToken, 'hub.challenge': challenge }` -> responds `{ 'hub.challenge': challenge }`
 - Webhook POST: event `{ object_type: 'activity', aspect_type: 'create', object_id: activityId, owner_id: athleteId }` -> responds HTTP 200 within 2s, async processes Run details into `RunningExecution` and `CalendarEvent`.
 
@@ -161,32 +166,31 @@ export interface RunningPlanOutput {
 
 ## Code Layout
 - `prisma/`:
-  - `schema.prisma`: Unified data models
-  - `backfill-calendar-events.ts`: Migration script
+  - `schema.prisma`: Unified multi-sport data models & enums
+  - `migrations/`: Versioned PostgreSQL SQL migrations (`baseline` + `domain_fidelity_evolution`)
+  - `backfill-calendar-events.ts`: Idempotent migration script
 - `app/`:
   - `(main)/`:
     - `layout.tsx`: Desktop sidebar (>=1024px) + mobile `BottomNav` (<1024px)
     - `page.tsx`: Executive multi-sport dashboard
-    - `strength/page.tsx`: Hypertrophy daily tracker and exercise swaps
-    - `running/page.tsx`: Running coach dashboard, monthly plan & session cards
-    - `settings/page.tsx`: Athlete profile, running profile & Strava integration
+    - `strength/page.tsx`: Hypertrophy daily tracker, exercise swaps & readiness
+    - `running/page.tsx`: Running coach dashboard, monthly plan, Strava sync & session cards
+    - `settings/page.tsx`: Editable athlete profile, running preferences, SSRF-safe integrations & Strava controls
   - `components/`:
-    - `BottomNav.tsx`, `DesktopSidebar.tsx`
-    - `WeeklyCalendar.tsx`, `MonthlyCalendar.tsx`, `SkipWorkoutDialog.tsx`
+    - `BottomNav.tsx`, `DesktopSidebar.tsx`, `HealthDisclaimer.tsx`
+    - `WeeklyCalendar.tsx`, `MonthlyCalendar.tsx`, `SkipWorkoutDialog.tsx`, `UnskipWorkoutDialog.tsx`
     - `NextWorkoutCard.tsx`, `WeeklyVolumeBar.tsx`, `StreakCounter.tsx`
-    - `CrossTrainingModal.tsx`, `RunningOnboardingForm.tsx`, `ToastProvider.tsx`
+    - `CrossTrainingModal.tsx`, `RecurringCrossTrainingModal.tsx`, `RunningOnboardingForm.tsx`, `ToastProvider.tsx`
     - `charts/`: `PaceEvolutionChart.tsx`, `WeeklyVolumeChart.tsx`, `StrengthProgressChart.tsx`, `AdherenceChart.tsx`
   - `api/`:
-    - `calendar/`: `route.ts`, `skip/route.ts`
-    - `cross-training/route.ts`
-    - `running/`: `profile/route.ts`, `generate/route.ts`, `execution/route.ts`
+    - `calendar/`: `route.ts`, `skip/route.ts`, `unskip/route.ts`, `ics/route.ts`
+    - `schedule/`: `rebalance/route.ts`
+    - `cross-training/`: `route.ts`, `recurring/route.ts`, `parse-wod/route.ts`
+    - `running/`: `profile/route.ts`, `generate/route.ts`, `execution/route.ts`, `session/link/route.ts`
     - `strava/`: `auth/route.ts`, `callback/route.ts`, `webhook/route.ts`, `sync/route.ts`
     - `analytics/route.ts`
-  - `lib/`:
-    - `ai/`:
-      - `running-contracts.ts`, `running-prompts.ts`
-      - `prompts.ts` (extended with cross-training awareness)
-    - `scheduling/`:
-      - `strength-scheduler.ts`
-    - `strava/`:
-      - `client.ts`
+- `lib/`:
+  - `ai/`: `contracts.ts`, `running-contracts.ts`, `openrouter.ts`, `prompts.ts`, `running-prompts.ts`, `safety-filter.ts`, `hybrid-context.ts`, `exercise-swap.ts`
+  - `scheduling/`: `strength-scheduler.ts`, `cross-training-scheduler.ts`, `calendar-skip.ts`, `multi-sport-radar.ts`
+  - `strava/`: `client.ts`
+  - `labels.ts`: Shared PT-BR domain token formatters

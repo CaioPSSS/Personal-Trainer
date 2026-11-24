@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { applyWorkoutTemplateSelectionAndRebalance } from '@/lib/scheduling/strength-scheduler';
 import { todayISO } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const { date, templateId } = body;
@@ -34,10 +39,7 @@ export async function POST(req: NextRequest) {
     console.error('[SelectTemplate API] Erro ao selecionar template e rebalancear:', error);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Falha ao selecionar template e reorganizar calendário.',
+        error: 'Falha ao selecionar template e reorganizar calendário.',
       },
       { status: 500 }
     );

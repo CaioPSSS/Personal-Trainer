@@ -11,6 +11,7 @@ import {
 import { generateStructuredOutput } from '@/lib/ai/openrouter';
 import { buildDataAnalystPrompts } from '@/lib/ai/prompts';
 import { buildExerciseSubstitutionSummary } from '@/lib/ai/exercise-swap';
+import { fetchHybridCoachingContext } from '@/lib/ai/hybrid-context';
 import { Prisma } from '@prisma/client';
 
 export async function POST(request: NextRequest) {
@@ -30,7 +31,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle, swapSuggestions] = await Promise.all([
+    const [athleteProfile, recentWorkouts, recentWellness, activeMesocycle, swapSuggestions, hybridContext] = await Promise.all([
       prisma.athleteProfile.findUnique({ where: { id: 'singleton' } }),
       prisma.workoutExecution.findMany({
         where: { athleteProfileId: 'singleton' },
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest) {
         orderBy: { createdAt: 'desc' },
         take: 60,
       }),
+      fetchHybridCoachingContext(),
     ]);
 
     const exerciseSubstitutionSummary = buildExerciseSubstitutionSummary({
@@ -79,6 +81,9 @@ export async function POST(request: NextRequest) {
       activeMesocycle,
       recentWorkouts,
       recentWellness,
+      runningSummary: hybridContext.runningSummary,
+      crossTrainingSummary: hybridContext.crossTrainingSummary,
+      readinessSummary: hybridContext.readinessSummary,
       exerciseSubstitutionSummary,
     });
 
@@ -126,22 +131,25 @@ export async function POST(request: NextRequest) {
     console.error('[Data Analyst] Error during analysis:', error);
     const message = error instanceof Error ? error.message : String(error);
 
-    await prisma.aiRunLog.create({
-      data: {
-        runType: 'data_analyst_cycle_review',
-        mode: 'cycle_analysis',
-        status: 'failed',
-        primaryModel: analystCascade[0] ?? 'unknown',
-        fallbackModel: analystCascade[1] ?? null,
-        errorMessage: message,
-      },
-    });
+    try {
+      await prisma.aiRunLog.create({
+        data: {
+          runType: 'data_analyst_cycle_review',
+          mode: 'cycle_analysis',
+          status: 'failed',
+          primaryModel: analystCascade[0] ?? 'unknown',
+          fallbackModel: analystCascade[1] ?? null,
+          errorMessage: message,
+        },
+      });
+    } catch (logErr) {
+      console.error('[Data Analyst] Failed to persist AiRunLog:', logErr);
+    }
 
     return NextResponse.json(
       {
         success: false,
         error: 'data analyst request failed.',
-        detail: message,
       },
       { status: 500 },
     );

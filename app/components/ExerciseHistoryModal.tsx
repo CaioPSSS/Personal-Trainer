@@ -100,6 +100,8 @@ export default function ExerciseHistoryModal({
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm p-4 overflow-y-auto"
       onClick={onClose}
     >
@@ -122,6 +124,7 @@ export default function ExerciseHistoryModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-1.5 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
           >
             <X className="w-5 h-5" />

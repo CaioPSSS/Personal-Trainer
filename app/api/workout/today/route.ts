@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { todayISO } from '@/lib/dates';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
+import { todayISO, isISODate, diffISODaysSigned } from '@/lib/dates';
 import {
+  applyDeloadToPrescription,
   calculateProgressiveOverload,
   isCompoundExercise,
   roundToHalfKg,
@@ -17,6 +19,8 @@ import {
   syncDayToMetabolicTracker,
   fetchDailyNutrition,
 } from '@/lib/integrations/metabolic-tracker';
+import { isSameExerciseName, normalizeTextKey } from '@/lib/ai/exercise-swap';
+import { fetchHybridCoachingContext } from '@/lib/ai/hybrid-context';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,6 +53,10 @@ interface WorkoutPayload {
 }
 
 export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const date = searchParams.get('date') || todayISO();
@@ -147,7 +155,9 @@ export async function GET(request: NextRequest) {
           },
         });
 
-        const templateId = lastWorkout?.exerciseExecutions[0]?.exercisePrescription?.workoutDayTemplateId;
+        const templateId =
+          lastWorkout?.workoutDayTemplateId ||
+          lastWorkout?.exerciseExecutions[0]?.exercisePrescription?.workoutDayTemplateId;
         if (templateId) {
           const lastTemplate = dayTemplates.find((t) => t.id === templateId);
           if (lastTemplate) {
@@ -159,15 +169,31 @@ export async function GET(request: NextRequest) {
       workoutToday = dayTemplates.find((t) => t.dayOrder === predictedDayOrder) || dayTemplates[0];
     }
 
-    // 4. Fetch previous performances for workoutToday prescriptions and compute progressive overload
+    // 4. Determine if it's a deload week BEFORE calculating overload & prescription targets
+    const weeks = await prisma.mesocycleWeek.findMany({
+      where: { mesocyclePlanId: activePlan.id },
+      orderBy: { weekNumber: 'asc' },
+    });
+
+    const startISO =
+      activePlan.startDate && isISODate(activePlan.startDate)
+        ? activePlan.startDate
+        : todayISO(activePlan.createdAt);
+    const daysSinceStart = Math.max(0, diffISODaysSigned(date, startISO));
+    const totalWeeks = activePlan.durationWeeks || weeks.length || 1;
+    const currentWeekNumber = Math.min(totalWeeks, Math.max(1, Math.floor(daysSinceStart / 7) + 1));
+    const currentWeekData =
+      weeks.find((w) => w.weekNumber === currentWeekNumber) || weeks[weeks.length - 1];
+    const isDeload = Boolean(currentWeekData?.isDeload);
+
+    // 5. Fetch recent historical executions ONCE (accent-insensitive) & compute progression for ALL templates
     const previousPerformances: Record<string, string> = {};
     const progressionData: Record<string, ExercisePreviousPerformanceData> = {};
 
-    if (workoutToday && workoutToday.prescriptions.length > 0) {
-      const rxNames = Array.from(new Set(workoutToday.prescriptions.map((rx) => rx.exerciseName)));
+    const allPrescriptions = dayTemplates.flatMap((t) => t.prescriptions);
+    if (allPrescriptions.length > 0) {
       const historicalExecutions = await prisma.exerciseExecution.findMany({
         where: {
-          exerciseName: { in: rxNames },
           workoutExecution: {
             athleteProfileId: 'singleton',
             status: 'completed',
@@ -175,29 +201,33 @@ export async function GET(request: NextRequest) {
           },
         },
         orderBy: { createdAt: 'desc' },
+        take: 400,
         include: { setExecutions: true },
       });
 
-      const latestByExerciseName = new Map<string, (typeof historicalExecutions)[number]>();
+      const latestByNormalizedName = new Map<string, (typeof historicalExecutions)[number]>();
       for (const exec of historicalExecutions) {
-        if (!latestByExerciseName.has(exec.exerciseName)) {
-          latestByExerciseName.set(exec.exerciseName, exec);
+        const key = normalizeTextKey(exec.exerciseName);
+        if (key && !latestByNormalizedName.has(key)) {
+          latestByNormalizedName.set(key, exec);
         }
       }
 
-      for (const rx of workoutToday.prescriptions) {
-        const lastExec = latestByExerciseName.get(rx.exerciseName);
+      for (const rx of allPrescriptions) {
+        const lastExec = latestByNormalizedName.get(normalizeTextKey(rx.exerciseName));
 
         if (lastExec && lastExec.setExecutions.length > 0) {
           const validSets = lastExec.setExecutions.filter((s) => s.reps > 0);
-          const bestSet = validSets.length > 0
-            ? validSets.reduce((prev, current) => 
-                ((current.loadKg || 0) > (prev.loadKg || 0)) ? current : prev
-              )
-            : lastExec.setExecutions[0];
+          const bestSet =
+            validSets.length > 0
+              ? validSets.reduce((prev, current) =>
+                  (current.loadKg || 0) > (prev.loadKg || 0) ? current : prev
+                )
+              : lastExec.setExecutions[0];
 
           previousPerformances[rx.id] = `${bestSet.loadKg || 0}kg x ${bestSet.reps} reps (RPE ${bestSet.rpe ?? '?'})`;
 
+          const effectiveRx = applyDeloadToPrescription(rx, isDeload);
           const isCompound = isCompoundExercise(rx.exerciseName, rx.movementPattern);
           const perfInput: PreviousExercisePerformance = {
             exerciseName: rx.exerciseName,
@@ -205,8 +235,9 @@ export async function GET(request: NextRequest) {
             isCompound,
             targetRepMin: rx.targetRepMin || 8,
             targetRepMax: rx.targetRepMax || 12,
-            targetRpeMin: rx.targetRpeMin ?? 7,
-            targetRpeMax: rx.targetRpeMax ?? 8.5,
+            targetRpeMin: effectiveRx.targetRpeMin ?? 7,
+            targetRpeMax: effectiveRx.targetRpeMax ?? 8.5,
+            isDeload,
             completedSets: lastExec.setExecutions.map((s) => ({
               setNumber: s.setNumber,
               loadKg: s.loadKg || 0,
@@ -243,54 +274,66 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 5. Determine if it's a deload week
-    const weeks = await prisma.mesocycleWeek.findMany({
-      where: { mesocyclePlanId: activePlan.id },
-      orderBy: { weekNumber: 'asc' }
-    });
-    
-    const daysSinceStart = Math.floor((new Date(date).getTime() - new Date(activePlan.createdAt).getTime()) / (1000 * 60 * 60 * 24));
-    const currentWeekNumber = Math.max(1, Math.floor(daysSinceStart / 7) + 1);
-    const currentWeekData = weeks.find(w => w.weekNumber === currentWeekNumber) || weeks[weeks.length - 1];
-    const isDeload = currentWeekData?.isDeload || false;
-
-    // 6. Fetch existing logs for this date (if already executed or wellness captured)
-    let existingWellness = await prisma.wellnessDaily.findUnique({
-      where: { date },
-    });
-
-    // Se o wellness local não tiver sono, peso ou estresse, tenta buscar do Meu Rastreador Metabólico
-    if (!existingWellness || existingWellness.sleepHours == null || existingWellness.bodyWeightKg == null || existingWellness.stressLevel == null) {
-      try {
-        const liveNutrition = await fetchDailyNutrition(date);
-        if (liveNutrition && (liveNutrition.weight != null || liveNutrition.sleepHours != null || liveNutrition.stressLevel != null)) {
-          existingWellness = await prisma.wellnessDaily.findUnique({ where: { date } });
-        }
-      } catch {
-        // Silently continue
-      }
-    }
-
-    const existingWorkout = await prisma.workoutExecution.findFirst({
-      where: {
-        athleteProfileId: 'singleton',
-        date,
-      },
-      include: {
-        exerciseExecutions: {
-          include: {
-            setExecutions: true,
+    // 6. Fetch existing local wellness, workout & hybrid readiness (non-blocking refresh via after())
+    const [existingWellness, existingWorkout, hybridContext] = await Promise.all([
+      prisma.wellnessDaily.findUnique({
+        where: { athleteProfileId_date: { athleteProfileId: 'singleton', date } },
+      }),
+      prisma.workoutExecution.findFirst({
+        where: {
+          athleteProfileId: 'singleton',
+          date,
+        },
+        include: {
+          exerciseExecutions: {
+            include: {
+              setExecutions: true,
+            },
           },
         },
-      },
-    });
+      }),
+      fetchHybridCoachingContext(date),
+    ]);
+
+    if (
+      !existingWellness ||
+      existingWellness.sleepHours == null ||
+      existingWellness.bodyWeightKg == null ||
+      existingWellness.stressLevel == null
+    ) {
+      after(async () => {
+        try {
+          await fetchDailyNutrition(date);
+        } catch {
+          // Silently ignore background refresh failures
+        }
+      });
+    }
+
+    const effectiveTemplates = isDeload
+      ? dayTemplates.map((tmpl) => ({
+          ...tmpl,
+          prescriptions: tmpl.prescriptions.map((rx) => applyDeloadToPrescription(rx, true)),
+        }))
+      : dayTemplates;
+
+    const effectiveWorkoutToday = workoutToday
+      ? isDeload
+        ? {
+            ...workoutToday,
+            prescriptions: workoutToday.prescriptions.map((rx) =>
+              applyDeloadToPrescription(rx, true)
+            ),
+          }
+        : workoutToday
+      : null;
 
     return NextResponse.json({
       active: true,
       mesocyclePlanId: activePlan.id,
       mesocycleObjective: activePlan.objective,
-      workoutToday,
-      templates: dayTemplates,
+      workoutToday: effectiveWorkoutToday,
+      templates: effectiveTemplates,
       existingWellness,
       existingWorkout,
       previousPerformances,
@@ -298,6 +341,11 @@ export async function GET(request: NextRequest) {
       previousPerformance: progressionData,
       isDeload,
       currentWeekNumber,
+      readiness: hybridContext.readinessSummary,
+      weekRules: {
+        targetVolume: currentWeekData?.targetVolume ?? null,
+        intensityRules: currentWeekData?.intensityRules ?? null,
+      },
       scheduledCalendarEvent: calendarStrengthEvent
         ? {
             id: calendarStrengthEvent.id,
@@ -314,6 +362,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await request.json();
     const { date, wellness, mesocyclePlanId } = body;
@@ -335,6 +387,13 @@ export async function POST(request: NextRequest) {
         ex.sets.some((set: WorkoutSetPayload) => set.reps != null && Number(set.reps) > 0)
       )
     );
+
+    if (workout != null && !hasCompletedExercises) {
+      return NextResponse.json(
+        { error: 'Nenhuma série válida com repetições (> 0) foi informada para o treino.' },
+        { status: 400 }
+      );
+    }
 
     if (hasCompletedExercises && workout) {
       // Resolve athlete weight for the workout date
@@ -362,7 +421,7 @@ export async function POST(request: NextRequest) {
       // 1. Upsert Wellness log if provided
       if (wellness) {
         await tx.wellnessDaily.upsert({
-          where: { date },
+          where: { athleteProfileId_date: { athleteProfileId: 'singleton', date } },
           update: {
             sleepHours: wellness.sleepHours ? parseFloat(String(wellness.sleepHours)) : null,
             fatigueLevel: wellness.fatigueLevel ? parseInt(String(wellness.fatigueLevel)) : null,
@@ -401,6 +460,7 @@ export async function POST(request: NextRequest) {
           data: {
             athleteProfileId: 'singleton',
             mesocyclePlanId: mesocyclePlanId || null,
+            workoutDayTemplateId: workout.workoutDayTemplateId || null,
             date,
             status: 'completed',
             sessionRpe: workout.sessionRpe ? parseFloat(String(workout.sessionRpe)) : null,
@@ -691,27 +751,18 @@ export async function POST(request: NextRequest) {
 
     const personalRecords: PersonalRecordItem[] = [];
 
-    const allNamesToSearch = Array.from(
-      new Set(
-        workout.exercises.flatMap((ex) =>
-          ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName
-            ? [ex.exerciseName, ex.substitutedFrom]
-            : [ex.exerciseName]
-        )
-      )
-    );
-
     const allHistoricalExecs =
-      allNamesToSearch.length > 0
+      workout.exercises.length > 0
         ? await prisma.exerciseExecution.findMany({
             where: {
-              exerciseName: { in: allNamesToSearch },
               workoutExecution: {
                 athleteProfileId: 'singleton',
                 status: 'completed',
                 id: { not: createdWorkoutExecutionId || undefined },
               },
             },
+            orderBy: { createdAt: 'desc' },
+            take: 400,
             include: {
               setExecutions: true,
             },
@@ -730,12 +781,10 @@ export async function POST(request: NextRequest) {
         0
       );
 
-      const namesToSearch = new Set([ex.exerciseName]);
-      if (ex.substitutedFrom && ex.substitutedFrom !== ex.exerciseName) {
-        namesToSearch.add(ex.substitutedFrom);
-      }
-
-      const historicalExecs = allHistoricalExecs.filter((h) => namesToSearch.has(h.exerciseName));
+      // Compare strictly against the exact performed exercise (accent-insensitive), never mixing substitutedFrom
+      const historicalExecs = allHistoricalExecs.filter((h) =>
+        isSameExerciseName(h.exerciseName, ex.exerciseName)
+      );
 
       if (historicalExecs.length > 0) {
         let historicalMaxLoad = 0;

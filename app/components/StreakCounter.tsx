@@ -59,29 +59,38 @@ function getMilestoneInfo(streak: number): MilestoneInfo {
 
 export default function StreakCounter({
   currentStreak: propStreak,
-  recordStreak = 12,
+  recordStreak: propRecordStreak,
 }: StreakCounterProps) {
-  // When prop is provided, use it directly (no state mirror needed).
-  // When no prop is provided, fetch asynchronously.
+  // When props are provided, use them directly (no state mirror needed).
+  // Otherwise, fetch streak & recordStreak asynchronously.
   const [fetchedStreak, setFetchedStreak] = useState<number | null>(null);
-  const [loading, setLoading] = useState(propStreak === undefined);
+  const [fetchedRecordStreak, setFetchedRecordStreak] = useState<number | null>(null);
+  const [loading, setLoading] = useState(
+    propStreak === undefined && propRecordStreak === undefined
+  );
 
   useEffect(() => {
-    // Only fetch when no prop is provided
-    if (propStreak !== undefined) return;
+    if (propStreak !== undefined && propRecordStreak !== undefined) return;
     let active = true;
     fetch('/api/analytics')
       .then((r) => (r.ok ? r.json() : null))
       .then((json) => {
-        if (active && typeof json?.streak === 'number') setFetchedStreak(json.streak);
+        if (!active || !json) return;
+        if (typeof json.streak === 'number') setFetchedStreak(json.streak);
+        if (typeof json.recordStreak === 'number') setFetchedRecordStreak(json.recordStreak);
       })
       .catch((err) => console.error('[StreakCounter]', err))
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [propStreak, propRecordStreak]);
 
-  // Derive final streak value without any state-in-effect
+  // Derive final streak & record values without any state-in-effect
   const streak = propStreak ?? fetchedStreak ?? 0;
+  const bestStreak = Math.max(streak, propRecordStreak ?? fetchedRecordStreak ?? 0);
   const milestone = getMilestoneInfo(streak);
   const isHighStreak = streak >= 7;
 
@@ -153,7 +162,9 @@ export default function StreakCounter({
         <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
           <Trophy className="w-3.5 h-3.5 text-amber-400" />
           <span>Recorde:</span>
-          <strong className="text-slate-200 font-bold">{Math.max(streak, recordStreak)} dias</strong>
+          <strong className="text-slate-200 font-bold">
+            {bestStreak} {bestStreak === 1 ? 'dia' : 'dias'}
+          </strong>
         </div>
       </div>
     </div>

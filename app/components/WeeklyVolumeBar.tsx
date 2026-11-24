@@ -80,7 +80,16 @@ export default function WeeklyVolumeBar({
   const runningPct = calcPercent(running.current, running.target);
   const crossPct = calcPercent(crossTraining.current, crossTraining.target);
 
-  const overallAdherence = Math.round((strengthPct + runningPct + crossPct) / 3);
+  const activeMetrics = [
+    strength.target > 0 ? strengthPct : null,
+    running.target > 0 ? runningPct : null,
+    crossTraining.target > 0 ? crossPct : null,
+  ].filter((pct): pct is number => pct !== null);
+
+  const overallAdherence =
+    activeMetrics.length > 0
+      ? Math.round(activeMetrics.reduce((sum, pct) => sum + pct, 0) / activeMetrics.length)
+      : 0;
 
   const getAdherenceBadge = (pct: number) => {
     if (pct >= 80) {

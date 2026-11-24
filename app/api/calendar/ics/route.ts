@@ -1,12 +1,19 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse, verifyCalendarFeedToken } from '@/lib/auth';
 import { shiftISODate, todayISO } from '@/lib/dates';
 import { generateICalendarFeed, ICalEventInput } from '@/lib/analytics/wod-parser';
 import { formatPacePerKm } from '@/lib/running/vdot-predictor';
+import { formatHrZone } from '@/lib/labels';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const token = request.nextUrl.searchParams.get('token');
+  if (!isAuthorized(request) && !verifyCalendarFeedToken(token)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const startRange = shiftISODate(todayISO(), -30);
     const endRange = shiftISODate(todayISO(), 60);
@@ -88,7 +95,41 @@ export async function GET() {
           descLines.push(`Tipo: ${runSession.sessionType.toUpperCase()}`);
           if (runSession.totalDistanceKm) descLines.push(`Distância alvo: ${runSession.totalDistanceKm} km`);
           if (runSession.targetPaceSec) descLines.push(`Pace alvo: ${formatPacePerKm(runSession.targetPaceSec)}`);
-          if (runSession.targetHrZone) descLines.push(`Zona FC: ${runSession.targetHrZone.toUpperCase()}`);
+          if (runSession.targetHrZone) descLines.push(`Zona FC: ${formatHrZone(runSession.targetHrZone, false)}`);
+          if (Array.isArray(runSession.segments) && runSession.segments.length > 0) {
+            descLines.push('');
+            descLines.push('🏃 SEGMENTOS:');
+            for (const rawSeg of runSession.segments) {
+              if (!rawSeg || typeof rawSeg !== 'object') continue;
+              const seg = rawSeg as Record<string, unknown>;
+              const segType = typeof seg.type === 'string' ? seg.type : 'Bloco';
+              const parts: string[] = [];
+              if (typeof seg.reps === 'number' && seg.reps > 1) parts.push(`${seg.reps}x`);
+              if (typeof seg.distanceKm === 'number') parts.push(`${seg.distanceKm} km`);
+              else if (typeof seg.distanceM === 'number') parts.push(`${seg.distanceM} m`);
+              if (typeof seg.durationMin === 'number') parts.push(`${seg.durationMin} min`);
+              if (
+                Array.isArray(seg.paceRangeSec) &&
+                seg.paceRangeSec.length === 2 &&
+                typeof seg.paceRangeSec[0] === 'number' &&
+                typeof seg.paceRangeSec[1] === 'number'
+              ) {
+                parts.push(
+                  `@ ${formatPacePerKm(seg.paceRangeSec[0])}-${formatPacePerKm(seg.paceRangeSec[1])}`
+                );
+              }
+              if (typeof seg.hrZone === 'string' && seg.hrZone) {
+                parts.push(`(${formatHrZone(seg.hrZone, true)})`);
+              }
+              if (typeof seg.restSec === 'number' && seg.restSec > 0) {
+                parts.push(`| pausa ${seg.restSec}s`);
+              }
+              if (typeof seg.notes === 'string' && seg.notes.trim()) {
+                parts.push(`— ${seg.notes.trim()}`);
+              }
+              descLines.push(`• ${segType}: ${parts.join(' ') || 'ritmo contínuo'}`);
+            }
+          }
           if (runSession.notes) {
             descLines.push('');
             descLines.push(`Notas: ${runSession.notes}`);

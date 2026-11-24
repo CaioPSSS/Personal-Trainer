@@ -1,15 +1,51 @@
 import { prisma } from '@/lib/prisma';
 import { calculateRunningCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
-import { diffISODays, shiftISODate } from '@/lib/dates';
+import { diffISODays, shiftISODate, todayISO } from '@/lib/dates';
+
+const DEFAULT_STRAVA_TIMEOUT_MS = 15_000;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_STRAVA_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), Math.max(1_000, timeoutMs));
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Tempo esgotado na API do Strava após ${timeoutMs}ms.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export const STRAVA_CONFIG = {
-  clientId: process.env.STRAVA_CLIENT_ID || '282597',
-  clientSecret: process.env.STRAVA_CLIENT_SECRET || '',
-  defaultAccessToken: process.env.STRAVA_DEFAULT_ACCESS_TOKEN || '',
-  defaultRefreshToken: process.env.STRAVA_DEFAULT_REFRESH_TOKEN || '',
-  defaultExpiresAt: Number(process.env.STRAVA_DEFAULT_EXPIRES_AT || 0),
-  defaultAthleteId: Number(process.env.STRAVA_DEFAULT_ATHLETE_ID || 129158587),
+  get clientId(): string {
+    return process.env.STRAVA_CLIENT_ID?.trim() || '';
+  },
+  get clientSecret(): string {
+    return process.env.STRAVA_CLIENT_SECRET?.trim() || '';
+  },
+  get defaultAccessToken(): string {
+    return process.env.STRAVA_DEFAULT_ACCESS_TOKEN?.trim() || '';
+  },
+  get defaultRefreshToken(): string {
+    return process.env.STRAVA_DEFAULT_REFRESH_TOKEN?.trim() || '';
+  },
+  get defaultExpiresAt(): number {
+    return Number(process.env.STRAVA_DEFAULT_EXPIRES_AT || 0);
+  },
+  get defaultAthleteId(): number {
+    return Number(process.env.STRAVA_DEFAULT_ATHLETE_ID || 0);
+  },
   scope: 'read,activity:read_all',
   oauthTokenUrl: 'https://www.strava.com/oauth/token',
   oauthAuthorizeUrl: 'https://www.strava.com/oauth/authorize',
@@ -86,12 +122,22 @@ export async function getValidAccessToken(): Promise<string> {
   });
 
   if (!integration) {
-    if (!STRAVA_CONFIG.defaultAccessToken || !STRAVA_CONFIG.defaultRefreshToken) {
+    if (
+      !STRAVA_CONFIG.defaultAccessToken ||
+      !STRAVA_CONFIG.defaultRefreshToken ||
+      !STRAVA_CONFIG.defaultAthleteId
+    ) {
       throw new Error('Strava não está conectado. Autorize sua conta em Configurações.');
     }
+    await prisma.athleteProfile.upsert({
+      where: { id: 'singleton' },
+      update: {},
+      create: { id: 'singleton', sessionDurationMin: 60 },
+    });
     integration = await prisma.stravaIntegration.create({
       data: {
         id: 'singleton',
+        athleteProfileId: 'singleton',
         accessToken: STRAVA_CONFIG.defaultAccessToken,
         refreshToken: STRAVA_CONFIG.defaultRefreshToken,
         expiresAt: STRAVA_CONFIG.defaultExpiresAt,
@@ -104,7 +150,10 @@ export async function getValidAccessToken(): Promise<string> {
   const nowSeconds = Math.floor(Date.now() / 1000);
   // Refresh if token has expired or is within 5 minutes (300 seconds) of expiry
   if (integration.expiresAt <= nowSeconds + 300) {
-    const res = await fetch(STRAVA_CONFIG.oauthTokenUrl, {
+    if (!STRAVA_CONFIG.clientId || !STRAVA_CONFIG.clientSecret) {
+      throw new Error('Credenciais do Strava (STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET) não configuradas no servidor.');
+    }
+    const res = await fetchWithTimeout(STRAVA_CONFIG.oauthTokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -139,7 +188,11 @@ export async function getValidAccessToken(): Promise<string> {
 /**
  * Generates OAuth2 authorization URL requesting read,activity:read_all permissions.
  */
-export function getAuthorizationUrl(origin?: string): string {
+export function getAuthorizationUrl(origin?: string, state?: string): string {
+  if (!STRAVA_CONFIG.clientId) {
+    throw new Error('STRAVA_CLIENT_ID não configurado no servidor.');
+  }
+
   const baseAppUrl = (
     origin ||
     process.env.NEXT_PUBLIC_APP_URL ||
@@ -155,6 +208,10 @@ export function getAuthorizationUrl(origin?: string): string {
     scope: STRAVA_CONFIG.scope,
   });
 
+  if (state) {
+    params.set('state', state);
+  }
+
   return `${STRAVA_CONFIG.oauthAuthorizeUrl}?${params.toString()}`;
 }
 
@@ -162,7 +219,11 @@ export function getAuthorizationUrl(origin?: string): string {
  * Exchanges authorization code for access and refresh tokens, saving to database.
  */
 export async function exchangeToken(code: string) {
-  const res = await fetch(STRAVA_CONFIG.oauthTokenUrl, {
+  if (!STRAVA_CONFIG.clientId || !STRAVA_CONFIG.clientSecret) {
+    throw new Error('Credenciais do Strava (STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET) não configuradas no servidor.');
+  }
+
+  const res = await fetchWithTimeout(STRAVA_CONFIG.oauthTokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -179,11 +240,21 @@ export async function exchangeToken(code: string) {
   }
 
   const data = await res.json();
-  const athleteId = data.athlete?.id ? Number(data.athlete.id) : STRAVA_CONFIG.defaultAthleteId;
+  const athleteId = Number(data.athlete?.id || STRAVA_CONFIG.defaultAthleteId);
+  if (!Number.isSafeInteger(athleteId) || athleteId <= 0) {
+    throw new Error('Strava OAuth não retornou o ID do atleta.');
+  }
+
+  await prisma.athleteProfile.upsert({
+    where: { id: 'singleton' },
+    update: {},
+    create: { id: 'singleton', sessionDurationMin: 60 },
+  });
 
   const upserted = await prisma.stravaIntegration.upsert({
     where: { id: 'singleton' },
     update: {
+      athleteProfileId: 'singleton',
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt: data.expires_at,
@@ -192,6 +263,7 @@ export async function exchangeToken(code: string) {
     },
     create: {
       id: 'singleton',
+      athleteProfileId: 'singleton',
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt: data.expires_at,
@@ -208,7 +280,7 @@ export async function exchangeToken(code: string) {
  */
 export async function getActivity(activityId: number | string): Promise<StravaActivity> {
   const token = await getValidAccessToken();
-  const res = await fetch(`${STRAVA_CONFIG.apiBaseUrl}/activities/${activityId}`, {
+  const res = await fetchWithTimeout(`${STRAVA_CONFIG.apiBaseUrl}/activities/${activityId}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -234,7 +306,7 @@ export async function getAthleteActivities(
   if (before) params.append('before', String(before));
   params.append('per_page', String(perPage));
 
-  const res = await fetch(`${STRAVA_CONFIG.apiBaseUrl}/athlete/activities?${params.toString()}`, {
+  const res = await fetchWithTimeout(`${STRAVA_CONFIG.apiBaseUrl}/athlete/activities?${params.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -309,11 +381,11 @@ export function mapStravaActivityToExecution(activity: StravaActivity): MappedRu
     });
   }
 
-  const date = (
-    activity.start_date_local ||
-    activity.start_date ||
-    new Date().toISOString()
-  ).split('T')[0];
+  const date = activity.start_date_local
+    ? activity.start_date_local.split('T')[0]
+    : activity.start_date
+      ? todayISO(new Date(activity.start_date))
+      : todayISO();
 
   return {
     stravaActivityId: String(activity.id),
@@ -483,7 +555,7 @@ export async function harmonizeRunningCalendarEvents(params: {
     referenceId: executionId,
     referenceModel: 'RunningExecution',
     title,
-    status: 'completed',
+    status: 'completed' as const,
     colorCode: '#10b981',
     caloriesBurned,
     date,
@@ -566,8 +638,8 @@ export async function syncActivityRecord(
 
   await prisma.runningProfile.upsert({
     where: { id: 'singleton' },
-    update: {},
-    create: { id: 'singleton' },
+    update: { athleteProfileId: 'singleton' },
+    create: { id: 'singleton', athleteProfileId: 'singleton' },
   });
 
   const mapped = mapStravaActivityToExecution(activity);
@@ -634,7 +706,7 @@ export async function syncActivityRecord(
   }
 
   const metrics = {
-    source: 'strava',
+    source: 'strava' as const,
     stravaActivityId: mapped.stravaActivityId,
     date: mapped.date,
     distanceKm: mapped.distanceKm,

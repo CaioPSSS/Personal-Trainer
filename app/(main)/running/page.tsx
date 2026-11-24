@@ -26,11 +26,14 @@ import {
   Copy,
 } from 'lucide-react';
 import { useToast } from '@/app/components/ToastProvider';
+import { getLocalISODate } from '@/lib/dateUtils';
 import RunningOnboardingForm from '@/app/components/RunningOnboardingForm';
-import PaceEvolutionChart from '@/app/components/charts/PaceEvolutionChart';
-import WeeklyVolumeChart from '@/app/components/charts/WeeklyVolumeChart';
+import PaceEvolutionChart, { PaceDataPoint } from '@/app/components/charts/PaceEvolutionChart';
+import WeeklyVolumeChart, { VolumeDataPoint } from '@/app/components/charts/WeeklyVolumeChart';
 import LinkRunningSessionModal from '@/app/components/LinkRunningSessionModal';
 import RunningDebriefModal from '@/app/components/RunningDebriefModal';
+import HealthDisclaimer from '@/app/components/HealthDisclaimer';
+import { formatHrZone } from '@/lib/labels';
 import {
   predictRaceTimesFrom5kPace,
   estimateVdotFrom5kPaceSec,
@@ -208,6 +211,8 @@ export default function RunningPage() {
   const [showForm, setShowForm] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [stravaStatus, setStravaStatus] = useState<StravaStatusData | null>(null);
+  const [paceData, setPaceData] = useState<PaceDataPoint[] | undefined>(undefined);
+  const [volumeData, setVolumeData] = useState<VolumeDataPoint[] | undefined>(undefined);
 
   // Expanded cards state
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
@@ -260,7 +265,7 @@ export default function RunningPage() {
     const lines: string[] = [
       `⌚ TREINO NO RELÓGIO — ${session.title.toUpperCase()}`,
       `Data: ${session.scheduledDate} | Semana ${session.weekNumber}`,
-      `Distância Prevista: ${session.totalDistanceKm ? `${session.totalDistanceKm.toFixed(1)} km` : '--'} | Zona Alvo: ${session.targetHrZone ?? 'Zona 2'}`,
+      `Distância Prevista: ${session.totalDistanceKm ? `${session.totalDistanceKm.toFixed(1)} km` : '--'} | Zona Alvo: ${formatHrZone(session.targetHrZone, true)}`,
       '----------------------------------------',
     ];
     if (session.segments && session.segments.length > 0) {
@@ -483,9 +488,14 @@ export default function RunningPage() {
   const reloadRunningData = useCallback(async () => {
     try {
       setIsLoading(true);
-      const res = await fetch('/api/running/profile');
-      if (res.ok) {
-        const data = await res.json();
+      const [profileRes, analyticsRes] = await Promise.all([
+        fetch('/api/running/profile'),
+        fetch('/api/analytics'),
+        loadStravaStatus(),
+      ]);
+
+      if (profileRes.ok) {
+        const data = await profileRes.json();
         setProfile(data.profile ?? null);
 
         if (data.profile?.runningPlans && data.profile.runningPlans.length > 0) {
@@ -498,13 +508,32 @@ export default function RunningPage() {
           }
         }
       }
-      await loadStravaStatus();
+
+      if (analyticsRes.ok) {
+        const analyticsData = await analyticsRes.json();
+        setPaceData(Array.isArray(analyticsData.paceData) ? analyticsData.paceData : []);
+        setVolumeData(Array.isArray(analyticsData.volumeData) ? analyticsData.volumeData : []);
+      } else {
+        setPaceData((prev) => prev ?? []);
+        setVolumeData((prev) => prev ?? []);
+      }
     } catch (err) {
       console.error('[RunningPage] Erro ao carregar dados:', err);
+      setPaceData((prev) => prev ?? []);
+      setVolumeData((prev) => prev ?? []);
     } finally {
       setIsLoading(false);
     }
   }, [loadStravaStatus]);
+
+  useEffect(() => {
+    if (!showManualModal || isLoggingManual) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowManualModal(false);
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [showManualModal, isLoggingManual]);
 
   useEffect(() => {
     let active = true;
@@ -529,10 +558,16 @@ export default function RunningPage() {
 
     async function initData() {
       try {
-        const res = await fetch('/api/running/profile');
+        const [profileRes, stravaRes, linkRes, analyticsRes] = await Promise.all([
+          fetch('/api/running/profile'),
+          fetch('/api/strava/sync'),
+          fetch('/api/running/session/link'),
+          fetch('/api/analytics'),
+        ]);
         if (!active) return;
-        if (res.ok) {
-          const data = await res.json();
+
+        if (profileRes.ok) {
+          const data = await profileRes.json();
           if (!active) return;
           setProfile(data.profile ?? null);
 
@@ -547,13 +582,30 @@ export default function RunningPage() {
           }
         }
 
-        const stravaRes = await fetch('/api/strava/sync');
         if (stravaRes.ok && active) {
           const stravaData = await stravaRes.json();
           setStravaStatus(stravaData);
         }
+
+        if (linkRes.ok && active) {
+          const linkData = await linkRes.json();
+          setUnlinkedCount(linkData.unlinkedExecutions?.length || 0);
+        }
+
+        if (analyticsRes.ok && active) {
+          const analyticsData = await analyticsRes.json();
+          setPaceData(Array.isArray(analyticsData.paceData) ? analyticsData.paceData : []);
+          setVolumeData(Array.isArray(analyticsData.volumeData) ? analyticsData.volumeData : []);
+        } else if (active) {
+          setPaceData((prev) => prev ?? []);
+          setVolumeData((prev) => prev ?? []);
+        }
       } catch (err) {
         console.error('[RunningPage] Erro ao carregar dados:', err);
+        if (active) {
+          setPaceData((prev) => prev ?? []);
+          setVolumeData((prev) => prev ?? []);
+        }
       } finally {
         if (active) {
           setIsLoading(false);
@@ -749,9 +801,12 @@ export default function RunningPage() {
     (acc, s) => acc + (s.totalDistanceKm || 0),
     0
   );
-  const completedKm = activePlan.sessions
-    .filter((s) => s.status === 'completed')
-    .reduce((acc, s) => acc + (s.totalDistanceKm || 0), 0);
+  const completedKm = activePlan.sessions.reduce((acc, s) => {
+    if (s.executions && s.executions.length > 0) {
+      return acc + s.executions.reduce((sum, exec) => sum + (exec.distanceKm || 0), 0);
+    }
+    return s.status === 'completed' ? acc + (s.totalDistanceKm || 0) : acc;
+  }, 0);
 
   return (
     <div className="max-w-6xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
@@ -890,7 +945,7 @@ export default function RunningPage() {
               <h2 className="text-sm sm:text-base font-bold text-slate-100 flex items-center gap-2">
                 Disponibilidade Semanal & Meta de Treinos
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Running AI Schedule
+                  Agenda Inteligente de Corrida
                 </span>
               </h2>
               <p className="text-xs text-slate-400">
@@ -1275,7 +1330,7 @@ export default function RunningPage() {
                     <div className="flex items-center justify-between">
                       <span className="text-slate-400">Zona Cardíaca:</span>
                       <span className="font-semibold text-rose-300">
-                        {session.targetHrZone ?? 'Zona 2'}
+                        {formatHrZone(session.targetHrZone, true)}
                       </span>
                     </div>
                   </div>
@@ -1360,7 +1415,7 @@ export default function RunningPage() {
                                   {seg.hrZone && (
                                     <div>
                                       <span className="text-slate-500">FC: </span>
-                                      <span className="text-rose-300">{seg.hrZone}</span>
+                                      <span className="text-rose-300">{formatHrZone(seg.hrZone, true)}</span>
                                     </div>
                                   )}
                                   {seg.restSec != null && (
@@ -1392,7 +1447,7 @@ export default function RunningPage() {
                       <div className="flex items-center gap-1.5 bg-slate-950/70 p-2 rounded-xl border border-emerald-500/40">
                         <input
                           type="date"
-                          min={new Date().toISOString().split('T')[0]}
+                          min={getLocalISODate()}
                           value={rescheduleDate || session.scheduledDate}
                           onChange={(e) => setRescheduleDate(e.target.value)}
                           className="bg-slate-900 border border-slate-700 text-xs text-slate-100 rounded-lg px-2 py-1 flex-1 focus:outline-none focus:border-emerald-500"
@@ -1548,15 +1603,25 @@ export default function RunningPage() {
           <h2 className="text-base font-bold text-slate-100">Análise de Performance & Volume</h2>
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <PaceEvolutionChart />
-          <WeeklyVolumeChart />
+          <PaceEvolutionChart data={paceData} loading={isLoading} />
+          <WeeklyVolumeChart data={volumeData} loading={isLoading} />
         </div>
       </div>
 
       {/* Manual Run Log Modal */}
       {showManualModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
-          <div className="glass-card max-w-md w-full p-6 space-y-4 border-emerald-500/30">
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm"
+          onClick={() => {
+            if (!isLoggingManual) setShowManualModal(false);
+          }}
+        >
+          <div
+            className="glass-card max-w-md w-full p-6 space-y-4 border-emerald-500/30"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex justify-between items-center pb-2 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Footprints className="w-5 h-5 text-emerald-400" />
@@ -1566,8 +1631,9 @@ export default function RunningPage() {
               </div>
               <button
                 type="button"
+                aria-label="Fechar"
                 onClick={() => setShowManualModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white"
+                className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1763,7 +1829,7 @@ export default function RunningPage() {
                           <span className="text-xs text-slate-400 block">Ritmo Livre</span>
                         )}
                         <span className="text-[10px] text-rose-300">
-                          {seg.hrZone || watchSession.targetHrZone || 'Zona 2'}
+                          {formatHrZone(seg.hrZone || watchSession.targetHrZone, true)}
                         </span>
                       </div>
                     </div>
@@ -1772,7 +1838,7 @@ export default function RunningPage() {
               ) : (
                 <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 text-xs text-slate-300 font-mono">
                   Bloco Contínuo: {watchSession.totalDistanceKm ?? 5} km @{' '}
-                  {formatPaceSec(watchSession.targetPaceSec)} ({watchSession.targetHrZone ?? 'Zona 2'})
+                  {formatPaceSec(watchSession.targetPaceSec)} ({formatHrZone(watchSession.targetHrZone, true)})
                 </div>
               )}
             </div>
@@ -1814,6 +1880,8 @@ export default function RunningPage() {
           </div>
         </div>
       )}
+
+      <HealthDisclaimer compact />
     </div>
   );
 }

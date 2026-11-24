@@ -22,6 +22,7 @@ export interface PreviousExercisePerformance {
   targetRepMax: number;
   targetRpeMin: number;
   targetRpeMax: number;
+  isDeload?: boolean;
   completedSets: CompletedSet[];
 }
 
@@ -30,7 +31,7 @@ export interface LoadProgressionResult {
   previousMaxLoadKg: number;
   progressionReason: string;
   deltaKg: number;
-  action: 'increment' | 'maintain' | 'micro_adjust';
+  action: 'increment' | 'maintain' | 'micro_adjust' | 'deload';
 }
 
 export interface ExercisePreviousPerformanceData {
@@ -39,7 +40,7 @@ export interface ExercisePreviousPerformanceData {
   deltaKg: number;
   lastReps: number;
   lastRpe: number | null;
-  action: 'increment' | 'maintain' | 'micro_adjust';
+  action: 'increment' | 'maintain' | 'micro_adjust' | 'deload';
   reason: string;
   progressionReason?: string;
 }
@@ -170,7 +171,7 @@ export function isCompoundExercise(exerciseName: string, movementPattern?: strin
     return true;
   }
 
-  // Default fallback if undetermined: treat as compound if pattern is empty/unknown
+  // Conservative fallback when movement pattern cannot be identified: use smaller isolation increments (+1.0kg)
   return false;
 }
 
@@ -234,6 +235,20 @@ export function calculateProgressiveOverload(perf: PreviousExercisePerformance):
   }, setsWithLoad[0]);
 
   const previousMaxLoadKg = roundToHalfKg(topSet.loadKg);
+
+  // Active Deload Week: reduce working load (~15%) rounded to nearest 0.5kg plate increment
+  if (perf.isDeload) {
+    const deloadLoadKg = Math.max(0.5, roundToHalfKg(previousMaxLoadKg * 0.85));
+    const deltaKg = roundToHalfKg(deloadLoadKg - previousMaxLoadKg);
+    return {
+      suggestedLoadKg: deloadLoadKg,
+      previousMaxLoadKg,
+      deltaKg,
+      action: 'deload',
+      progressionReason: `Semana de Deload ativa: redução de ~15% na carga (${previousMaxLoadKg} kg → ${deloadLoadKg} kg) para recuperação neuromuscular.`,
+    };
+  }
+
   const reps = topSet.reps;
   const effectiveRpe =
     typeof topSet.rpe === 'number' && !isNaN(topSet.rpe) && topSet.rpe > 0
@@ -241,6 +256,24 @@ export function calculateProgressiveOverload(perf: PreviousExercisePerformance):
       : (targetRpeMax ?? 8.0);
 
   const hasAnyFailure = validSets.some((s) => s.isFailure === true);
+
+  // Guard against severe multi-set rep drop-off even when the first top set hit targetMax
+  const workingSets = setsWithLoad.filter((s) => s.loadKg >= topSet.loadKg * 0.85);
+  if (workingSets.length >= 2) {
+    const minWorkingReps = Math.min(...workingSets.map((s) => s.reps));
+    const avgWorkingReps =
+      workingSets.reduce((sum, s) => sum + s.reps, 0) / workingSets.length;
+    const sharpDropFloor = Math.max(1, targetRepMin - 2);
+    if (minWorkingReps < sharpDropFloor || avgWorkingReps < targetRepMin) {
+      return {
+        suggestedLoadKg: previousMaxLoadKg,
+        previousMaxLoadKg,
+        deltaKg: 0,
+        action: 'maintain',
+        progressionReason: `Queda de rendimento nas séries subsequentes (mín ${minWorkingReps} / média ${avgWorkingReps.toFixed(1)} reps < faixa alvo ${targetRepMin}-${targetRepMax}). Consolidando ${previousMaxLoadKg}kg até estabilizar todas as séries.`,
+      };
+    }
+  }
 
   // 3. Rule 3: Fatigue / Failure hold
   // If reps are below target minimum, RPE reached 9.5+, or any set hit mechanical failure
@@ -298,5 +331,32 @@ export function calculateProgressiveOverload(perf: PreviousExercisePerformance):
     action: 'maintain',
     progressionReason:
       'Meta mínima atingida com boa reserva. Progredir repetições em direção ao topo da faixa antes de subir a carga.',
+  };
+}
+
+/**
+ * Applies active deload volume/intensity reductions (~50% sets, -2.0 RPE, no failure techniques)
+ * without mutating the underlying persisted prescription object.
+ */
+export function applyDeloadToPrescription<
+  T extends {
+    targetSets: number;
+    targetRpeMin?: number | null;
+    targetRpeMax?: number | null;
+    advancedTechnique?: string | null;
+  },
+>(rx: T, isDeload: boolean): T {
+  if (!isDeload) {
+    return rx;
+  }
+
+  return {
+    ...rx,
+    targetSets: Math.max(1, Math.round(rx.targetSets * 0.5)),
+    targetRpeMin:
+      rx.targetRpeMin != null ? Math.max(5.0, Number((rx.targetRpeMin - 2.0).toFixed(1))) : 5.5,
+    targetRpeMax:
+      rx.targetRpeMax != null ? Math.max(6.0, Number((rx.targetRpeMax - 2.0).toFixed(1))) : 6.5,
+    advancedTechnique: null,
   };
 }

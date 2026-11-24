@@ -27,7 +27,11 @@ interface StrengthHubClientProps {
 
 export default function StrengthHubClient({ initialAthleteProfile }: StrengthHubClientProps) {
   const router = useRouter();
-  const [athleteProfile, setAthleteProfile] = useState<AthleteProfile | null>(initialAthleteProfile);
+  const [overrideProfile, setOverrideProfile] = useState<AthleteProfile | null>(null);
+  const athleteProfile =
+    initialAthleteProfile && (initialAthleteProfile.mesocycles?.length ?? 0) > 0
+      ? initialAthleteProfile
+      : (overrideProfile ?? initialAthleteProfile);
   const hasActiveMesocycle = (athleteProfile?.mesocycles?.length ?? 0) > 0;
   const activeMesocycle = athleteProfile?.mesocycles?.[0] || null;
 
@@ -111,8 +115,12 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
         throw new Error('Falha ao configurar perfil.');
       }
 
-      const newProfile = await response.json();
-      setAthleteProfile(newProfile);
+      const data = await response.json();
+      const savedProfile = data?.profile ?? data;
+      setOverrideProfile({
+        ...savedProfile,
+        mesocycles: savedProfile?.mesocycles ?? initialAthleteProfile?.mesocycles ?? [],
+      });
       setClientMessage({ type: 'success', text: 'Perfil configurado com sucesso!' });
       router.refresh();
     } catch (err) {
@@ -136,7 +144,6 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-internal-token': process.env.NEXT_PUBLIC_INTERNAL_SECRET || '',
         },
       });
 
@@ -366,7 +373,9 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
             {strengthAnalytics.muscleVolume.map((item) => {
-              const pct = Math.min(100, Math.round((item.directSets / item.mrv) * 100));
+              const displaySets = item.effectiveSets ?? item.directSets;
+              const secondarySets = item.secondarySets ?? 0;
+              const pct = Math.min(100, Math.round((displaySets / item.mrv) * 100));
               const barColor =
                 item.status === 'exceeding_mrv'
                   ? 'bg-rose-500'
@@ -383,7 +392,7 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
                 >
                   <div className="flex items-center justify-between gap-1">
                     <span className="text-xs font-bold text-slate-100">{item.muscleGroup}</span>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 flex-wrap justify-end">
                       {item.hasCrossFitOverlap && (
                         <span
                           title={`Solicitado em ${item.crossFitSessionsCount} WOD(s) de CrossFit nesta semana`}
@@ -393,8 +402,20 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
                           +{item.crossFitSessionsCount} WOD
                         </span>
                       )}
-                      <span className="text-xs font-mono font-bold text-indigo-300">
-                        {item.directSets} séries
+                      <span
+                        className="text-xs font-mono font-bold text-indigo-300"
+                        title={
+                          secondarySets > 0
+                            ? `${item.directSets} diretas + ${secondarySets} secundárias (×0,5)`
+                            : `${item.directSets} séries diretas`
+                        }
+                      >
+                        {displaySets} séries
+                        {secondarySets > 0 && (
+                          <span className="text-[10px] text-slate-400 font-normal ml-1">
+                            (+{secondarySets} sec)
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>
@@ -428,7 +449,7 @@ export default function StrengthHubClient({ initialAthleteProfile }: StrengthHub
               </div>
               <div>
                 <h2 className="text-base font-bold text-slate-100">
-                  Quadro de Recordes Pessoais & 1RM Estimado (PR Hall of Fame)
+                  Quadro de Recordes Pessoais & 1RM Estimado
                 </h2>
                 <p className="text-xs text-slate-400">
                   Clique em qualquer exercício para abrir o histórico completo e curva de sobrecarga

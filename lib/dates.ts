@@ -60,6 +60,47 @@ export function diffISODays(a: string, b: string): number {
 }
 
 /**
+ * Signed difference in whole days (`targetDate - startDate`).
+ */
+export function diffISODaysSigned(targetDate: string, startDate: string): number {
+  const [ty, tm, td] = targetDate.split('-').map(Number);
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  return Math.round(
+    (Date.UTC(ty, tm - 1, td) - Date.UTC(sy, sm - 1, sd)) / 86_400_000
+  );
+}
+
+/**
+ * Returns the ISO weekday index (0 = Monday ... 6 = Sunday) for an ISO date string.
+ */
+export function dayOfWeekMon0(date: string): number {
+  const [y, m, d] = date.split('-').map(Number);
+  const utcDay = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return utcDay === 0 ? 6 : utcDay - 1;
+}
+
+/**
+ * Resolves a Date, ISO string, or nullish value into an ISO date string ("YYYY-MM-DD")
+ * in the configured athlete timezone without UTC midnight shift.
+ */
+export function resolveISODate(
+  input?: Date | string | null,
+  timeZone: string = APP_TIMEZONE
+): string {
+  if (!input) {
+    return todayISO(new Date(), timeZone);
+  }
+  if (isISODate(input)) {
+    return input;
+  }
+  const parsed = new Date(input);
+  if (isNaN(parsed.getTime())) {
+    return todayISO(new Date(), timeZone);
+  }
+  return todayISO(parsed, timeZone);
+}
+
+/**
  * Returns the Monday ISO date ("YYYY-MM-DD") of the ISO week containing `dateStr`.
  */
 export function mondayOfISODate(dateStr: string): string {

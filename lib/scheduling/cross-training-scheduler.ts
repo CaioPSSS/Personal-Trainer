@@ -207,16 +207,30 @@ export async function syncPlannedCrossTraining(
     select: { id: true, date: true, eventType: true, title: true, referenceId: true, originalDate: true },
   });
 
+  const pruneEventIds: string[] = [];
+  const pruneActivityIds: string[] = [];
+
   for (const ev of existingFuturePlanned) {
     if (shouldPruneRecurringEvent(ev, rules)) {
+      pruneEventIds.push(ev.id);
       if (ev.referenceId) {
-        await prisma.crossTrainingActivity.deleteMany({
-          where: { id: ev.referenceId, status: 'planned' },
+        pruneActivityIds.push(ev.referenceId);
+      }
+    }
+  }
+
+  if (pruneEventIds.length > 0) {
+    await prisma.$transaction(async (tx) => {
+      if (pruneActivityIds.length > 0) {
+        await tx.crossTrainingActivity.deleteMany({
+          where: { id: { in: pruneActivityIds }, status: 'planned' },
         });
       }
-      await prisma.calendarEvent.delete({ where: { id: ev.id } });
-      cleanedCount++;
-    }
+      await tx.calendarEvent.deleteMany({
+        where: { id: { in: pruneEventIds } },
+      });
+    });
+    cleanedCount = pruneEventIds.length;
   }
 
   // 2. Pre-index existing events for the target date range to avoid redundant queries
@@ -248,10 +262,20 @@ export async function syncPlannedCrossTraining(
   // Pre-fetch weight for calorie calculation
   const athleteWeightKg = await resolveAthleteWeightKg(athleteProfileId, today);
 
-  // 3. Project recurring workouts forward across each day
+  // 3. Project recurring workouts forward across each day and persist atomically
+  const toCreate: Array<{
+    date: string;
+    activityType: string;
+    title: string;
+    durationMinutes: number;
+    sessionRpe: number;
+    caloriesBurned: number;
+    muscleGroups: string[];
+    colorCode: string;
+  }> = [];
+
   for (let offset = 0; offset <= horizonDays; offset++) {
     const targetDate = shiftISODate(today, offset);
-    // Strict forward-only safety
     if (targetDate < today) continue;
 
     const weekday = dayOfWeekName(targetDate);
@@ -268,7 +292,6 @@ export async function syncPlannedCrossTraining(
         continue;
       }
 
-      // Calculate estimated calories
       const durationMin = rule.durationMinutes || 60;
       const rpe = rule.sessionRpe ?? 7.5;
       const calResult = calculateCrossTrainingCalories({
@@ -286,41 +309,56 @@ export async function syncPlannedCrossTraining(
           ? ['Pernas', 'Core', 'Full Body']
           : ['Core'];
 
-      // Create CrossTrainingActivity with status 'planned'
-      const activity = await prisma.crossTrainingActivity.create({
-        data: {
-          athleteProfileId,
-          date: targetDate,
-          activityType: actType,
-          title: rule.title || 'CrossFit WOD',
-          durationMinutes: durationMin,
-          sessionRpe: rpe,
-          caloriesBurned: calResult.totalCalories,
-          muscleGroups: muscleGroups as unknown as Prisma.InputJsonValue,
-          status: 'planned',
-        },
-      });
-
-      // Create matching planned CalendarEvent
-      await prisma.calendarEvent.create({
-        data: {
-          athleteProfileId,
-          date: targetDate,
-          eventType: actType,
-          referenceId: activity.id,
-          referenceModel: 'CrossTrainingActivity',
-          title: rule.title || 'CrossFit WOD',
-          status: 'planned',
-          colorCode,
-          caloriesBurned: calResult.totalCalories,
-          sortOrder: 1,
-        },
+      toCreate.push({
+        date: targetDate,
+        activityType: actType,
+        title: rule.title || 'CrossFit WOD',
+        durationMinutes: durationMin,
+        sessionRpe: rpe,
+        caloriesBurned: calResult.totalCalories,
+        muscleGroups,
+        colorCode,
       });
 
       existingSet.add(ruleKey);
       existingSet.add(titleKey);
-      createdCount++;
     }
+  }
+
+  if (toCreate.length > 0) {
+    await prisma.$transaction(async (tx) => {
+      for (const item of toCreate) {
+        const activity = await tx.crossTrainingActivity.create({
+          data: {
+            athleteProfileId,
+            date: item.date,
+            activityType: item.activityType,
+            title: item.title,
+            durationMinutes: item.durationMinutes,
+            sessionRpe: item.sessionRpe,
+            caloriesBurned: item.caloriesBurned,
+            muscleGroups: item.muscleGroups as unknown as Prisma.InputJsonValue,
+            status: 'planned',
+          },
+        });
+
+        await tx.calendarEvent.create({
+          data: {
+            athleteProfileId,
+            date: item.date,
+            eventType: item.activityType,
+            referenceId: activity.id,
+            referenceModel: 'CrossTrainingActivity',
+            title: item.title,
+            status: 'planned',
+            colorCode: item.colorCode,
+            caloriesBurned: item.caloriesBurned,
+            sortOrder: 1,
+          },
+        });
+      }
+    });
+    createdCount = toCreate.length;
   }
 
   return { createdCount, cleanedCount };

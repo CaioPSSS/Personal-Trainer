@@ -1,4 +1,7 @@
+import dns from 'node:dns';
+import net from 'node:net';
 import { prisma } from '@/lib/prisma';
+import { isISODate } from '@/lib/dates';
 
 export interface ActivitySyncPayload {
   date: string; // ISO "YYYY-MM-DD"
@@ -32,16 +35,257 @@ export interface SyncResult {
   nutrition?: DailyNutritionData | null;
 }
 
+export interface MetabolicTrackerClientOptions {
+  allowInsecureLocalhostForTest?: boolean;
+}
+
 export const DEFAULT_METABOLIC_URL = 'https://meu-rastreador-metabolico-p7xl.vercel.app';
-export const DEFAULT_METABOLIC_SECRET = 'Senh@Met1';
+
+function parseIPv4ToUint32(ip: string): number | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet < 0 || octet > 255) return null;
+    value = ((value << 8) | octet) >>> 0;
+  }
+  return value;
+}
+
+function isPrivateOrReservedIPv4Uint32(n: number): boolean {
+  const b0 = (n >>> 24) & 0xff;
+  const b1 = (n >>> 16) & 0xff;
+  const b2 = (n >>> 8) & 0xff;
+
+  if (b0 === 0) return true; // 0.0.0.0/8 ("this" network)
+  if (b0 === 10) return true; // 10.0.0.0/8 (RFC1918)
+  if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // 100.64.0.0/10 (CGNAT)
+  if (b0 === 127) return true; // 127.0.0.0/8 (loopback)
+  if (b0 === 169 && b1 === 254) return true; // 169.254.0.0/16 (link-local / cloud metadata)
+  if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16.0.0/12 (RFC1918)
+  if (b0 === 192 && b1 === 0 && b2 === 0) return true; // 192.0.0.0/24 (IETF protocol)
+  if (b0 === 192 && b1 === 0 && b2 === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
+  if (b0 === 192 && b1 === 168) return true; // 192.168.0.0/16 (RFC1918)
+  if (b0 === 198 && (b1 === 18 || b1 === 19)) return true; // 198.18.0.0/15 (benchmarking)
+  if (b0 === 198 && b1 === 51 && b2 === 100) return true; // 198.51.100.0/24 (TEST-NET-2)
+  if (b0 === 203 && b1 === 0 && b2 === 113) return true; // 203.0.113.0/24 (TEST-NET-3)
+  if (b0 >= 224) return true; // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved/broadcast
+
+  return false;
+}
+
+function expandIPv6Groups(rawIp: string): number[] | null {
+  const withoutZone = rawIp.split('%')[0].toLowerCase();
+  const doubleColonParts = withoutZone.split('::');
+  if (doubleColonParts.length > 2) return null;
+
+  const parseSide = (side: string): number[] | null => {
+    if (!side) return [];
+    const tokens = side.split(':');
+    const out: number[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i];
+      if (!tok) return null;
+      if (tok.includes('.')) {
+        if (i !== tokens.length - 1) return null;
+        const ipv4 = parseIPv4ToUint32(tok);
+        if (ipv4 === null) return null;
+        out.push((ipv4 >>> 16) & 0xffff, ipv4 & 0xffff);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(tok)) return null;
+        out.push(parseInt(tok, 16));
+      }
+    }
+    return out;
+  };
+
+  if (doubleColonParts.length === 1) {
+    const groups = parseSide(doubleColonParts[0]);
+    return groups && groups.length === 8 ? groups : null;
+  }
+
+  const left = parseSide(doubleColonParts[0]);
+  const right = parseSide(doubleColonParts[1]);
+  if (!left || !right || left.length + right.length >= 8) return null;
+
+  const zerosNeeded = 8 - (left.length + right.length);
+  return [...left, ...Array<number>(zerosNeeded).fill(0), ...right];
+}
+
+export function isPrivateOrReservedIp(ip: string): boolean {
+  const cleaned = ip.trim().replace(/^\[|\]$/g, '').split('%')[0];
+  const ipVersion = net.isIP(cleaned);
+
+  if (ipVersion === 4) {
+    const num = parseIPv4ToUint32(cleaned);
+    return num === null ? true : isPrivateOrReservedIPv4Uint32(num);
+  }
+
+  if (ipVersion === 6) {
+    const groups = expandIPv6Groups(cleaned);
+    if (!groups) return true;
+
+    const isAllZero = groups.every((g) => g === 0);
+    if (isAllZero) return true; // ::
+
+    const isLoopback = groups.slice(0, 7).every((g) => g === 0) && groups[7] === 1;
+    if (isLoopback) return true; // ::1
+
+    const firstPrefixZero = groups.slice(0, 5).every((g) => g === 0);
+    // IPv4-mapped (::ffff:a.b.c.d) or IPv4-compatible (::a.b.c.d)
+    if (firstPrefixZero && (groups[5] === 0xffff || groups[5] === 0)) {
+      const embeddedIpv4 = (((groups[6] & 0xffff) << 16) | (groups[7] & 0xffff)) >>> 0;
+      return isPrivateOrReservedIPv4Uint32(embeddedIpv4);
+    }
+
+    // NAT64 64:ff9b::/96 & 64:ff9b:1::/48
+    if (groups[0] === 0x0064 && groups[1] === 0xff9b) {
+      if (groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0) {
+        const embeddedIpv4 = (((groups[6] & 0xffff) << 16) | (groups[7] & 0xffff)) >>> 0;
+        return isPrivateOrReservedIPv4Uint32(embeddedIpv4);
+      }
+      return true;
+    }
+
+    const h0 = groups[0];
+    if ((h0 & 0xfe00) === 0xfc00) return true; // fc00::/7 Unique Local
+    if ((h0 & 0xffc0) === 0xfe80) return true; // fe80::/10 Link-Local
+    if ((h0 & 0xff00) === 0xff00) return true; // ff00::/8 Multicast
+    if (h0 === 0x0100 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0) return true; // 100::/64 discard
+    if (h0 === 0x2001 && groups[1] === 0x0db8) return true; // 2001:db8::/32 documentation
+
+    return false;
+  }
+
+  return true;
+}
+
+function isLocalHostname(hostname: string): boolean {
+  const lower = hostname.toLowerCase();
+  return (
+    !lower ||
+    lower === 'localhost' ||
+    lower.endsWith('.localhost') ||
+    lower.endsWith('.local') ||
+    lower.endsWith('.internal') ||
+    lower.endsWith('.home.arpa') ||
+    !lower.includes('.') ||
+    net.isIP(lower) !== 0
+  );
+}
+
+export function getAllowedMetabolicHosts(): Set<string> {
+  const hosts = new Set<string>([new URL(DEFAULT_METABOLIC_URL).hostname.toLowerCase()]);
+
+  const envUrl = process.env.METABOLIC_TRACKER_URL?.trim();
+  if (envUrl) {
+    try {
+      const parsed = new URL(envUrl);
+      const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+      if (parsed.protocol === 'https:' && !isLocalHostname(host) && !host.includes('personal-trainer')) {
+        hosts.add(host);
+      }
+    } catch {
+      // Ignore invalid env URL
+    }
+  }
+
+  const extra = process.env.METABOLIC_TRACKER_ALLOWED_HOSTS?.split(',') || [];
+  for (const item of extra) {
+    const clean = item.trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (clean && !isLocalHostname(clean) && !clean.includes('personal-trainer')) {
+      hosts.add(clean);
+    }
+  }
+
+  return hosts;
+}
+
+export function validateMetabolicTrackerUrl(
+  rawUrl: string,
+  options: MetabolicTrackerClientOptions = {}
+): { valid: true; normalizedUrl: string; hostname: string } | { valid: false; reason: string } {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+    return { valid: false, reason: 'URL do Rastreador Metabólico inválida.' };
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl.trim());
+  } catch {
+    return { valid: false, reason: 'URL do Rastreador Metabólico malformada.' };
+  }
+
+  if (parsed.username || parsed.password) {
+    return { valid: false, reason: 'Credenciais embutidas na URL não são permitidas.' };
+  }
+
+  if (parsed.search || parsed.hash) {
+    return { valid: false, reason: 'A URL base não deve conter query string ou fragmento.' };
+  }
+
+  if (parsed.pathname && parsed.pathname !== '/') {
+    return { valid: false, reason: 'Informe apenas a origem (domínio) do Rastreador Metabólico, sem caminho.' };
+  }
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+
+  if (options.allowInsecureLocalhostForTest) {
+    const isHttpsOrHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    if (isHttpsOrHttp && (hostname === '127.0.0.1' || hostname === 'localhost')) {
+      return { valid: true, normalizedUrl: parsed.origin, hostname };
+    }
+    return { valid: false, reason: 'Apenas localhost/127.0.0.1 é permitido em modo de teste.' };
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return { valid: false, reason: 'A URL do Rastreador Metabólico deve usar HTTPS.' };
+  }
+
+  if (isLocalHostname(hostname)) {
+    return { valid: false, reason: 'Hosts locais, internos ou endereços IP diretos não são permitidos.' };
+  }
+
+  if (hostname.includes('personal-trainer')) {
+    return { valid: false, reason: 'A URL não pode apontar para o próprio Personal Trainer.' };
+  }
+
+  if (!getAllowedMetabolicHosts().has(hostname)) {
+    return {
+      valid: false,
+      reason: 'Domínio não autorizado para sincronização metabólica. Configure METABOLIC_TRACKER_ALLOWED_HOSTS no servidor.',
+    };
+  }
+
+  return { valid: true, normalizedUrl: parsed.origin, hostname };
+}
+
+export async function assertSafeMetabolicUrl(
+  rawUrl: string,
+  options: MetabolicTrackerClientOptions = {}
+): Promise<string> {
+  const validated = validateMetabolicTrackerUrl(rawUrl, options);
+  if (!validated.valid) {
+    throw new Error(validated.reason);
+  }
+
+  if (!options.allowInsecureLocalhostForTest) {
+    const resolved = await dns.promises.lookup(validated.hostname, { all: true });
+    if (resolved.length === 0 || resolved.some((record) => isPrivateOrReservedIp(record.address))) {
+      throw new Error('URL do Rastreador Metabólico resolve para endereço IP privado ou reservado.');
+    }
+  }
+
+  return validated.normalizedUrl;
+}
 
 export function getCandidateSyncSecrets(): string[] {
   const candidates = [
     process.env.ECOSYSTEM_SYNC_SECRET,
     process.env.APP_PASSWORD,
     process.env.CRON_SECRET,
-    DEFAULT_METABOLIC_SECRET,
-    'dev_sync_secret_metabolic',
   ]
     .filter((v): v is string => Boolean(v && v.trim().length > 0))
     .map((v) => v.trim());
@@ -49,12 +293,15 @@ export function getCandidateSyncSecrets(): string[] {
   return Array.from(new Set(candidates));
 }
 
-export async function getSyncConfig() {
-  let url = process.env.METABOLIC_TRACKER_URL?.replace(/\/$/, '');
+export async function getSyncConfig(options: MetabolicTrackerClientOptions = {}) {
+  let url: string | undefined;
+  const envUrl = process.env.METABOLIC_TRACKER_URL?.trim();
 
-  // Se a env var foi configurada com o próprio domínio do Personal Trainer, descarta para evitar loop/404
-  if (url && (url.includes('personal-trainer') || url.includes('localhost:3000'))) {
-    url = undefined;
+  if (envUrl) {
+    const envCheck = validateMetabolicTrackerUrl(envUrl, options);
+    if (envCheck.valid) {
+      url = envCheck.normalizedUrl;
+    }
   }
 
   if (!url) {
@@ -63,30 +310,42 @@ export async function getSyncConfig() {
         where: { id: 'singleton' },
         select: { metabolicTrackerUrl: true },
       });
-      if (profile?.metabolicTrackerUrl && !profile.metabolicTrackerUrl.includes('personal-trainer')) {
-        url = profile.metabolicTrackerUrl.replace(/\/$/, '');
+      if (profile?.metabolicTrackerUrl) {
+        const dbCheck = validateMetabolicTrackerUrl(profile.metabolicTrackerUrl, options);
+        if (dbCheck.valid) {
+          url = dbCheck.normalizedUrl;
+        }
       }
     } catch {
       // ignore
     }
   }
+
   url = url || DEFAULT_METABOLIC_URL;
   const secrets = getCandidateSyncSecrets();
-  const secret = secrets[0] || DEFAULT_METABOLIC_SECRET;
+  const secret = secrets[0] ?? null;
   return { url, secret, secrets };
 }
 
 /**
  * Executa uma chamada autenticada para o Meu Rastreador Metabólico tentando
- * automaticamente os segredos candidatos caso receba HTTP 401 (ex: quando
- * APP_PASSWORD e ECOSYSTEM_SYNC_SECRET diferem entre projetos na Vercel).
+ * automaticamente os segredos candidatos configurados no servidor caso receba HTTP 401.
  */
 export async function fetchFromMetabolicTracker(
   path: string,
   init: RequestInit = {},
-  timeoutMs = 4000
+  timeoutMs = 4000,
+  options: MetabolicTrackerClientOptions = {}
 ): Promise<{ response: Response; url: string }> {
-  const { url, secrets } = await getSyncConfig();
+  const { url, secrets } = await getSyncConfig(options);
+  const safeUrl = await assertSafeMetabolicUrl(url, options);
+
+  if (secrets.length === 0) {
+    throw new Error(
+      'Nenhum segredo de sincronização metabólica configurado (defina ECOSYSTEM_SYNC_SECRET, APP_PASSWORD ou CRON_SECRET).'
+    );
+  }
+
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   let lastResponse: Response | null = null;
 
@@ -99,9 +358,10 @@ export async function fetchFromMetabolicTracker(
       headers.set('Authorization', `Bearer ${token}`);
       headers.set('x-source-app', 'Personal-Trainer');
 
-      const response = await fetch(`${url}${normalizedPath}`, {
+      const response = await fetch(`${safeUrl}${normalizedPath}`, {
         ...init,
         headers,
+        redirect: 'error',
         signal: controller.signal,
       });
 
@@ -109,14 +369,14 @@ export async function fetchFromMetabolicTracker(
 
       // Se autenticou (ou deu outro status que não seja 401), retorna imediatamente
       if (response.status !== 401) {
-        return { response, url };
+        return { response, url: safeUrl };
       }
     } finally {
       clearTimeout(timeoutId);
     }
   }
 
-  return { response: lastResponse!, url };
+  return { response: lastResponse!, url: safeUrl };
 }
 
 /**
@@ -124,7 +384,8 @@ export async function fetchFromMetabolicTracker(
  * Execução não-bloqueante e segura (timeout de 4s, nunca propaga exceção para a UI).
  */
 export async function syncActivityToMetabolicTracker(
-  payload: ActivitySyncPayload
+  payload: ActivitySyncPayload,
+  options: MetabolicTrackerClientOptions = {}
 ): Promise<SyncResult> {
   try {
     const { response } = await fetchFromMetabolicTracker(
@@ -136,7 +397,8 @@ export async function syncActivityToMetabolicTracker(
         },
         body: JSON.stringify(payload),
       },
-      4000
+      4000,
+      options
     );
 
     if (!response.ok) {
@@ -153,7 +415,7 @@ export async function syncActivityToMetabolicTracker(
       const n: DailyNutritionData = data.nutrition;
       try {
         await prisma.wellnessDaily.upsert({
-          where: { date: payload.date },
+          where: { athleteProfileId_date: { athleteProfileId: 'singleton', date: payload.date } },
           update: {
             caloriesConsumed: n.caloriesConsumed,
             proteinConsumed: n.proteinConsumed,
@@ -388,9 +650,13 @@ export async function syncDaysToMetabolicTracker(
 export async function fetchDailyNutrition(
   date: string
 ): Promise<DailyNutritionData | null> {
+  if (!isISODate(date)) {
+    return null;
+  }
+
   try {
     const { response } = await fetchFromMetabolicTracker(
-      `/api/integrations/trainer/nutrition?date=${date}`,
+      `/api/integrations/trainer/nutrition?date=${encodeURIComponent(date)}`,
       { method: 'GET' },
       4000
     );
@@ -404,7 +670,7 @@ export async function fetchDailyNutrition(
       const n: DailyNutritionData = data.nutrition;
       // Atualiza cache local com nutrição e métricas de recuperação
       await prisma.wellnessDaily.upsert({
-        where: { date },
+        where: { athleteProfileId_date: { athleteProfileId: 'singleton', date } },
         update: {
           caloriesConsumed: n.caloriesConsumed,
           proteinConsumed: n.proteinConsumed,
@@ -432,7 +698,7 @@ export async function fetchDailyNutrition(
   } catch {
     // Retorna do cache se o Rastreador estiver offline
     const cached = await prisma.wellnessDaily.findUnique({
-      where: { date },
+      where: { athleteProfileId_date: { athleteProfileId: 'singleton', date } },
     });
     if (cached) {
       return {
@@ -462,6 +728,14 @@ export async function reconcileEcosystemRange(
   nutritionDaysImported: number;
   errors: string[];
 }> {
+  if (!isISODate(startDate) || !isISODate(endDate)) {
+    return {
+      syncedDaysCount: 0,
+      nutritionDaysImported: 0,
+      errors: ['Período inválido: datas devem estar no formato YYYY-MM-DD.'],
+    };
+  }
+
   const errors: string[] = [];
   let nutritionDaysImported = 0;
   let syncedDaysCount = 0;
@@ -514,7 +788,7 @@ export async function reconcileEcosystemRange(
   // 3. Pede ao Rastreador o bloco de nutrição do intervalo
   try {
     const { response: res } = await fetchFromMetabolicTracker(
-      `/api/integrations/trainer/nutrition?startDate=${startDate}&endDate=${endDate}`,
+      `/api/integrations/trainer/nutrition?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
       { method: 'GET' },
       5000
     );
@@ -524,7 +798,7 @@ export async function reconcileEcosystemRange(
       if (Array.isArray(data.items)) {
         for (const item of data.items as DailyNutritionData[]) {
           await prisma.wellnessDaily.upsert({
-            where: { date: item.date },
+            where: { athleteProfileId_date: { athleteProfileId: 'singleton', date: item.date } },
             update: {
               caloriesConsumed: item.caloriesConsumed,
               proteinConsumed: item.proteinConsumed,

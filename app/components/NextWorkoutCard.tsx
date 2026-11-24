@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Dumbbell, Footprints, Flame, Waves, ArrowRight, Calendar } from 'lucide-react';
 import SkipWorkoutDialog from './SkipWorkoutDialog';
+import { getLocalISODate } from '@/lib/dateUtils';
 
 export interface NextWorkoutEvent {
   id: string;
@@ -29,7 +30,7 @@ export default function NextWorkoutCard({ initialEvent, onRefresh }: NextWorkout
     let active = true;
     const fetchNextWorkout = async () => {
       try {
-        const todayStr = new Date().toISOString().split('T')[0];
+        const todayStr = getLocalISODate();
         const res = await fetch(`/api/calendar?startDate=${todayStr}`);
         if (!active) return;
         if (res.ok) {
@@ -142,7 +143,7 @@ export default function NextWorkoutCard({ initialEvent, onRefresh }: NextWorkout
 
   const visuals = getSportVisuals(event.eventType);
   const SportIcon = visuals.icon;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getLocalISODate();
   const isToday = event.date === todayStr;
 
   return (

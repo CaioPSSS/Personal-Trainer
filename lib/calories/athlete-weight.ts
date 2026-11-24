@@ -1,4 +1,5 @@
 import { prisma } from '@/lib/prisma';
+import { todayISO } from '@/lib/dates';
 
 export const DEFAULT_ATHLETE_WEIGHT_KG = 75.0;
 
@@ -14,11 +15,11 @@ export async function resolveAthleteWeightKg(
   targetDate?: string
 ): Promise<number> {
   try {
-    const dateStr = targetDate || new Date().toISOString().split('T')[0];
+    const dateStr = targetDate || todayISO();
 
     // 1. Direct match on target date
     const exactWellness = await prisma.wellnessDaily.findUnique({
-      where: { date: dateStr },
+      where: { athleteProfileId_date: { athleteProfileId, date: dateStr } },
       select: { bodyWeightKg: true },
     });
 

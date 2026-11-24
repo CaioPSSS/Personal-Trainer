@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Dumbbell, Footprints, Settings, Sparkles, Plus } from 'lucide-react';
+import { LayoutDashboard, Dumbbell, Footprints, Settings, Sparkles, Plus, LogOut } from 'lucide-react';
 import CrossTrainingModal from './CrossTrainingModal';
 
 const NAV_ITEMS = [
@@ -17,6 +17,15 @@ const NAV_ITEMS = [
 export default function DesktopSidebar() {
   const pathname = usePathname();
   const [isCrossModalOpen, setIsCrossModalOpen] = useState(false);
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // ignore
+    }
+    window.location.assign('/login');
+  };
 
   return (
     <aside
@@ -101,7 +110,7 @@ export default function DesktopSidebar() {
       </div>
 
       {/* Footer Profile Shortcut */}
-      <div className="pt-4 border-t border-slate-800/80">
+      <div className="pt-4 border-t border-slate-800/80 space-y-2">
         <Link
           href="/settings"
           className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-800/60 transition-colors border border-slate-800/60"
@@ -114,6 +123,14 @@ export default function DesktopSidebar() {
             <p className="text-[10px] text-slate-400 truncate">Configurações & Strava</p>
           </div>
         </Link>
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 border border-slate-800/60 hover:border-rose-500/30 transition cursor-pointer"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span>Sair</span>
+        </button>
       </div>
 
       <CrossTrainingModal

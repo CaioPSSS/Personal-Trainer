@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma';
 import ExecutiveDashboard from '@/app/components/ExecutiveDashboard';
 import { AthleteProfile, MesocyclePlan } from '@prisma/client';
 
+import { createCalendarFeedToken } from '@/lib/auth';
 import { calculateCurrentWeek, formatDateLongPTBR } from '@/lib/dateUtils';
 
 export const dynamic = 'force-dynamic';
@@ -28,16 +29,18 @@ export default async function HomePage() {
 
   const activeMesocycle = athleteProfile?.mesocycles?.[0] || null;
   const currentWeekNumber = calculateCurrentWeek(
-    activeMesocycle?.createdAt,
+    activeMesocycle?.startDate ?? activeMesocycle?.createdAt,
     activeMesocycle?.durationWeeks || 4
   );
   const currentDateFormatted = formatDateLongPTBR();
+  const calendarFeedToken = createCalendarFeedToken();
 
   return (
     <ExecutiveDashboard
       athleteProfile={athleteProfile}
       initialCurrentWeek={currentWeekNumber}
       currentDateFormatted={currentDateFormatted}
+      calendarFeedToken={calendarFeedToken}
     />
   );
 }

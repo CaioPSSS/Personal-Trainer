@@ -1,4 +1,9 @@
 import { AssistantRecommendation } from '@/lib/ai/contracts';
+import {
+  filterSwapRecommendations,
+  parseAvailableEquipment,
+  parseRestrictionTags,
+} from '@/lib/ai/safety-filter';
 
 export interface StoredSubstitutionHints {
   objective?: string;
@@ -361,10 +366,17 @@ export function recordSwapSelectionInSuggestions(params: {
   };
 }
 
+export interface SwapSafetyContext {
+  movementRestrictions?: unknown;
+  injuryHistory?: unknown;
+  availableEquipment?: unknown;
+}
+
 export function getBiomechanicalSwapFallback(
   exerciseName: string,
   movementPattern?: string | null,
-  objective = ''
+  objective = '',
+  safetyContext?: SwapSafetyContext
 ): AssistantRecommendation[] {
   const normEx = normalizeTextKey(exerciseName);
   const normPattern = normalizeTextKey(movementPattern);
@@ -399,6 +411,14 @@ export function getBiomechanicalSwapFallback(
         title: 'Peck Deck / Voador Máquina',
         reason: 'Isolamento direto de peitoral com estabilidade máxima e transição rápida em horários de pico.',
       },
+      {
+        title: 'Supino Reto com Barra',
+        reason: 'Padrão clássico de empurrar horizontal com alta capacidade de sobrecarga progressiva.',
+      },
+      {
+        title: 'Flexão de Braços com Peso Corporal (Inclinada/Solo)',
+        reason: 'Alternativa imediata com peso corporal mantendo o vetor de empurrar horizontal sem depender de equipamentos.',
+      },
     ];
   } else if (
     combined.includes('vertical push') ||
@@ -419,7 +439,7 @@ export function getBiomechanicalSwapFallback(
         },
         {
           title: 'Elevação Lateral Máquina',
-          reason: 'Estabilidade guiada e ajuste rápido de carga para manter a densidade do treino de 60 minutos.',
+          reason: 'Estabilidade guiada e ajuste rápido de carga para manter a densidade do treino.',
         },
       ];
     } else {
@@ -435,6 +455,10 @@ export function getBiomechanicalSwapFallback(
         {
           title: 'Desenvolvimento no Smith (Barra Guiada)',
           reason: 'Alta estabilidade para sobrecarga progressiva segura no deltoide anterior.',
+        },
+        {
+          title: 'Elevação Frontal na Polia Baixa com Corda',
+          reason: 'Opção segura no cabo para deltoide anterior mantendo controle articular contínuo.',
         },
       ];
     }
@@ -463,6 +487,14 @@ export function getBiomechanicalSwapFallback(
         title: 'Pulldown na Polia Alta com Corda',
         reason: 'Isolamento de grande dorsal em extensão de ombro com setup rápido em qualquer polia alta.',
       },
+      {
+        title: 'Barra Fixa (Pull-up / Chin-up)',
+        reason: 'Padrão vertical com peso corporal caso não haja estação de polia ou máquinas disponíveis.',
+      },
+      {
+        title: 'Pullover com Halter no Banco',
+        reason: 'Trabalho eficaz de extensão de ombro para latíssimo usando apenas halter e banco.',
+      },
     ];
   } else if (
     combined.includes('horizontal pull') ||
@@ -486,6 +518,10 @@ export function getBiomechanicalSwapFallback(
       {
         title: 'Remada Peito Apoiado com Halteres no Banco Inclinado',
         reason: 'Zero sobrecarga axial na coluna e alta especificidade para espessura de costas.',
+      },
+      {
+        title: 'Remada Curvada com Barra',
+        reason: 'Alternativa livre com barra para tração horizontal de alto recrutamento dorsal.',
       },
     ];
   } else if (
@@ -516,6 +552,14 @@ export function getBiomechanicalSwapFallback(
         title: 'Cadeira Extensora',
         reason: 'Isolamento direto do reto femoral e vastos com ajuste instantâneo por pino.',
       },
+      {
+        title: 'Afundo Estacionário com Halteres',
+        reason: 'Alternativa unilateral com halteres mantendo estímulo de quadríceps e glúteos sem depender de máquinas.',
+      },
+      {
+        title: 'Elevação Pélvica com Halter',
+        reason: 'Alternativa com menor estresse patelofemoral para preservar membros inferiores quando há desconforto no joelho.',
+      },
     ];
   } else if (
     combined.includes('hinge') ||
@@ -544,6 +588,10 @@ export function getBiomechanicalSwapFallback(
         title: 'Elevação Pélvica na Máquina',
         reason: 'Extensão de quadril com foco máximo em glúteo máximo e transição rápida.',
       },
+      {
+        title: 'Elevação Pélvica com Halter',
+        reason: 'Extensão de quadril segura com apoio apenas de banco e halter, zero carga axial lombar.',
+      },
     ];
   } else if (
     combined.includes('biceps') ||
@@ -557,16 +605,16 @@ export function getBiomechanicalSwapFallback(
         reason: 'Coloca a cabeça longa do bíceps em alongamento máximo com excelente estímulo hipertrófico.',
       },
       {
-        title: 'Rosca Direta na Polia Baixa',
-        reason: 'Tensão contínua durante toda a curva de flexão de cotovelo e rápido ajuste de carga.',
+        title: 'Rosca na Polia Baixa com Corda',
+        reason: 'Tensão contínua durante toda a curva de flexão de cotovelo com pegada neutra gentil para punhos e cotovelos.',
       },
       {
-        title: 'Rosca Scott Máquina / Banco Scott',
+        title: 'Rosca Scott Máquina',
         reason: 'Estabiliza o úmero impedindo roubo de ombro, isolando o bíceps braquial.',
       },
       {
         title: 'Rosca Martelo com Halteres',
-        reason: 'Foco sinergista em braquial e braquiorradial com setup imediato nos halteres.',
+        reason: 'Foco sinergista em braquial e braquiorradial com pegada neutra e setup imediato nos halteres.',
       },
     ];
   } else if (
@@ -581,16 +629,16 @@ export function getBiomechanicalSwapFallback(
         reason: 'Enfatiza a cabeça longa do tríceps em posição alongada com tensão constante do cabo.',
       },
       {
-        title: 'Tríceps Pulley com Corda ou Barra',
-        reason: 'Extensão de cotovelo de alta estabilidade e ajuste instantâneo na estação de cabos.',
+        title: 'Tríceps Pulley com Corda',
+        reason: 'Extensão de cotovelo de alta estabilidade e ajuste instantâneo na estação de cabos com conforto articular.',
       },
       {
-        title: 'Tríceps Máquina / Paralela Assistida',
+        title: 'Tríceps Máquina Guiada',
         reason: 'Sobrecarga progressiva segura para as três cabeças do tríceps com suporte guiado.',
       },
       {
-        title: 'Tríceps Testa com Halteres Neutros',
-        reason: 'Excelente alongamento excêntrico com menor estresse nos punhos e cotovelos.',
+        title: 'Tríceps Coice com Halter',
+        reason: 'Alternativa leve para extensão de cotovelo usando apenas halteres com baixo torque articular.',
       },
     ];
   } else {
@@ -607,11 +655,43 @@ export function getBiomechanicalSwapFallback(
         title: 'Variação Equivalente com Halteres',
         reason: 'Liberdade articular natural e acesso imediato na área de pesos livres.',
       },
+      {
+        title: 'Variação Equivalente com Peso Corporal',
+        reason: 'Execução imediata sem depender de equipamentos ocupados.',
+      },
     ];
   }
 
-  const filtered = candidates.filter((c) => !isSameExerciseName(c.title, exerciseName)).slice(0, 3);
-  return tagRecommendationsWithObjective(filtered, objective);
+  const nonDuplicate = candidates.filter((c) => !isSameExerciseName(c.title, exerciseName));
+
+  if (safetyContext) {
+    const restrictions = parseRestrictionTags(
+      safetyContext.movementRestrictions,
+      safetyContext.injuryHistory
+    );
+    const equipment = parseAvailableEquipment(safetyContext.availableEquipment);
+    const { safe } = filterSwapRecommendations(
+      nonDuplicate,
+      movementPattern,
+      restrictions,
+      equipment
+    );
+    if (safe.length > 0) {
+      return tagRecommendationsWithObjective(safe.slice(0, 3), objective);
+    }
+    // Second pass: keep injury restrictions enforced even if equipment has to relax
+    const { safe: safeRespectingInjuries } = filterSwapRecommendations(
+      nonDuplicate,
+      movementPattern,
+      restrictions,
+      []
+    );
+    if (safeRespectingInjuries.length > 0) {
+      return tagRecommendationsWithObjective(safeRespectingInjuries.slice(0, 3), objective);
+    }
+  }
+
+  return tagRecommendationsWithObjective(nonDuplicate.slice(0, 3), objective);
 }
 
 export function buildExerciseSubstitutionSummary(params: {

@@ -32,6 +32,7 @@ export interface GenerateStructuredOptions {
   fallbackModel?: string;
   maxRetries?: number;
   temperature?: number;
+  timeoutMs?: number;
   metadata?: Record<string, string>;
 }
 
@@ -48,19 +49,23 @@ export interface GenerateStructuredResult<T> {
   };
 }
 
-function fixMojibake(text: string): string {
+export function fixMojibake(text: string): string {
   return text
     .replace(/Ã¡/g, 'á')
-    .replace(/Ã§/g, 'ç')
+    .replace(/Ã¢/g, 'â')
     .replace(/Ã£/g, 'ã')
     .replace(/Ã©/g, 'é')
+    .replace(/Ãª/g, 'ê')
     .replace(/Ã­/g, 'í')
     .replace(/Ã³/g, 'ó')
+    .replace(/Ã´/g, 'ô')
+    .replace(/Ãµ/g, 'õ')
     .replace(/Ãº/g, 'ú')
-    .replace(/Ã\s/g, 'à');
+    .replace(/Ã§/g, 'ç')
+    .replace(/Ã\u00a0/g, 'à');
 }
 
-function parseJsonFromMarkdown(candidate: string): unknown {
+export function parseJsonFromMarkdown(candidate: string): unknown {
   const sanitized = fixMojibake(candidate.trim());
 
   // 1. Tenta extrair bloco fenced ```json ... ```
@@ -90,26 +95,47 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callOpenRouter(messages: OpenRouterMessage[], model: string, temperature: number): Promise<OpenRouterResponse> {
+const DEFAULT_OPENROUTER_TIMEOUT_MS = 75_000;
+
+async function callOpenRouter(
+  messages: OpenRouterMessage[],
+  model: string,
+  temperature: number,
+  timeoutMs = DEFAULT_OPENROUTER_TIMEOUT_MS
+): Promise<OpenRouterResponse> {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error('Missing OPENROUTER_API_KEY');
   }
 
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': process.env.OPENROUTER_REFERER ?? 'https://personal-trainer.local',
-      'X-Title': process.env.OPENROUTER_APP_TITLE ?? 'Personal Trainer AI',
-    },
-    body: JSON.stringify({
-      model,
-      temperature,
-      messages,
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), Math.max(1_000, timeoutMs));
+
+  let response: Response;
+  try {
+    response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': process.env.OPENROUTER_REFERER ?? 'https://personal-trainer.local',
+        'X-Title': process.env.OPENROUTER_APP_TITLE ?? 'Personal Trainer AI',
+      },
+      body: JSON.stringify({
+        model,
+        temperature,
+        messages,
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`OpenRouter request timed out after ${timeoutMs}ms (model: ${model})`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 
   if (!response.ok) {
     const text = await response.text();
@@ -136,6 +162,7 @@ export async function generateStructuredOutput<T>(options: GenerateStructuredOpt
     fallbackModel,
     maxRetries = 2,
     temperature = 0.2,
+    timeoutMs = DEFAULT_OPENROUTER_TIMEOUT_MS,
   } = options;
 
   // Constrói a lista de modelos a tentar em cascata
@@ -165,7 +192,7 @@ export async function generateStructuredOutput<T>(options: GenerateStructuredOpt
     for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
       totalAttemptsCount += 1;
       try {
-        const result = await callOpenRouter(messages, model, temperature);
+        const result = await callOpenRouter(messages, model, temperature, timeoutMs);
         const rawContent = result.choices?.[0]?.message?.content?.trim();
 
         if (!rawContent) {

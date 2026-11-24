@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { Prisma } from '@prisma/client';
 import { calculateCrossTrainingCalories, resolveAthleteWeightKg } from '@/lib/calories';
 import { syncDayToMetabolicTracker } from '@/lib/integrations/metabolic-tracker';
+import { rebalanceWeekSchedule } from '@/lib/scheduling/strength-scheduler';
 import { todayISO, shiftISODate } from '@/lib/dates';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +28,11 @@ interface CrossTrainingPayload {
   notes?: string;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const dateLimit = shiftISODate(todayISO(), -60);
 
@@ -49,6 +55,10 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body: CrossTrainingPayload = await req.json();
     const {
@@ -133,6 +143,14 @@ export async function POST(req: NextRequest) {
       return { activity, calendarEvent };
     });
 
+    // Dynamically rebalance target week strength workouts around newly logged cross-training
+    let rebalanceSummary = null;
+    try {
+      rebalanceSummary = await rebalanceWeekSchedule(athlete.id, date);
+    } catch (rebalanceErr) {
+      console.warn('[Cross-Training POST] Falha ao rebalancear agenda da semana:', rebalanceErr);
+    }
+
     // Sincroniza o dia consolidado com o Meu Rastreador Metabólico via after()
     after(async () => {
       try {
@@ -147,7 +165,7 @@ export async function POST(req: NextRequest) {
         success: true,
         activity: result.activity,
         calendarEvent: result.calendarEvent,
-        rebalance: null,
+        rebalance: rebalanceSummary,
       },
       { status: 201 }
     );

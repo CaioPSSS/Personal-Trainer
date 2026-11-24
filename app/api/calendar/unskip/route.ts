@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { weekRangeOfISODate, shiftISODate, isISODate } from '@/lib/dates';
-import { extractOriginalISODate } from '@/lib/scheduling/cross-training-scheduler';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
+import { weekRangeOfISODate, shiftISODate } from '@/lib/dates';
+import { planUnskipRestoration } from '@/lib/scheduling/calendar-skip';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const body = await req.json();
     const { eventId, strategy = 'auto' } = body;
@@ -35,91 +40,72 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Determine if we should revert schedule shifts
-    const wasRescheduled =
-      event.originalDate === 'skip_and_reschedule' ||
-      Boolean(event.originalDate?.startsWith('skip_and_reschedule::'));
-    const shouldRevertSchedule =
-      strategy === 'restore_schedule' ||
-      (strategy === 'auto' && wasRescheduled);
+    const { endOfWeek } = weekRangeOfISODate(event.date);
 
-    let revertedShiftCount = 0;
-
-    // 1. If reverting schedule and event is strength
-    if (shouldRevertSchedule && event.eventType === 'strength') {
-      const { endOfWeek } = weekRangeOfISODate(event.date);
-
-      // Find subsequent strength events that might have been shifted forward
-      const subsequentPlanned = await prisma.calendarEvent.findMany({
-        where: {
-          athleteProfileId: event.athleteProfileId,
-          eventType: 'strength',
-          status: 'planned',
-          id: { not: eventId },
-          date: {
-            gte: event.date,
-            lte: shiftISODate(endOfWeek, 3), // handle events shifted across Sunday boundary
-          },
-        },
-        orderBy: { date: 'asc' },
-      });
-
-      for (const item of subsequentPlanned) {
-        // If it has a recorded originalDate in YYYY-MM-DD format, revert directly to it
-        if (item.originalDate && isISODate(item.originalDate)) {
-          await prisma.calendarEvent.update({
-            where: { id: item.id },
-            data: {
-              date: item.originalDate,
-              originalDate: null,
+    const subsequentPlanned =
+      event.eventType === 'strength'
+        ? await prisma.calendarEvent.findMany({
+            where: {
+              athleteProfileId: event.athleteProfileId,
+              eventType: 'strength',
+              status: 'planned',
+              id: { not: eventId },
+              date: {
+                gte: event.date,
+                lte: shiftISODate(endOfWeek, 3),
+              },
             },
-          });
-          revertedShiftCount++;
-        } else if (wasRescheduled) {
-          // If wasRescheduled flag is present, shift back by -1 day
-          const prevDate = shiftISODate(item.date, -1);
-          await prisma.calendarEvent.update({
-            where: { id: item.id },
-            data: {
-              date: prevDate,
-              originalDate: null,
-            },
-          });
-          revertedShiftCount++;
-        }
-      }
-    }
+            orderBy: { date: 'asc' },
+          })
+        : [];
 
-    // 2. Revert target event status back to 'planned', restoring any preserved ISO originalDate
-    const restoredOriginalDate = extractOriginalISODate(event.originalDate);
-    const updatedEvent = await prisma.calendarEvent.update({
-      where: { id: eventId },
-      data: {
-        status: 'planned',
-        originalDate: restoredOriginalDate,
-      },
+    const restoration = planUnskipRestoration({
+      event,
+      subsequentPlannedStrengthEvents: subsequentPlanned,
+      strategy,
     });
 
-    // 3. If it's a running session, also update RunningSession model
-    if (event.referenceModel === 'RunningSession' && event.referenceId) {
-      await prisma.runningSession.updateMany({
-        where: { id: event.referenceId },
-        data: { status: 'planned' },
-      });
-    }
+    const updatedEvent = await prisma.$transaction(async (tx) => {
+      for (const item of restoration.eventsToRestore) {
+        await tx.calendarEvent.update({
+          where: { id: item.id },
+          data: {
+            date: item.toDate,
+            originalDate: item.originalDateToSave,
+          },
+        });
+      }
 
-    // 4. If it's a cross-training activity, also update CrossTrainingActivity model
-    if (event.referenceModel === 'CrossTrainingActivity' && event.referenceId) {
-      await prisma.crossTrainingActivity.updateMany({
-        where: { id: event.referenceId },
-        data: { status: 'planned' },
+      const restored = await tx.calendarEvent.update({
+        where: { id: eventId },
+        data: {
+          status: 'planned',
+          skipStrategy: null,
+          originalDate: restoration.restoredOriginalDate,
+        },
       });
-    }
+
+      if (event.referenceModel === 'RunningSession' && event.referenceId) {
+        await tx.runningSession.updateMany({
+          where: { id: event.referenceId },
+          data: { status: 'planned' },
+        });
+      }
+
+      if (event.referenceModel === 'CrossTrainingActivity' && event.referenceId) {
+        await tx.crossTrainingActivity.updateMany({
+          where: { id: event.referenceId },
+          data: { status: 'planned' },
+        });
+      }
+
+      return restored;
+    });
 
     return NextResponse.json({
       success: true,
-      strategyUsed: shouldRevertSchedule ? 'restore_schedule' : 'unskip_only',
-      revertedShiftCount,
+      strategyUsed: restoration.strategyUsed,
+      revertedShiftCount: restoration.eventsToRestore.length,
       unskippedEvent: updatedEvent,
     });
   } catch (error) {

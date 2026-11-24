@@ -1,99 +1,148 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { shiftISODate, weekRangeOfISODate } from '@/lib/dates';
+import {
+  extractPreservedISODate,
+  resolveEventSkipStrategy,
+  planCollisionAwareReschedule,
+  planUnskipRestoration,
+} from './calendar-skip';
 
-function getWeekRange(dateStr: string): { startOfWeek: string; endOfWeek: string } {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const d = new Date(Date.UTC(year, month - 1, day));
-  const dayOfWeek = d.getUTCDay(); // 0 = Sunday, 1 = Monday, ...
-  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+test('Calendar Skip & Unskip: weekRangeOfISODate computes Monday and Sunday boundaries', () => {
+  assert.deepEqual(weekRangeOfISODate('2026-09-30'), {
+    startOfWeek: '2026-09-28',
+    endOfWeek: '2026-10-04',
+  });
+  assert.deepEqual(weekRangeOfISODate('2026-10-04'), {
+    startOfWeek: '2026-09-28',
+    endOfWeek: '2026-10-04',
+  });
+  assert.deepEqual(weekRangeOfISODate('2026-09-28'), {
+    startOfWeek: '2026-09-28',
+    endOfWeek: '2026-10-04',
+  });
+});
 
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() + diffToMonday);
+test('Calendar Skip & Unskip: shiftISODate offsets across month and year boundaries without drift', () => {
+  assert.equal(shiftISODate('2026-09-28', 1), '2026-09-29');
+  assert.equal(shiftISODate('2026-09-30', 1), '2026-10-01');
+  assert.equal(shiftISODate('2026-10-01', -1), '2026-09-30');
+  assert.equal(shiftISODate('2026-12-31', 1), '2027-01-01');
+  assert.equal(shiftISODate('2027-01-01', -1), '2026-12-31');
+});
 
-  const sunday = new Date(monday);
-  sunday.setUTCDate(monday.getUTCDate() + 6);
+test('Calendar Skip & Unskip: resolveEventSkipStrategy prefers typed skipStrategy over legacy sentinel', () => {
+  assert.equal(
+    resolveEventSkipStrategy({
+      skipStrategy: 'skip_and_reschedule',
+      originalDate: '2026-09-28',
+    }),
+    'skip_and_reschedule'
+  );
+  assert.equal(
+    resolveEventSkipStrategy({
+      skipStrategy: 'skip_only',
+      originalDate: 'skip_and_reschedule',
+    }),
+    'skip_only'
+  );
+  assert.equal(
+    resolveEventSkipStrategy({
+      skipStrategy: null,
+      originalDate: 'skip_and_reschedule::2026-09-28',
+    }),
+    'skip_and_reschedule'
+  );
+  assert.equal(
+    extractPreservedISODate('skip_and_reschedule::2026-09-28'),
+    '2026-09-28'
+  );
+  assert.equal(extractPreservedISODate('skip_and_reschedule'), null);
+});
 
-  return {
-    startOfWeek: monday.toISOString().split('T')[0],
-    endOfWeek: sunday.toISOString().split('T')[0],
+test('Calendar Skip & Unskip: planCollisionAwareReschedule avoids high-impact runs and respects reversibility', () => {
+  const skippedEvent = {
+    id: 'ev-str-1',
+    date: '2026-09-28', // Monday
+    eventType: 'strength',
+    title: 'Treino A - Inferiores',
+    status: 'planned',
+    originalDate: null,
   };
-}
 
-function addDaysToISODate(dateStr: string, days: number): string {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().split('T')[0];
-}
-
-test('Calendar Skip & Unskip: getWeekRange correctly computes Monday and Sunday', () => {
-  // Wednesday Sep 30, 2026
-  const rangeWed = getWeekRange('2026-09-30');
-  assert.equal(rangeWed.startOfWeek, '2026-09-28');
-  assert.equal(rangeWed.endOfWeek, '2026-10-04');
-
-  // Sunday Oct 04, 2026
-  const rangeSun = getWeekRange('2026-10-04');
-  assert.equal(rangeSun.startOfWeek, '2026-09-28');
-  assert.equal(rangeSun.endOfWeek, '2026-10-04');
-
-  // Monday Sep 28, 2026
-  const rangeMon = getWeekRange('2026-09-28');
-  assert.equal(rangeMon.startOfWeek, '2026-09-28');
-  assert.equal(rangeMon.endOfWeek, '2026-10-04');
-});
-
-test('Calendar Skip & Unskip: addDaysToISODate accurately offsets dates across month boundaries', () => {
-  assert.equal(addDaysToISODate('2026-09-28', 1), '2026-09-29');
-  assert.equal(addDaysToISODate('2026-09-30', 1), '2026-10-01');
-  assert.equal(addDaysToISODate('2026-10-01', -1), '2026-09-30');
-  assert.equal(addDaysToISODate('2026-12-31', 1), '2027-01-01');
-  assert.equal(addDaysToISODate('2027-01-01', -1), '2026-12-31');
-});
-
-test('Calendar Skip & Unskip: skip_and_reschedule and unskip reversibility', () => {
-  // Scenario: 3 strength workouts in week: Mon, Wed, Fri
-  const workouts = [
-    { id: 'ev-1', date: '2026-09-28', title: 'Inferiores 1', status: 'planned', originalDate: null as string | null },
-    { id: 'ev-2', date: '2026-09-30', title: 'Superiores 1', status: 'planned', originalDate: null as string | null },
-    { id: 'ev-3', date: '2026-10-02', title: 'Inferiores 2', status: 'planned', originalDate: null as string | null },
+  const subsequent = [
+    {
+      id: 'ev-str-2',
+      date: '2026-09-30', // Wednesday (+1 would be Thu 2026-10-01, which has a tempo run!)
+      eventType: 'strength',
+      title: 'Treino B - Superiores',
+      status: 'planned',
+      originalDate: null,
+    },
+    {
+      id: 'ev-str-3',
+      date: '2026-10-02', // Friday
+      eventType: 'strength',
+      title: 'Treino C - Full',
+      status: 'planned',
+      originalDate: null,
+    },
   ];
 
-  // 1. User skips Mon workout with skip_and_reschedule
-  const skippedId = 'ev-1';
-  const skippedEvent = workouts.find((w) => w.id === skippedId)!;
-  skippedEvent.status = 'skipped';
-  skippedEvent.originalDate = 'skip_and_reschedule';
+  const plans = planCollisionAwareReschedule({
+    skippedEvent,
+    subsequentStrengthEvents: subsequent,
+    occupiedEvents: [
+      ...subsequent,
+      {
+        id: 'ev-run-thu',
+        date: '2026-10-01', // Thursday high-impact intervals
+        eventType: 'running',
+        runningSessionType: 'intervals',
+        title: 'Tiros na Pista',
+        status: 'planned',
+      },
+    ],
+    availableDayIndices: [0, 1, 2, 3, 4, 5], // Mon..Sat
+    endOfWeek: '2026-10-04',
+  });
 
-  // Subsequent planned workouts shift +1 day
-  const subsequent = workouts.filter((w) => w.id !== skippedId && w.status === 'planned');
-  for (const item of subsequent) {
-    item.originalDate = item.originalDate ?? item.date;
-    item.date = addDaysToISODate(item.date, 1);
-  }
+  assert.equal(plans.length, 2);
+  // ev-str-2 skips Thursday collision (2026-10-01) and lands on Friday (2026-10-02)
+  assert.equal(plans[0].fromDate, '2026-09-30');
+  assert.equal(plans[0].toDate, '2026-10-02');
+  assert.equal(plans[0].avoidedCollision, true);
+  assert.equal(plans[0].originalDateToSave, '2026-09-30');
 
-  assert.equal(skippedEvent.status, 'skipped');
-  assert.equal(workouts[1].date, '2026-10-01'); // was Wed, now Thu
-  assert.equal(workouts[1].originalDate, '2026-09-30');
-  assert.equal(workouts[2].date, '2026-10-03'); // was Fri, now Sat
-  assert.equal(workouts[2].originalDate, '2026-10-02');
+  // ev-str-3 shifts strictly after ev-str-2 (Saturday 2026-10-03)
+  assert.equal(plans[1].fromDate, '2026-10-02');
+  assert.equal(plans[1].toDate, '2026-10-03');
+  assert.equal(plans[1].originalDateToSave, '2026-10-02');
 
-  // 2. User unskips Mon workout with restore_schedule
-  // Revert target event
-  skippedEvent.status = 'planned';
-  skippedEvent.originalDate = null;
+  // Simulate persisted rescheduled state and plan unskip restoration
+  const restore = planUnskipRestoration({
+    event: {
+      ...skippedEvent,
+      status: 'skipped',
+      skipStrategy: 'skip_and_reschedule',
+      originalDate: '2026-09-28',
+    },
+    subsequentPlannedStrengthEvents: plans.map((p, idx) => ({
+      ...subsequent[idx],
+      date: p.toDate,
+      originalDate: p.originalDateToSave,
+    })),
+    strategy: 'auto',
+  });
 
-  // Revert subsequent events using recorded originalDate
-  for (const item of subsequent) {
-    if (item.originalDate) {
-      item.date = item.originalDate;
-      item.originalDate = null;
-    }
-  }
-
-  assert.equal(skippedEvent.status, 'planned');
-  assert.equal(workouts[1].date, '2026-09-30'); // restored to Wed
-  assert.equal(workouts[1].originalDate, null);
-  assert.equal(workouts[2].date, '2026-10-02'); // restored to Fri
-  assert.equal(workouts[2].originalDate, null);
+  assert.equal(restore.wasRescheduled, true);
+  assert.equal(restore.shouldRevertSchedule, true);
+  assert.equal(restore.restoredOriginalDate, '2026-09-28');
+  assert.deepEqual(
+    restore.eventsToRestore.map((e) => ({ id: e.id, toDate: e.toDate, orig: e.originalDateToSave })),
+    [
+      { id: 'ev-str-2', toDate: '2026-09-30', orig: null },
+      { id: 'ev-str-3', toDate: '2026-10-02', orig: null },
+    ]
+  );
 });

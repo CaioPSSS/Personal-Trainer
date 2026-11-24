@@ -7,6 +7,13 @@ import {
   parseRecommendationsJson,
   slugifyExerciseKey,
 } from '../ai/exercise-swap';
+import { sanitizePlanPrescriptions } from '../ai/safety-filter';
+
+export interface SaveMasterPlanSafetyOptions {
+  movementRestrictions?: unknown;
+  injuryHistory?: unknown;
+  availableEquipment?: unknown;
+}
 
 /**
  * Saves a generated hypertrophy mesocycle plan structure to the PostgreSQL database,
@@ -15,13 +22,29 @@ import {
 export async function saveMasterPlanToDb(
   athleteProfileId: string,
   plan: MasterPlanOutput,
-  aiRunLogId?: string
+  aiRunLogId?: string,
+  safetyOptions?: SaveMasterPlanSafetyOptions
 ) {
   return await prisma.$transaction(async (tx) => {
-    // Fetch recent swap suggestions to carry over saved options & enforce permanent swaps
-    const swapHistory = await tx.exerciseSwapSuggestion.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 60,
+    // Fetch recent swap suggestions & latest CoachBrain version
+    const [swapHistory, latestBrain] = await Promise.all([
+      tx.exerciseSwapSuggestion.findMany({
+        orderBy: { createdAt: 'desc' },
+        take: 60,
+      }),
+      tx.coachBrainEntry.findFirst({
+        orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+        select: { version: true },
+      }),
+    ]);
+
+    const nextBrainVersion = (latestBrain?.version ?? 0) + 1;
+
+    const { sanitizedDays } = sanitizePlanPrescriptions({
+      days: plan.mesocycle.days,
+      movementRestrictions: safetyOptions?.movementRestrictions,
+      injuryHistory: safetyOptions?.injuryHistory,
+      availableEquipment: safetyOptions?.availableEquipment,
     });
 
     // 1. Archive other active mesocycles for this athlete
@@ -71,12 +94,17 @@ export async function saveMasterPlanToDb(
           })),
         },
         workoutDays: {
-          create: plan.mesocycle.days.map((day) => ({
+          create: sanitizedDays.map((day) => ({
             dayOrder: day.dayOrder,
             label: day.label,
             estimatedDurationMin: day.estimatedDurationMin,
             prescriptions: {
               create: day.exercises.map((exercise, index) => {
+                const safetyReplacedFrom =
+                  typeof (exercise as Record<string, unknown>).safetyReplacedFrom === 'string'
+                    ? ((exercise as Record<string, unknown>).safetyReplacedFrom as string)
+                    : undefined;
+
                 const savedMatch = findSavedSwapSuggestions({
                   exerciseName: exercise.exerciseName,
                   objective: planObjective,
@@ -92,26 +120,30 @@ export async function saveMasterPlanToDb(
                   : exercise.exerciseName;
                 const effectiveExerciseKey = permanentRec
                   ? slugifyExerciseKey(permanentRec.title)
-                  : exercise.exerciseKey;
+                  : slugifyExerciseKey(exercise.exerciseName);
 
-                const substitutionHints = savedMatch
-                  ? ({
-                      objective: planObjective,
-                      originalExerciseName: exercise.exerciseName,
-                      permanentReplacement: permanentRec
-                        ? {
-                            fromExercise: exercise.exerciseName,
-                            toExercise: permanentRec.title,
-                            objective: planObjective,
-                            updatedAt:
-                              typeof permanentRec.metadata?.lastSelectedAt === 'string'
-                                ? permanentRec.metadata.lastSelectedAt
-                                : new Date().toISOString(),
-                          }
-                        : null,
-                      savedSuggestions: parseRecommendationsJson(savedMatch.recommendations),
-                    } as unknown as Prisma.InputJsonValue)
-                  : Prisma.DbNull;
+                const substitutionHints =
+                  savedMatch || safetyReplacedFrom
+                    ? ({
+                        objective: planObjective,
+                        originalExerciseName: safetyReplacedFrom || exercise.exerciseName,
+                        ...(safetyReplacedFrom ? { safetyReplacedFrom } : {}),
+                        permanentReplacement: permanentRec
+                          ? {
+                              fromExercise: exercise.exerciseName,
+                              toExercise: permanentRec.title,
+                              objective: planObjective,
+                              updatedAt:
+                                typeof permanentRec.metadata?.lastSelectedAt === 'string'
+                                  ? permanentRec.metadata.lastSelectedAt
+                                  : new Date().toISOString(),
+                            }
+                          : null,
+                        savedSuggestions: savedMatch
+                          ? parseRecommendationsJson(savedMatch.recommendations)
+                          : [],
+                      } as unknown as Prisma.InputJsonValue)
+                    : Prisma.DbNull;
 
                 return {
                   exerciseKey: effectiveExerciseKey,
@@ -134,7 +166,7 @@ export async function saveMasterPlanToDb(
         coachBrainEntries: {
           create: {
             aiRunLogId,
-            version: 1,
+            version: nextBrainVersion,
             hypotheses: {
               hypotheses: plan.coachBrain.hypotheses,
               rationale: plan.coachBrain.rationale,

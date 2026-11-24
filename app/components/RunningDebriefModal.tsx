@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   X,
   Footprints,
@@ -69,6 +69,15 @@ export default function RunningDebriefModal({
   execution,
   hrZones,
 }: RunningDebriefModalProps) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isOpen, onClose]);
+
   if (!isOpen || !execution) return null;
 
   // If no session is linked, create a dummy baseline with actual execution
@@ -147,6 +156,7 @@ export default function RunningDebriefModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />

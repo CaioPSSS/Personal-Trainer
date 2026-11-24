@@ -3,12 +3,16 @@ import assert from 'node:assert/strict';
 import {
   shiftISODate,
   diffISODays,
+  diffISODaysSigned,
   dayOfWeekName,
+  dayOfWeekMon0,
+  resolveISODate,
   todayISO,
   isISODate,
   mondayOfISODate,
   weekRangeOfISODate,
 } from './dates';
+import { calculateCurrentWeek } from './dateUtils';
 
 test('Dates: shiftISODate handles whole days across months without timezone drift', () => {
   assert.equal(shiftISODate('2026-10-03', 1), '2026-10-04');
@@ -52,4 +56,21 @@ test('Dates: mondayOfISODate and weekRangeOfISODate compute ISO week boundaries 
   const range = weekRangeOfISODate('2026-10-04');
   assert.equal(range.startOfWeek, '2026-09-28');
   assert.equal(range.endOfWeek, '2026-10-04');
+});
+
+test('Dates: diffISODaysSigned, dayOfWeekMon0, resolveISODate, and calculateCurrentWeek avoid UTC drift', () => {
+  assert.equal(diffISODaysSigned('2026-10-12', '2026-10-05'), 7);
+  assert.equal(diffISODaysSigned('2026-10-01', '2026-10-05'), -4);
+
+  assert.equal(dayOfWeekMon0('2026-10-05'), 0); // Monday
+  assert.equal(dayOfWeekMon0('2026-10-04'), 6); // Sunday
+
+  // ISO date string must be returned verbatim without shifting backward in UTC-3
+  assert.equal(resolveISODate('2026-10-05'), '2026-10-05');
+
+  // Week progression anchored on mesocycle startDate
+  assert.equal(calculateCurrentWeek('2026-10-05', 4, '2026-10-05'), 1);
+  assert.equal(calculateCurrentWeek('2026-10-05', 4, '2026-10-11'), 1);
+  assert.equal(calculateCurrentWeek('2026-10-05', 4, '2026-10-12'), 2);
+  assert.equal(calculateCurrentWeek('2026-10-05', 4, '2026-11-20'), 4);
 });

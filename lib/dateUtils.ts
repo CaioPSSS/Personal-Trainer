@@ -1,4 +1,4 @@
-import { APP_TIMEZONE, todayISO, shiftISODate } from './dates';
+import { APP_TIMEZONE, diffISODaysSigned, isISODate, shiftISODate, todayISO } from './dates';
 
 export function getLocalISODate(date = new Date()): string {
   return todayISO(date, APP_TIMEZONE);
@@ -8,11 +8,28 @@ export function getYesterdayLocalISODate(): string {
   return shiftISODate(todayISO(new Date(), APP_TIMEZONE), -1);
 }
 
-export function calculateCurrentWeek(createdAt?: Date | string | null, durationWeeks = 4): number {
-  if (!createdAt) return 1;
-  const createdTime = new Date(createdAt).getTime();
-  if (isNaN(createdTime)) return 1;
-  const daysSinceStart = Math.max(0, Math.floor((Date.now() - createdTime) / (1000 * 60 * 60 * 24)));
+export function calculateCurrentWeek(
+  startDateOrCreatedAt?: Date | string | null,
+  durationWeeks = 4,
+  referenceDateISO?: string
+): number {
+  if (!startDateOrCreatedAt) return 1;
+
+  let startISO: string;
+  if (isISODate(startDateOrCreatedAt)) {
+    startISO = startDateOrCreatedAt;
+  } else {
+    const parsed = new Date(startDateOrCreatedAt);
+    if (isNaN(parsed.getTime())) return 1;
+    startISO = todayISO(parsed, APP_TIMEZONE);
+  }
+
+  const refISO =
+    referenceDateISO && isISODate(referenceDateISO)
+      ? referenceDateISO
+      : todayISO(new Date(), APP_TIMEZONE);
+
+  const daysSinceStart = Math.max(0, diffISODaysSigned(refISO, startISO));
   return Math.min(durationWeeks, Math.max(1, Math.floor(daysSinceStart / 7) + 1));
 }
 

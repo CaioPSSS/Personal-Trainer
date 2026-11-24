@@ -115,7 +115,7 @@ export const masterPlanOutputSchema = {
         objective: { type: 'string', minLength: 3 },
         split: { type: 'string', minLength: 2 },
         durationWeeks: { type: 'integer', minimum: 4, maximum: 6 },
-        targetSessionMinutes: { type: 'integer', minimum: 45, maximum: 90 },
+        targetSessionMinutes: { type: 'integer', minimum: 30, maximum: 120 },
         weeks: {
           type: 'array',
           minItems: 4,
@@ -133,7 +133,7 @@ export const masterPlanOutputSchema = {
         },
         days: {
           type: 'array',
-          minItems: 3,
+          minItems: 2,
           maxItems: 6,
           items: {
             type: 'object',
@@ -142,7 +142,7 @@ export const masterPlanOutputSchema = {
             properties: {
               dayOrder: { type: 'integer', minimum: 1, maximum: 7 },
               label: { type: 'string', minLength: 2 },
-              estimatedDurationMin: { type: 'integer', minimum: 35, maximum: 90 },
+              estimatedDurationMin: { type: 'integer', minimum: 25, maximum: 120 },
               exercises: {
                 type: 'array',
                 minItems: 3,

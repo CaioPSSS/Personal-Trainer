@@ -1,10 +1,13 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { isAuthorized, unauthorizedResponse } from '@/lib/auth';
 import { todayISO, mondayOfISODate, shiftISODate } from '@/lib/dates';
 import {
   computeMesocycleComparison,
   computePersonalRecordsHallOfFame,
+  computeStreakMetrics,
   computeWeeklyMuscleVolume,
+  filterQualifyingPerformanceRuns,
 } from '@/lib/analytics/hypertrophy-analytics';
 import {
   computeDailyReadinessScore,
@@ -15,6 +18,7 @@ import {
   estimateVdotFromExecution,
   predictRaceTimesFrom5kPace,
 } from '@/lib/running/vdot-predictor';
+import { analyzeMultiSportRadar } from '@/lib/scheduling/multi-sport-radar';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +34,11 @@ function formatWeekLabelFromISO(mondayStr: string): string {
   return `Sem ${day}/${month}`;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return unauthorizedResponse();
+  }
+
   try {
     const todayStr = todayISO();
 
@@ -40,30 +48,53 @@ export async function GET() {
     const prevMondayStr = shiftISODate(mondayStr, -7);
     const prevSundayStr = shiftISODate(mondayStr, -1);
     const sixWeeksAgoMondayStr = shiftISODate(mondayStr, -35);
-    const threeDaysAgoStr = shiftISODate(todayStr, -3);
+    const threeDaysAgoStr = shiftISODate(todayStr, -2);
+    const oneYearAgoStr = shiftISODate(todayStr, -365);
 
     // -------------------------------------------------------------------------
-    // 1. Running profile & executions for paceData, VDOT, racePredictions, volumeData
+    // 1. Running profile, bounded executions, active plan, wellness & athlete rules
     // -------------------------------------------------------------------------
-    const [runningProfile, runningExecutions, runningPlan, recentWellnessLogs] = await Promise.all([
-      prisma.runningProfile.findUnique({
-        where: { id: 'singleton' },
-      }),
-      prisma.runningExecution.findMany({
-        where: { runningProfileId: 'singleton' },
-        orderBy: { date: 'asc' },
-      }),
-      prisma.runningPlan.findFirst({
-        where: { runningProfileId: 'singleton', status: 'active' },
-        include: { sessions: true },
-      }),
-      prisma.wellnessDaily.findMany({
-        where: { athleteProfileId: 'singleton', date: { gte: prevMondayStr, lte: todayStr } },
-        orderBy: { date: 'desc' },
-      }),
-    ]);
+    const [runningProfile, runningExecutions, runningPlan, recentWellnessLogs, athleteProfile] =
+      await Promise.all([
+        prisma.runningProfile.findUnique({
+          where: { id: 'singleton' },
+        }),
+        prisma.runningExecution.findMany({
+          where: {
+            runningProfileId: 'singleton',
+            date: { gte: oneYearAgoStr },
+          },
+          include: {
+            runningSession: {
+              select: { sessionType: true },
+            },
+          },
+          orderBy: { date: 'asc' },
+          take: 500,
+        }),
+        prisma.runningPlan.findFirst({
+          where: { runningProfileId: 'singleton', status: 'active' },
+          include: { sessions: true },
+        }),
+        prisma.wellnessDaily.findMany({
+          where: { athleteProfileId: 'singleton', date: { gte: prevMondayStr, lte: todayStr } },
+          orderBy: { date: 'desc' },
+          take: 90,
+        }),
+        prisma.athleteProfile.findUnique({
+          where: { id: 'singleton' },
+          select: { recurringCrossTraining: true },
+        }),
+      ]);
 
-    // 1.1 paceData + VDOT
+    // 1.1 paceData + VDOT (filtered to qualifying performance runs)
+    const qualifyingRuns = filterQualifyingPerformanceRuns(
+      runningExecutions.map((exec) => ({
+        ...exec,
+        sessionType: exec.runningSession?.sessionType ?? null,
+      }))
+    );
+
     const paceData: Array<{
       date: string;
       pace5kSec: number;
@@ -73,36 +104,34 @@ export async function GET() {
       formatted10k: string;
     }> = [];
 
-    if (runningExecutions.length > 0) {
-      for (const exec of runningExecutions) {
-        if (!exec.avgPaceSec || exec.avgPaceSec <= 0 || !exec.distanceKm || exec.distanceKm <= 0) {
-          continue;
-        }
-
-        // Peter Riegel formula: Pace2 = Pace1 * (D2 / D1)^0.06
-        const pace5k = Math.round(exec.avgPaceSec * Math.pow(5 / exec.distanceKm, 0.06));
-        const pace10k = Math.round(exec.avgPaceSec * Math.pow(10 / exec.distanceKm, 0.06));
-        const vdot =
-          estimateVdotFromExecution({
-            distanceKm: exec.distanceKm,
-            durationSeconds: exec.durationSeconds || exec.avgPaceSec * exec.distanceKm,
-            avgHeartRate: exec.avgHeartRate,
-            maxHeartRate: runningProfile?.maxHeartRate,
-            restingHeartRate: runningProfile?.restingHeartRate,
-          }) ?? estimateVdotFrom5kPaceSec(pace5k);
-
-        paceData.push({
-          date: exec.date,
-          pace5kSec: pace5k,
-          pace10kSec: pace10k,
-          vdot,
-          formatted5k: formatPace(pace5k),
-          formatted10k: formatPace(pace10k),
-        });
+    for (const exec of qualifyingRuns) {
+      if (!exec.avgPaceSec || exec.avgPaceSec <= 0 || !exec.distanceKm || exec.distanceKm <= 0) {
+        continue;
       }
+
+      // Peter Riegel formula: Pace2 = Pace1 * (D2 / D1)^0.06
+      const pace5k = Math.round(exec.avgPaceSec * Math.pow(5 / exec.distanceKm, 0.06));
+      const pace10k = Math.round(exec.avgPaceSec * Math.pow(10 / exec.distanceKm, 0.06));
+      const vdot =
+        estimateVdotFromExecution({
+          distanceKm: exec.distanceKm,
+          durationSeconds: exec.durationSeconds || exec.avgPaceSec * exec.distanceKm,
+          avgHeartRate: exec.avgHeartRate,
+          maxHeartRate: runningProfile?.maxHeartRate,
+          restingHeartRate: runningProfile?.restingHeartRate,
+        }) ?? estimateVdotFrom5kPaceSec(pace5k);
+
+      paceData.push({
+        date: exec.date,
+        pace5kSec: pace5k,
+        pace10kSec: pace10k,
+        vdot,
+        formatted5k: formatPace(pace5k),
+        formatted10k: formatPace(pace10k),
+      });
     }
 
-    // If no execution runs exist yet, fallback to runningProfile baseline if present
+    // Fallback to runningProfile baseline when no qualifying performance executions exist
     if (paceData.length === 0 && runningProfile?.currentPace5kSec) {
       const pace5k = runningProfile.currentPace5kSec;
       const pace10k = runningProfile.currentPace10kSec ?? Math.round(pace5k * 1.06);
@@ -158,30 +187,48 @@ export async function GET() {
     }
 
     // -------------------------------------------------------------------------
-    // 2. Strength Data & Mesocycles
+    // 2. Bounded Strength Data, Mesocycles & Templates (for Radar)
     // -------------------------------------------------------------------------
-    const mesocycles = await prisma.mesocyclePlan.findMany({
+    let targetMesocycles = await prisma.mesocyclePlan.findMany({
       where: {
         athleteProfileId: 'singleton',
         OR: [{ status: 'active' }, { status: 'completed' }],
+      },
+      include: {
+        workoutDays: {
+          include: {
+            prescriptions: {
+              select: { movementPattern: true, exerciseName: true },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take: 2,
     });
 
-    let targetMesocycles = mesocycles;
     if (targetMesocycles.length === 0) {
       targetMesocycles = await prisma.mesocyclePlan.findMany({
         where: { athleteProfileId: 'singleton' },
+        include: {
+          workoutDays: {
+            include: {
+              prescriptions: {
+                select: { movementPattern: true, exerciseName: true },
+              },
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         take: 2,
       });
     }
 
-    const allCompletedWorkouts = await prisma.workoutExecution.findMany({
+    const recentCompletedWorkoutsDesc = await prisma.workoutExecution.findMany({
       where: {
         athleteProfileId: 'singleton',
         status: 'completed',
+        date: { gte: oneYearAgoStr },
       },
       include: {
         exerciseExecutions: {
@@ -190,8 +237,10 @@ export async function GET() {
           },
         },
       },
-      orderBy: { date: 'asc' },
+      orderBy: { date: 'desc' },
+      take: 500,
     });
+    const allCompletedWorkouts = [...recentCompletedWorkoutsDesc].reverse();
 
     const mesoIds = new Set(targetMesocycles.map((m) => m.id));
     const workoutExecutions =
@@ -227,7 +276,6 @@ export async function GET() {
       }
     }
 
-    // PR Hall of Fame (#4) & Mesocycle Comparison (#24)
     const personalRecords = computePersonalRecordsHallOfFame(allCompletedWorkouts);
     const mesocycleComparison = computeMesocycleComparison({
       activeMesocycle: targetMesocycles[0] ?? null,
@@ -236,15 +284,37 @@ export async function GET() {
     });
 
     // -------------------------------------------------------------------------
-    // 3. Adherence Data from CalendarEvent (last 6 weeks)
+    // 3. Adherence Data from CalendarEvent (last 6 weeks) & Bounded Streak/Cross
     // -------------------------------------------------------------------------
-    const calendarEvents = await prisma.calendarEvent.findMany({
-      where: {
-        athleteProfileId: 'singleton',
-        date: { gte: sixWeeksAgoMondayStr, lte: sundayStr },
-      },
-      orderBy: { date: 'asc' },
-    });
+    const [calendarEvents, completedCalendar, allCrossActivities] = await Promise.all([
+      prisma.calendarEvent.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: sixWeeksAgoMondayStr, lte: sundayStr },
+        },
+        orderBy: { date: 'asc' },
+      }),
+      prisma.calendarEvent.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          status: 'completed',
+          date: { gte: oneYearAgoStr },
+        },
+        select: { date: true },
+        orderBy: { date: 'desc' },
+        take: 1500,
+      }),
+      prisma.crossTrainingActivity.findMany({
+        where: {
+          athleteProfileId: 'singleton',
+          date: { gte: oneYearAgoStr },
+        },
+        orderBy: { date: 'desc' },
+        take: 500,
+      }),
+    ]);
+
+    const completedCross = allCrossActivities.filter((c) => c.status === 'completed');
 
     const adherenceData: Array<{
       weekLabel: string;
@@ -278,37 +348,22 @@ export async function GET() {
     }
 
     // -------------------------------------------------------------------------
-    // 4. Consecutive Day Streak Calculation & Cross-Training
+    // 4. Current & Record Consecutive Day Streak Calculation
     // -------------------------------------------------------------------------
-    const [completedCalendar, completedCross] = await Promise.all([
-      prisma.calendarEvent.findMany({
-        where: { athleteProfileId: 'singleton', status: 'completed' },
-        select: { date: true },
-      }),
-      prisma.crossTrainingActivity.findMany({
-        where: { athleteProfileId: 'singleton', status: 'completed' },
-      }),
-    ]);
+    const completedDates: string[] = [
+      ...completedCalendar.map((c) => c.date),
+      ...allCompletedWorkouts.map((s) => s.date),
+      ...runningExecutions.map((r) => r.date),
+      ...completedCross.map((x) => x.date),
+    ];
 
-    const completedDatesSet = new Set<string>();
-    completedCalendar.forEach((c) => completedDatesSet.add(c.date));
-    allCompletedWorkouts.forEach((s) => completedDatesSet.add(s.date));
-    runningExecutions.forEach((r) => completedDatesSet.add(r.date));
-    completedCross.forEach((x) => completedDatesSet.add(x.date));
-
-    let streak = 0;
-    let checkDateStr = todayStr;
-    if (!completedDatesSet.has(checkDateStr)) {
-      checkDateStr = shiftISODate(todayStr, -1);
-    }
-
-    while (completedDatesSet.has(checkDateStr)) {
-      streak++;
-      checkDateStr = shiftISODate(checkDateStr, -1);
-    }
+    const { currentStreak: streak, recordStreak } = computeStreakMetrics(
+      completedDates,
+      todayStr
+    );
 
     // -------------------------------------------------------------------------
-    // 5. Weekly Volume, Muscle Landmarks (#3), Readiness (#16), Weekly Review (#23)
+    // 5. Weekly Volume, Muscle Landmarks (#3), Readiness (#16), Radar, Weekly Review (#23)
     // -------------------------------------------------------------------------
     const currentWeekWorkouts = allCompletedWorkouts.filter(
       (w) => w.date >= mondayStr && w.date <= sundayStr
@@ -361,8 +416,33 @@ export async function GET() {
       (x) => x.date >= prevMondayStr && x.date <= prevSundayStr
     );
 
+    const currentWeekCrossEvents = calendarEvents.filter(
+      (e) =>
+        ['crossfit', 'swimming', 'cycling', 'yoga', 'martial_arts', 'other'].includes(
+          e.eventType
+        ) &&
+        e.status !== 'skipped' &&
+        e.date >= mondayStr &&
+        e.date <= sundayStr
+    );
+
+    let recurringWeeklyTarget = 0;
+    if (Array.isArray(athleteProfile?.recurringCrossTraining)) {
+      for (const r of athleteProfile.recurringCrossTraining as Array<{
+        daysOfWeek?: unknown;
+      }>) {
+        if (Array.isArray(r?.daysOfWeek)) {
+          recurringWeeklyTarget += r.daysOfWeek.length;
+        }
+      }
+    }
+
     const crossCompletedSessions = currentWeekCross.length;
-    const crossTargetSessions = 2;
+    const crossTargetSessions = Math.max(
+      recurringWeeklyTarget,
+      currentWeekCrossEvents.length,
+      crossCompletedSessions
+    );
 
     const weeklyVolume = {
       strength: {
@@ -379,19 +459,21 @@ export async function GET() {
       },
     };
 
-    // #3: Weekly Muscle Volume Landmarks (MEV / MAV / MRV + CrossFit overlap)
     const muscleVolume = computeWeeklyMuscleVolume({
       weekWorkouts: currentWeekWorkouts,
       weekCrossTraining: currentWeekCross,
     });
 
-    // #16: Daily Multi-Sport Readiness Score (0-100%)
     const recent3dStrength = allCompletedWorkouts.filter((w) => w.date >= threeDaysAgoStr && w.date <= todayStr);
     const recent3dRuns = runningExecutions.filter((r) => r.date >= threeDaysAgoStr && r.date <= todayStr);
     const recent3dCross = completedCross.filter((c) => c.date >= threeDaysAgoStr && c.date <= todayStr);
     const recentHighIntensityCount3d =
       recent3dStrength.filter((w) => (w.sessionRpe ?? 0) >= 8.5).length +
-      recent3dRuns.filter((r) => (r.sessionRpe ?? 0) >= 8).length +
+      recent3dRuns.filter(
+        (r) =>
+          (r.sessionRpe ?? 0) >= 8 ||
+          ['long_run', 'intervals', 'tempo'].includes(r.runningSession?.sessionType ?? '')
+      ).length +
       recent3dCross.filter((c) => (c.sessionRpe ?? 0) >= 8).length;
 
     const readiness = computeDailyReadinessScore({
@@ -403,7 +485,19 @@ export async function GET() {
       recentHighIntensityCount3d,
     });
 
-    // #23: Weekly Review Summary (Current Week vs Previous Week)
+    // Multi-Sport Radar for current calendar week
+    const currentWeekEvents = calendarEvents.filter(
+      (e) => e.date >= mondayStr && e.date <= sundayStr
+    );
+    const multiSportRadar = analyzeMultiSportRadar({
+      weekEvents: currentWeekEvents,
+      templatesWithPrescriptions: targetMesocycles[0]?.workoutDays ?? [],
+      runningSessions: runningPlan?.sessions ?? [],
+      crossTrainingActivities: allCrossActivities.filter(
+        (c) => c.date >= mondayStr && c.date <= sundayStr
+      ),
+    });
+
     const currWeekCalories =
       currStrengthStats.calories +
       currentWeekRuns.reduce((s, r) => s + (r.caloriesBurned ?? 0), 0) +
@@ -442,7 +536,7 @@ export async function GET() {
       previousCaloriesBurned: prevWeekCalories,
       avgSleepHours,
       underMevMuscles: muscleVolume
-        .filter((m) => m.status === 'below_mev' && m.directSets > 0)
+        .filter((m) => m.status === 'below_mev' && m.effectiveSets > 0)
         .map((m) => m.muscleGroup),
     });
 
@@ -454,11 +548,13 @@ export async function GET() {
       strengthData,
       adherenceData,
       streak,
+      recordStreak,
       weeklyVolume,
       muscleVolume,
       personalRecords,
       mesocycleComparison,
       readiness,
+      multiSportRadar,
       weeklyReview,
     });
   } catch (error) {
@@ -473,15 +569,17 @@ export async function GET() {
         strengthData: [],
         adherenceData: [],
         streak: 0,
+        recordStreak: 0,
         weeklyVolume: {
           strength: { completedSets: 0, targetSets: 16 },
           running: { completedKm: 0, targetKm: 20 },
-          crossTraining: { completedSessions: 0, targetSessions: 2 },
+          crossTraining: { completedSessions: 0, targetSessions: 0 },
         },
         muscleVolume: [],
         personalRecords: [],
         mesocycleComparison: null,
         readiness: null,
+        multiSportRadar: null,
         weeklyReview: null,
       },
       { status: 500 }

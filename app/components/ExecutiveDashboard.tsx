@@ -18,6 +18,8 @@ import {
   Loader2,
   X,
   TrendingUp,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import NextWorkoutCard from './NextWorkoutCard';
 import StreakCounter from './StreakCounter';
@@ -30,6 +32,7 @@ import OnboardingForm, { AthleteProfileFormState } from './OnboardingForm';
 import { AthleteProfile, MesocyclePlan } from '@prisma/client';
 import { useRouter } from 'next/navigation';
 import type { DailyReadinessResult, WeeklyReviewSummary } from '@/lib/analytics/readiness-score';
+import type { MultiSportRadarResult } from '@/lib/scheduling/multi-sport-radar';
 
 type ProfileWithMesocycles = AthleteProfile & {
   mesocycles?: MesocyclePlan[];
@@ -39,12 +42,14 @@ interface ExecutiveDashboardProps {
   athleteProfile: ProfileWithMesocycles | null;
   initialCurrentWeek?: number;
   currentDateFormatted?: string;
+  calendarFeedToken?: string | null;
 }
 
 export default function ExecutiveDashboard({
   athleteProfile,
   initialCurrentWeek = 1,
   currentDateFormatted,
+  calendarFeedToken,
 }: ExecutiveDashboardProps) {
   const router = useRouter();
   const [isMonthlyOpen, setIsMonthlyOpen] = useState(false);
@@ -54,9 +59,12 @@ export default function ExecutiveDashboard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [calendarKey, setCalendarKey] = useState(0);
   const [aiReviewText, setAiReviewText] = useState<string | null>(null);
+  const [aiReviewFallback, setAiReviewFallback] = useState(false);
   const [isLoadingAiReview, setIsLoadingAiReview] = useState(false);
+  const [isRebalancing, setIsRebalancing] = useState(false);
   const [analytics, setAnalytics] = useState<{
     streak?: number;
+    recordStreak?: number;
     weeklyVolume?: {
       strength?: { completedSets: number; targetSets: number };
       running?: { completedKm: number; targetKm: number };
@@ -71,6 +79,7 @@ export default function ExecutiveDashboard({
     }>;
     readiness?: DailyReadinessResult;
     weeklyReview?: WeeklyReviewSummary;
+    multiSportRadar?: MultiSportRadarResult;
   } | null>(null);
 
   useEffect(() => {
@@ -150,9 +159,30 @@ export default function ExecutiveDashboard({
     setCalendarKey((prev) => prev + 1);
   };
 
+  const handleRebalanceWeek = async () => {
+    if (isRebalancing) return;
+    setIsRebalancing(true);
+    try {
+      const res = await fetch('/api/schedule/rebalance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (res.ok) {
+        handleRefreshCalendar();
+        window.dispatchEvent(new CustomEvent('calendar-refresh'));
+      }
+    } catch (err) {
+      console.error('[ExecutiveDashboard] Erro ao rebalancear semana:', err);
+    } finally {
+      setIsRebalancing(false);
+    }
+  };
+
   const handleGenerateWeeklyAiReview = async () => {
     if (!analytics?.weeklyReview || isLoadingAiReview) return;
     setIsLoadingAiReview(true);
+    setAiReviewFallback(false);
     try {
       const res = await fetch('/api/coach/weekly-review', {
         method: 'POST',
@@ -164,6 +194,7 @@ export default function ExecutiveDashboard({
       });
       if (res.ok) {
         const data = await res.json();
+        setAiReviewFallback(Boolean(data.usedFallback || data.source === 'fallback'));
         if (data.commentary) {
           setAiReviewText(
             `${data.commentary.headline}\n\n${data.commentary.coachAnalysis}\n\n🎯 Ajuste Tático: ${data.commentary.tacticalAdjustment}`
@@ -179,10 +210,13 @@ export default function ExecutiveDashboard({
     }
   };
 
+  const icsPath = calendarFeedToken
+    ? `/api/calendar/ics?token=${encodeURIComponent(calendarFeedToken)}`
+    : '/api/calendar/ics';
   const icsUrl =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/api/calendar/ics`
-      : '/api/calendar/ics';
+      ? `${window.location.origin}${icsPath}`
+      : icsPath;
   const webcalUrl = icsUrl.replace(/^https?:\/\//i, 'webcal://');
 
   const handleCopyIcsUrl = async () => {
@@ -407,16 +441,64 @@ export default function ExecutiveDashboard({
             </div>
           </div>
 
-          {/* Multi-Sport Radar Banner */}
-          <div className="rounded-xl border border-cyan-500/25 bg-cyan-950/20 px-3.5 py-2.5 flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2.5">
-              <Zap className="h-4 w-4 text-cyan-400 shrink-0" />
-              <p className="text-slate-300 leading-snug">
-                <strong className="text-cyan-300 font-semibold">Radar Multi-Esportes:</strong> Sinergia ativa. Treinos de pernas e corrida longão/intervalos protegidos com janela regenerativa de 48h.
-              </p>
-            </div>
-            <ShieldCheck className="h-4 w-4 text-cyan-400 shrink-0 hidden md:block" />
-          </div>
+          {/* Dynamic Multi-Sport Radar Banner */}
+          {(() => {
+            const radar = analytics?.multiSportRadar;
+            const status = radar?.status ?? 'synergy';
+            const borderClass =
+              status === 'conflict'
+                ? 'border-rose-500/35 bg-rose-950/25'
+                : status === 'warning'
+                  ? 'border-amber-500/35 bg-amber-950/25'
+                  : 'border-cyan-500/25 bg-cyan-950/20';
+            const titleColor =
+              status === 'conflict'
+                ? 'text-rose-300'
+                : status === 'warning'
+                  ? 'text-amber-300'
+                  : 'text-cyan-300';
+            return (
+              <div className={`rounded-xl border px-3.5 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${borderClass}`}>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    {status === 'synergy' ? (
+                      <Zap className="h-4 w-4 text-cyan-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className={`h-4 w-4 shrink-0 ${status === 'conflict' ? 'text-rose-400' : 'text-amber-400'}`} />
+                    )}
+                    <p className="text-slate-200 leading-snug">
+                      <strong className={`${titleColor} font-semibold`}>
+                        {radar?.headline || 'Radar Multi-Esportes:'}
+                      </strong>{' '}
+                      {radar?.summary || 'Sincronização entre força, corrida e CrossFit monitorada na semana atual.'}
+                    </p>
+                  </div>
+                  {radar?.conflicts && radar.conflicts.length > 0 && (
+                    <ul className="pl-6 space-y-0.5 text-[11px] text-slate-300 list-disc">
+                      {radar.conflicts.slice(0, 3).map((c, idx) => (
+                        <li key={idx}>{c.description}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  {status !== 'synergy' ? (
+                    <button
+                      type="button"
+                      onClick={handleRebalanceWeek}
+                      disabled={isRebalancing}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-indigo-400/40 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 font-semibold transition cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isRebalancing ? 'animate-spin' : ''}`} />
+                      <span>{isRebalancing ? 'Rebalanceando...' : 'Rebalancear Semana'}</span>
+                    </button>
+                  ) : (
+                    <ShieldCheck className="h-4 w-4 text-cyan-400 shrink-0 hidden md:block" />
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -426,7 +508,10 @@ export default function ExecutiveDashboard({
           <NextWorkoutCard onRefresh={handleRefreshCalendar} />
         </div>
         <div>
-          <StreakCounter currentStreak={analytics?.streak} />
+          <StreakCounter
+            currentStreak={analytics?.streak}
+            recordStreak={analytics?.recordStreak}
+          />
         </div>
       </div>
 
@@ -615,9 +700,16 @@ export default function ExecutiveDashboard({
 
           {aiReviewText && (
             <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/25 p-4 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-300">
-                <Brain className="w-4 h-4 text-indigo-400" />
-                <span>Parecer Semanal do Master Coach IA</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-indigo-300">
+                <div className="flex items-center gap-1.5">
+                  <Brain className="w-4 h-4 text-indigo-400" />
+                  <span>Parecer Semanal do Master Coach IA</span>
+                </div>
+                {aiReviewFallback && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                    Resumo heurístico offline (sem IA)
+                  </span>
+                )}
               </div>
               <p className="text-xs sm:text-sm text-slate-200 leading-relaxed whitespace-pre-line">
                 {aiReviewText}
@@ -695,7 +787,7 @@ export default function ExecutiveDashboard({
 
             <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-800">
               <a
-                href="/api/calendar/ics"
+                href={icsPath}
                 download="personal-trainer-agenda.ics"
                 className="px-3.5 py-2 rounded-xl border border-slate-700 bg-slate-800/70 hover:bg-slate-800 text-xs font-semibold text-slate-200 transition"
               >

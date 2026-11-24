@@ -127,6 +127,15 @@ export default function LinkRunningSessionModal({
     };
   }, [isOpen, initialDate, initialExecutionId, initialSessionId]);
 
+  useEffect(() => {
+    if (!isOpen || isSubmitting) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isOpen, isSubmitting, onClose]);
+
   // Find objects
   const currentExecution = useMemo(() => {
     return unlinkedExecutions.find((e) => e.id === selectedExecutionId) || null;
@@ -244,6 +253,7 @@ export default function LinkRunningSessionModal({
           <button
             type="button"
             onClick={onClose}
+            aria-label="Fechar"
             className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
@@ -285,10 +295,11 @@ export default function LinkRunningSessionModal({
                     {unlinkedExecutions.map((exec) => {
                       const isSelected = selectedExecutionId === exec.id;
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={exec.id}
                           onClick={() => setSelectedExecutionId(exec.id)}
-                          className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                          className={`w-full text-left p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                             isSelected
                               ? 'border-emerald-500 bg-emerald-950/30 shadow-md shadow-emerald-500/10'
                               : 'border-slate-800/80 bg-slate-950/40 hover:bg-slate-800/40 hover:border-slate-700'
@@ -335,7 +346,7 @@ export default function LinkRunningSessionModal({
                               <div className="w-4 h-4 rounded-full border border-slate-700" />
                             )}
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -363,14 +374,17 @@ export default function LinkRunningSessionModal({
                     return (
                       <div
                         key={session.id}
-                        onClick={() => setSelectedSessionId(session.id)}
-                        className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                        className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
                           isSelected
                             ? 'border-indigo-500 bg-indigo-950/30 shadow-md shadow-indigo-500/10'
                             : 'border-slate-800/80 bg-slate-950/40 hover:bg-slate-800/40 hover:border-slate-700'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedSessionId(session.id)}
+                          className="flex-1 flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
+                        >
                           <div className="w-8 h-8 rounded-xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
                             <Zap className="w-4 h-4" />
                           </div>
@@ -399,17 +413,14 @@ export default function LinkRunningSessionModal({
                               )}
                             </div>
                           </div>
-                        </div>
+                        </button>
 
                         <div className="shrink-0 flex items-center gap-2">
                           {hasLink && session.linkedExecutions?.[0] && (
                             <button
                               type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleUnlink(session.linkedExecutions![0].id);
-                              }}
-                              className="text-[10px] font-semibold px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 transition flex items-center gap-1"
+                              onClick={() => handleUnlink(session.linkedExecutions![0].id)}
+                              className="text-[10px] font-semibold px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 transition flex items-center gap-1 cursor-pointer"
                               title="Desvincular esta corrida do treino"
                             >
                               <Unlink className="w-3 h-3" />
